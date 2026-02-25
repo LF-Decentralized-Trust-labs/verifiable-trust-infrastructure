@@ -1,0 +1,17 @@
+#[cfg(feature = "client")]
+pub mod client;
+pub mod contexts;
+pub mod credentials;
+pub mod did_key;
+pub mod did_secrets;
+#[cfg(feature = "didcomm")]
+pub mod didcomm_init;
+#[cfg(feature = "session")]
+pub mod didcomm_session;
+#[cfg(feature = "didcomm")]
+pub mod didcomm_transport;
+pub mod keys;
+pub mod protocols;
+#[cfg(feature = "session")]
+pub mod session;
+pub mod webvh;

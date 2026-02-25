@@ -1,0 +1,256 @@
+use ratatui::{
+    layout::Constraint,
+    style::{Color, Modifier, Style},
+    widgets::{Block, Cell, Row, Table},
+};
+use vta_sdk::client::{CreateAclRequest, UpdateAclRequest, VtaClient};
+
+use crate::render::print_widget;
+
+pub fn format_contexts(contexts: &[String]) -> String {
+    if contexts.is_empty() {
+        "(unrestricted)".to_string()
+    } else {
+        contexts.join(", ")
+    }
+}
+
+pub fn format_role(role: &str, contexts: &[String]) -> String {
+    if role == "admin" && contexts.is_empty() {
+        "super admin".to_string()
+    } else {
+        role.to_string()
+    }
+}
+
+pub fn validate_role(role: &str) -> Result<(), Box<dyn std::error::Error>> {
+    match role {
+        "admin" | "initiator" | "application" => Ok(()),
+        _ => {
+            Err(format!("invalid role '{role}', expected: admin, initiator, or application").into())
+        }
+    }
+}
+
+pub async fn cmd_acl_list(
+    client: &VtaClient,
+    context: Option<&str>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let resp = client.list_acl(context).await?;
+
+    if resp.entries.is_empty() {
+        println!("No ACL entries found.");
+        return Ok(());
+    }
+
+    let header_style = Style::default()
+        .fg(Color::White)
+        .add_modifier(Modifier::BOLD);
+    let header = Row::new(vec!["DID", "Role", "Label", "Contexts", "Created By"])
+        .style(header_style)
+        .bottom_margin(1);
+
+    let rows: Vec<Row> = resp
+        .entries
+        .iter()
+        .map(|entry| {
+            let label = entry.label.clone().unwrap_or_else(|| "\u{2014}".into());
+            let contexts = format_contexts(&entry.allowed_contexts);
+
+            Row::new(vec![
+                Cell::from(entry.did.clone()).style(Style::default().fg(Color::DarkGray)),
+                Cell::from(format_role(&entry.role, &entry.allowed_contexts)),
+                Cell::from(label),
+                Cell::from(contexts),
+                Cell::from(entry.created_by.clone()).style(Style::default().fg(Color::DarkGray)),
+            ])
+        })
+        .collect();
+
+    let title = format!(" ACL Entries ({}) ", resp.entries.len());
+
+    let table = Table::new(
+        rows,
+        [
+            Constraint::Min(60),    // DID
+            Constraint::Length(12), // Role
+            Constraint::Min(16),    // Label
+            Constraint::Length(24), // Contexts
+            Constraint::Length(52), // Created By
+        ],
+    )
+    .header(header)
+    .column_spacing(2)
+    .block(
+        Block::bordered()
+            .title(title)
+            .border_style(Style::default().fg(Color::DarkGray)),
+    );
+
+    let height = resp.entries.len() as u16 + 4;
+    print_widget(table, height);
+
+    Ok(())
+}
+
+pub async fn cmd_acl_get(client: &VtaClient, did: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let entry = client.get_acl(did).await?;
+    println!("DID:              {}", entry.did);
+    println!(
+        "Role:             {}",
+        format_role(&entry.role, &entry.allowed_contexts)
+    );
+    println!(
+        "Label:            {}",
+        entry.label.as_deref().unwrap_or("(not set)")
+    );
+    println!(
+        "Contexts:         {}",
+        format_contexts(&entry.allowed_contexts)
+    );
+    println!("Created At:       {}", entry.created_at);
+    println!("Created By:       {}", entry.created_by);
+    Ok(())
+}
+
+pub async fn cmd_acl_create(
+    client: &VtaClient,
+    did: String,
+    role: String,
+    label: Option<String>,
+    contexts: Vec<String>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    validate_role(&role)?;
+    let req = CreateAclRequest {
+        did,
+        role,
+        label,
+        allowed_contexts: contexts,
+    };
+    let entry = client.create_acl(req).await?;
+    println!("ACL entry created:");
+    println!("  DID:      {}", entry.did);
+    println!(
+        "  Role:     {}",
+        format_role(&entry.role, &entry.allowed_contexts)
+    );
+    if let Some(label) = &entry.label {
+        println!("  Label:    {label}");
+    }
+    println!("  Contexts: {}", format_contexts(&entry.allowed_contexts));
+    Ok(())
+}
+
+pub async fn cmd_acl_update(
+    client: &VtaClient,
+    did: &str,
+    role: Option<String>,
+    label: Option<String>,
+    contexts: Option<Vec<String>>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if let Some(ref r) = role {
+        validate_role(r)?;
+    }
+    let req = UpdateAclRequest {
+        role,
+        label,
+        allowed_contexts: contexts,
+    };
+    let entry = client.update_acl(did, req).await?;
+    println!("ACL entry updated:");
+    println!("  DID:      {}", entry.did);
+    println!(
+        "  Role:     {}",
+        format_role(&entry.role, &entry.allowed_contexts)
+    );
+    if let Some(label) = &entry.label {
+        println!("  Label:    {label}");
+    }
+    println!("  Contexts: {}", format_contexts(&entry.allowed_contexts));
+    Ok(())
+}
+
+pub async fn cmd_acl_delete(
+    client: &VtaClient,
+    did: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    client.delete_acl(did).await?;
+    println!("ACL entry deleted: {did}");
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── format_contexts ────────────────────────────────────────────
+
+    #[test]
+    fn test_format_contexts_empty_shows_unrestricted() {
+        assert_eq!(format_contexts(&[]), "(unrestricted)");
+    }
+
+    #[test]
+    fn test_format_contexts_single() {
+        let ctx = vec!["vta".to_string()];
+        assert_eq!(format_contexts(&ctx), "vta");
+    }
+
+    #[test]
+    fn test_format_contexts_multiple() {
+        let ctx = vec!["vta".to_string(), "payments".to_string()];
+        assert_eq!(format_contexts(&ctx), "vta, payments");
+    }
+
+    // ── format_role ────────────────────────────────────────────────
+
+    #[test]
+    fn test_format_role_admin_no_contexts_is_super_admin() {
+        assert_eq!(format_role("admin", &[]), "super admin");
+    }
+
+    #[test]
+    fn test_format_role_admin_with_contexts_stays_admin() {
+        let ctx = vec!["vta".to_string()];
+        assert_eq!(format_role("admin", &ctx), "admin");
+    }
+
+    #[test]
+    fn test_format_role_initiator_unchanged() {
+        assert_eq!(format_role("initiator", &[]), "initiator");
+    }
+
+    #[test]
+    fn test_format_role_application_unchanged() {
+        let ctx = vec!["app".to_string()];
+        assert_eq!(format_role("application", &ctx), "application");
+    }
+
+    // ── validate_role ──────────────────────────────────────────────
+
+    #[test]
+    fn test_validate_role_admin_ok() {
+        assert!(validate_role("admin").is_ok());
+    }
+
+    #[test]
+    fn test_validate_role_initiator_ok() {
+        assert!(validate_role("initiator").is_ok());
+    }
+
+    #[test]
+    fn test_validate_role_application_ok() {
+        assert!(validate_role("application").is_ok());
+    }
+
+    #[test]
+    fn test_validate_role_unknown_fails() {
+        let err = validate_role("superuser").unwrap_err();
+        assert!(err.to_string().contains("invalid role 'superuser'"));
+    }
+
+    #[test]
+    fn test_validate_role_empty_fails() {
+        assert!(validate_role("").is_err());
+    }
+}
