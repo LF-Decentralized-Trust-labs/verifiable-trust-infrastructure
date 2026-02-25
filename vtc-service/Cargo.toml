@@ -1,0 +1,71 @@
+[package]
+name = "vtc-service"
+description = "Service for Verifiable Trust Communities"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+readme = "README.md"
+license.workspace = true
+repository.workspace = true
+
+[features]
+default = ["setup", "keyring"]
+setup = ["dep:dialoguer", "dep:didwebvh-rs", "dep:url"]
+keyring = ["dep:keyring"]
+config-secret = []
+aws-secrets = ["dep:aws-sdk-secretsmanager", "dep:aws-config"]
+gcp-secrets = [
+  "dep:google-cloud-secretmanager-v1",
+  "dep:google-cloud-auth",
+  "dep:bytes",
+]
+azure-secrets = ["dep:azure_security_keyvault_secrets", "dep:azure_identity"]
+
+[[bin]]
+name = "vtc"
+path = "src/main.rs"
+
+[dependencies]
+vta-sdk = { path = "../vta-sdk", features = ["didcomm", "session", "config-session"] }
+affinidi-tdk = { workspace = true }
+affinidi-did-resolver-cache-sdk = "0.7"
+base64 = { workspace = true }
+axum = "0.8"
+axum-extra = { workspace = true }
+jsonwebtoken = { workspace = true }
+fjall = { workspace = true }
+toml = "1.0"
+tower-http = { version = "0.6", features = ["trace"] }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+ed25519-dalek = "2"
+hex = "0.4"
+keyring = { version = "3", optional = true }
+aws-sdk-secretsmanager = { version = "1", optional = true }
+aws-config = { version = "1", features = [
+  "behavior-version-latest",
+], optional = true }
+google-cloud-secretmanager-v1 = { version = "1", optional = true }
+google-cloud-auth = { version = "1", optional = true }
+bytes = { version = "1", optional = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+clap = { workspace = true }
+didwebvh-rs = { workspace = true, optional = true }
+rand = { workspace = true }
+dialoguer = { version = "0.12", optional = true }
+azure_security_keyvault_secrets = { version = "0.11", optional = true }
+azure_identity = { version = "0.32", optional = true }
+sha2 = { workspace = true }
+x25519-dalek = { workspace = true }
+multibase = { workspace = true }
+url = { workspace = true, optional = true }
+
+[dev-dependencies]
+tempfile = "3"

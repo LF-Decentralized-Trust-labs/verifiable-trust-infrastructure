@@ -1,0 +1,34 @@
+[package]
+name = "pnm-cli"
+description = "CLI Tool for managing a personal Verifiable Trust Agent"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+readme = "README.md"
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "pnm"
+path = "src/main.rs"
+
+[features]
+default = ["keyring"]
+keyring = ["vta-sdk/keyring"]
+config-session = ["vta-sdk/config-session"]
+azure-secrets = ["vta-sdk/azure-secrets"]
+
+[dependencies]
+vta-sdk = { path = "../vta-sdk", features = ["session"] }
+vta-cli-common = { path = "../vta-cli-common" }
+affinidi-did-resolver-cache-sdk = "0.7"
+clap = { workspace = true, features = ["env"] }
+dirs = "6"
+serde = { workspace = true }
+serde_json = { workspace = true }
+toml = "1.0"
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
