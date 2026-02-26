@@ -93,21 +93,18 @@ pub async fn run_create_did_webvh(
             .default(0)
             .interact()?;
 
-        match service_choice {
-            0 => {
-                // Reference the mediator DID for routing
-                did_document["service"] = json!([
-                    {
-                        "id": format!("{did_id}#vta-didcomm"),
-                        "type": "DIDCommMessaging",
-                        "serviceEndpoint": [{
-                            "accept": ["didcomm/v2"],
-                            "uri": msg.mediator_did
-                        }]
-                    }
-                ]);
-            }
-            _ => {} // No service endpoints
+        if service_choice == 0 {
+            // Reference the mediator DID for routing
+            did_document["service"] = json!([
+                {
+                    "id": format!("{did_id}#vta-didcomm"),
+                    "type": "DIDCommMessaging",
+                    "serviceEndpoint": [{
+                        "accept": ["didcomm/v2"],
+                        "uri": msg.mediator_did
+                    }]
+                }
+            ]);
         }
     }
 

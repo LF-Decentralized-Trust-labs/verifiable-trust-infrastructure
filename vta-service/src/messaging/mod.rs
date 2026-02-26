@@ -117,7 +117,7 @@ pub async fn run_didcomm_loop(
                 let vta_did = vta_did.to_string();
                 let state = Arc::clone(&state);
                 tokio::spawn(async move {
-                    dispatch_message(&atm, &profile, &vta_did, &*state, &msg).await;
+                    dispatch_message(&atm, &profile, &vta_did, &state, &msg).await;
                 });
             }
             _ = shutdown_rx.changed() => {

@@ -64,6 +64,6 @@ impl DIDCommBridge {
             timeout_secs,
         )
         .await
-        .map_err(|e| AppError::BadGateway(e))
+        .map_err(AppError::BadGateway)
     }
 }
