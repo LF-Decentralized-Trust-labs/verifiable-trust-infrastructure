@@ -15,7 +15,7 @@ default = ["setup", "keyring", "rest", "didcomm"]
 rest = []
 didcomm = []
 webvh = ["dep:didwebvh-rs", "dep:url", "dep:reqwest"]
-setup = ["webvh", "dep:dialoguer", "dep:tempfile"]
+setup = ["webvh", "dep:tempfile"]
 keyring = ["dep:keyring"]
 config-seed = []
 aws-secrets = ["dep:aws-sdk-secretsmanager", "dep:aws-config"]
@@ -64,7 +64,7 @@ chrono = { workspace = true }
 clap = { workspace = true }
 didwebvh-rs = { workspace = true, optional = true }
 rand = { workspace = true }
-dialoguer = { version = "0.12", optional = true }
+dialoguer = "0.12"
 azure_security_keyvault_secrets = { version = "0.11", optional = true }
 azure_identity = { version = "0.32", optional = true }
 sha2 = { workspace = true }
