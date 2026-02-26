@@ -1,6 +1,13 @@
 
 [workspace]
-members = ["cnm-cli", "pnm-cli", "vta-cli-common", "vta-sdk", "vta-service", "vtc-service"]
+members = [
+  "cnm-cli",
+  "pnm-cli",
+  "vta-cli-common",
+  "vta-sdk",
+  "vta-service",
+  "vtc-service",
+]
 resolver = "3"
 
 [workspace.package]
@@ -17,7 +24,7 @@ repository = "https://github.com/FirstPersonNetwork/vtc-vta-rs"
 [workspace.dependencies]
 
 # Affinidi Trust Development Kit
-affinidi-tdk = "0.4"
+affinidi-tdk = "0.5"
 
 # Decentralized Trust Graph Credentials
 # NOTE: When this is published, switch from git to crates.io
