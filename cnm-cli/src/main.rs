@@ -445,23 +445,20 @@ async fn main() {
     // Build client: DIDComm-preferred for authenticated commands, REST for others
     let client = if requires_auth(&cli.command) {
         // Bootstrap session from personal VTA if needed
-        if auth::loaded_session(&keyring_key).is_none() {
-            if let Ok((slug, community)) = resolve_community(cli.community.as_deref(), &cnm_config)
-                && community.context_id.is_some()
-                && let Some(ref personal) = cnm_config.personal_vta
-            {
-                if let Err(e) =
-                    setup::bootstrap_community_session(&slug, community, &personal.url).await
-                {
-                    eprintln!(
-                        "Error: could not bootstrap session from personal VTA: {e}\n\n\
+        if auth::loaded_session(&keyring_key).is_none()
+            && let Ok((slug, community)) = resolve_community(cli.community.as_deref(), &cnm_config)
+            && community.context_id.is_some()
+            && let Some(ref personal) = cnm_config.personal_vta
+            && let Err(e) =
+                setup::bootstrap_community_session(&slug, community, &personal.url).await
+        {
+            eprintln!(
+                "Error: could not bootstrap session from personal VTA: {e}\n\n\
                          To fix this, either:\n  \
                          1. Import a credential: cnm auth login <credential>\n  \
                          2. Re-run setup: cnm setup"
-                    );
-                    std::process::exit(1);
-                }
-            }
+            );
+            std::process::exit(1);
         }
 
         match auth::connect(url_override.as_deref(), &keyring_key).await {

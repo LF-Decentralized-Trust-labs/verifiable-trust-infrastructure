@@ -70,12 +70,3 @@ pub async fn store_did_log(
     ks.insert_raw(log_key(did), log_content.as_bytes().to_vec())
         .await
 }
-
-pub async fn get_did_log(ks: &KeyspaceHandle, did: &str) -> Result<Option<String>, AppError> {
-    match ks.get_raw(log_key(did)).await? {
-        Some(bytes) => Ok(Some(String::from_utf8(bytes).map_err(|e| {
-            AppError::Internal(format!("invalid UTF-8 in DID log: {e}"))
-        })?)),
-        None => Ok(None),
-    }
-}
