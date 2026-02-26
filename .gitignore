@@ -1,0 +1,6 @@
+target/
+.git/
+Cargo.lock
+**data/
+**config.toml
+**.jsonl
