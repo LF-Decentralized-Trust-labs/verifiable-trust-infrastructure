@@ -454,7 +454,26 @@ pub async fn run_setup_wizard(
         .default("data/vta".into())
         .interact_text()?;
 
-    // 9. Open the store so we can persist key records during DID creation
+    // 9. If data directory already exists, offer to delete and start fresh
+    let data_path = PathBuf::from(&data_dir);
+    if data_path.exists() {
+        let delete = Confirm::new()
+            .with_prompt(format!(
+                "Data directory \"{}\" already exists. Delete and start fresh?",
+                data_dir
+            ))
+            .default(false)
+            .interact()?;
+        if delete {
+            std::fs::remove_dir_all(&data_path)?;
+            eprintln!("  Deleted existing data directory.");
+        } else {
+            eprintln!("Setup cancelled.");
+            return Ok(());
+        }
+    }
+
+    // 10. Open the store so we can persist key records during DID creation
     let store = Store::open(&StoreConfig {
         data_dir: PathBuf::from(&data_dir),
     })?;
