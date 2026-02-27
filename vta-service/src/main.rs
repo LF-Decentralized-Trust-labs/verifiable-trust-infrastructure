@@ -292,6 +292,9 @@ async fn main() {
             }
         }
         Some(Commands::Status) => {
+            if let Ok(config) = AppConfig::load(cli.config.clone()) {
+                init_tracing(&config);
+            }
             if let Err(e) = status::run_status(cli.config).await {
                 eprintln!("Error: {e}");
                 std::process::exit(1);
