@@ -12,9 +12,13 @@ use axum::routing::{delete, get, post};
 
 use crate::server::AppState;
 
+/// Health-check route — served without the request/response trace layer.
+pub fn health_router() -> Router<AppState> {
+    Router::new().route("/health", get(health::health))
+}
+
 pub fn router() -> Router<AppState> {
     let router = Router::new()
-        .route("/health", get(health::health))
         // Auth routes (flattened to avoid nest + root-route matching issues in Axum 0.8)
         .route("/auth/challenge", post(auth::challenge))
         .route("/auth/", post(auth::authenticate))
