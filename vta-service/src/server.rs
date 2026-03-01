@@ -320,12 +320,13 @@ fn run_rest_thread(
         let listener = tokio::net::TcpListener::from_std(std_listener)
             .expect("failed to convert std TcpListener to tokio TcpListener");
 
-        let app = routes::router().with_state(state).layer(
+        let traced_routes = routes::router().with_state(state.clone()).layer(
             TraceLayer::new_for_http()
                 .make_span_with(DefaultMakeSpan::new().level(Level::INFO))
                 .on_request(DefaultOnRequest::new().level(Level::INFO))
                 .on_response(DefaultOnResponse::new().level(Level::INFO)),
         );
+        let app = traced_routes.merge(routes::health_router().with_state(state));
 
         let shutdown_rx = shutdown_rx.clone();
         axum::serve(listener, app)
