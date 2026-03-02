@@ -30,9 +30,6 @@ mod webvh_didcomm;
 #[cfg(feature = "webvh")]
 mod webvh_store;
 
-use std::path::PathBuf;
-use std::sync::Arc;
-
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD as BASE64;
 use clap::{Parser, Subcommand};
@@ -42,7 +39,15 @@ use ed25519_dalek_bip32::{DerivationPath, ExtendedSigningKey};
 use keys::seed_store::create_seed_store;
 use keys::seeds::load_seed_bytes;
 use multibase::Base;
+use std::path::PathBuf;
+use std::sync::Arc;
 use tracing_subscriber::EnvFilter;
+
+// There must be a valid mix of transports for the VTA Service
+// The following checks if a valid set of features is enabled at compile time and produces a
+// helpful error message if not.
+#[cfg(not(any(feature = "rest", feature = "didcomm")))]
+compile_error!("At least one of 'rest' or 'didcomm' must be enabled.");
 
 #[derive(Parser)]
 #[command(name = "vta", about = "Verifiable Trust Agent", version)]
@@ -287,6 +292,9 @@ async fn main() {
             }
         }
         Some(Commands::Status) => {
+            if let Ok(config) = AppConfig::load(cli.config.clone()) {
+                init_tracing(&config);
+            }
             if let Err(e) = status::run_status(cli.config).await {
                 eprintln!("Error: {e}");
                 std::process::exit(1);

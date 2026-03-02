@@ -1,7 +1,6 @@
 use axum::Json;
 use axum::extract::State;
 use serde::Serialize;
-use tracing::debug;
 
 use crate::server::AppState;
 
@@ -16,7 +15,6 @@ pub struct HealthResponse {
 }
 
 pub async fn health(State(state): State<AppState>) -> Json<HealthResponse> {
-    debug!("health check");
     let config = state.config.read().await;
     let (mediator_url, mediator_did) = config
         .messaging

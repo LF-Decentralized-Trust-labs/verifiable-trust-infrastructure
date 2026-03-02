@@ -13,10 +13,19 @@ repository.workspace = true
 [features]
 didcomm = ["dep:affinidi-tdk", "dep:tracing", "dep:uuid", "dep:tokio"]
 client = ["dep:reqwest", "dep:tracing", "dep:uuid", "dep:affinidi-tdk"]
-session = ["client", "didcomm", "dep:affinidi-did-resolver-cache-sdk", "dep:tokio"]
+session = [
+  "client",
+  "didcomm",
+  "dep:affinidi-did-resolver-cache-sdk",
+  "dep:tokio",
+]
 keyring = ["dep:keyring"]
 config-session = []
-azure-secrets = ["dep:azure_security_keyvault_secrets", "dep:azure_identity", "dep:tokio"]
+azure-secrets = [
+  "dep:azure_security_keyvault_secrets",
+  "dep:azure_identity",
+  "dep:tokio",
+]
 
 [dependencies]
 serde = { workspace = true }
@@ -28,7 +37,7 @@ affinidi-tdk = { workspace = true, optional = true }
 reqwest = { workspace = true, optional = true }
 tracing = { workspace = true, optional = true }
 uuid = { workspace = true, optional = true }
-affinidi-did-resolver-cache-sdk = { version = "0.7", optional = true }
+affinidi-did-resolver-cache-sdk = { version = "0.8", optional = true }
 keyring = { version = "3", optional = true }
 azure_security_keyvault_secrets = { version = "0.11", optional = true }
 azure_identity = { version = "0.32", optional = true }
