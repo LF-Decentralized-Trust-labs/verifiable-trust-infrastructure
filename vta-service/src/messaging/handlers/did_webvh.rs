@@ -23,6 +23,7 @@ pub async fn handle_create_did_webvh(
     let params = operations::did_webvh::CreateDidWebvhParams {
         context_id: body.context_id,
         server_id: body.server_id,
+        url: body.url,
         path: body.path,
         label: body.label,
         portable: body.portable.unwrap_or(true),

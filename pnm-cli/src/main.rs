@@ -115,9 +115,12 @@ enum WebvhCommands {
         /// Application context ID
         #[arg(long)]
         context: String,
-        /// WebVH server ID
+        /// WebVH server ID (mutually exclusive with --did-url)
         #[arg(long)]
-        server: String,
+        server: Option<String>,
+        /// DID URL for serverless creation (mutually exclusive with --server)
+        #[arg(long)]
+        did_url: Option<String>,
         /// Optional path on the WebVH server
         #[arg(long)]
         path: Option<String>,
@@ -569,31 +572,41 @@ async fn main() {
             WebvhCommands::CreateDid {
                 context,
                 server,
+                did_url,
                 path,
                 label,
                 portable,
                 mediator_service,
                 services,
                 pre_rotation,
-            } => match services
-                .map(|s| serde_json::from_str::<Vec<serde_json::Value>>(&s))
-                .transpose()
-            {
-                Err(e) => Err(format!("invalid --services JSON: {e}").into()),
-                Ok(additional_services) => {
-                    let req = vta_sdk::client::CreateDidWebvhRequest {
-                        context_id: context,
-                        server_id: server,
-                        path,
-                        label,
-                        portable,
-                        add_mediator_service: mediator_service,
-                        additional_services,
-                        pre_rotation_count: pre_rotation,
-                    };
-                    webvh::cmd_webvh_did_create(&client, req).await
+            } => {
+                if server.is_none() && did_url.is_none() {
+                    Err("either --server or --did-url is required".into())
+                } else if server.is_some() && did_url.is_some() {
+                    Err("--server and --did-url are mutually exclusive".into())
+                } else {
+                    match services
+                        .map(|s| serde_json::from_str::<Vec<serde_json::Value>>(&s))
+                        .transpose()
+                    {
+                        Err(e) => Err(format!("invalid --services JSON: {e}").into()),
+                        Ok(additional_services) => {
+                            let req = vta_sdk::client::CreateDidWebvhRequest {
+                                context_id: context,
+                                server_id: server,
+                                url: did_url,
+                                path,
+                                label,
+                                portable,
+                                add_mediator_service: mediator_service,
+                                additional_services,
+                                pre_rotation_count: pre_rotation,
+                            };
+                            webvh::cmd_webvh_did_create(&client, req).await
+                        }
+                    }
                 }
-            },
+            }
             WebvhCommands::ListDids { context, server } => {
                 webvh::cmd_webvh_did_list(&client, context.as_deref(), server.as_deref()).await
             }
