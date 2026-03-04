@@ -25,7 +25,8 @@ pub struct AddServerRequest {
 #[derive(Debug, Deserialize)]
 pub struct CreateDidRequest {
     pub context_id: String,
-    pub server_id: String,
+    pub server_id: Option<String>,
+    pub url: Option<String>,
     pub path: Option<String>,
     pub label: Option<String>,
     #[serde(default = "default_true")]
@@ -121,6 +122,7 @@ pub async fn create_did_handler(
     let params = operations::did_webvh::CreateDidWebvhParams {
         context_id: req.context_id,
         server_id: req.server_id,
+        url: req.url,
         path: req.path,
         label: req.label,
         portable: req.portable,

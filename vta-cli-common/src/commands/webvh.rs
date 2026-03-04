@@ -117,13 +117,35 @@ pub async fn cmd_webvh_did_create(
     println!("WebVH DID created:");
     println!("  DID:              {}", result.did);
     println!("  Context:          {}", result.context_id);
-    println!("  Server:           {}", result.server_id);
-    println!("  Mnemonic:         {}", result.mnemonic);
+    if let Some(ref server_id) = result.server_id {
+        println!("  Server:           {}", server_id);
+    }
+    if let Some(ref mnemonic) = result.mnemonic {
+        println!("  Mnemonic:         {}", mnemonic);
+    }
     println!("  SCID:             {}", result.scid);
     println!("  Portable:         {}", result.portable);
     println!("  Signing key:      {}", result.signing_key_id);
     println!("  KA key:           {}", result.ka_key_id);
     println!("  Pre-rotation keys: {}", result.pre_rotation_key_count);
+
+    if let Some(ref did_document) = result.did_document {
+        println!();
+        println!("DID Document:");
+        println!(
+            "{}",
+            serde_json::to_string_pretty(did_document).unwrap_or_else(|_| format!("{did_document}"))
+        );
+    }
+    if let Some(ref log_entry) = result.log_entry {
+        println!();
+        println!("Log Entry (did.jsonl):");
+        println!("{}", log_entry);
+        println!();
+        println!("To self-host this DID, place the log entry in a file named `did.jsonl`");
+        println!("at the URL path corresponding to your DID URL.");
+    }
+
     Ok(())
 }
 

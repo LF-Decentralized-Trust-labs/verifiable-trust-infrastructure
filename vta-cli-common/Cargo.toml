@@ -12,3 +12,4 @@ repository.workspace = true
 [dependencies]
 vta-sdk = { path = "../vta-sdk", features = ["client"] }
 ratatui = { workspace = true }
+serde_json = { workspace = true }
