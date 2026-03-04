@@ -9,6 +9,7 @@ pub struct CreateKeyBody {
     pub derivation_path: String,
     pub mnemonic: Option<String>,
     pub label: Option<String>,
+    pub context_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

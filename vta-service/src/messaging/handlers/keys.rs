@@ -28,7 +28,7 @@ didcomm_handler!(handle_create_key,
             key_id: None,
             mnemonic: body.mnemonic,
             label: body.label,
-            context_id: None,
+            context_id: body.context_id,
         },
         "didcomm",
     )
