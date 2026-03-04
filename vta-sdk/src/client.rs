@@ -528,6 +528,7 @@ impl VtaClient {
                 "derivation_path": req.derivation_path.as_deref().unwrap_or_default(),
                 "mnemonic": req.mnemonic.as_deref(),
                 "label": req.label.as_deref(),
+                "context_id": req.context_id.as_deref(),
             }),
             key_management::CREATE_KEY_RESULT,
             30,
