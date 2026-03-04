@@ -5,6 +5,7 @@ use ratatui::{
     widgets::{Block, Cell, Row, Table},
 };
 use vta_sdk::client::{CreateKeyRequest, VtaClient};
+use vta_sdk::did_secrets::{DidSecretsBundle, SecretEntry};
 use vta_sdk::keys::KeyType;
 
 use crate::render::print_widget;
@@ -211,6 +212,52 @@ pub async fn cmd_seeds_rotate(
     println!("Seed rotated successfully.");
     println!("  Previous seed ID: {} (retired)", resp.previous_seed_id);
     println!("  New active seed ID: {}", resp.new_seed_id);
+
+    Ok(())
+}
+
+pub async fn cmd_key_bundle(
+    client: &VtaClient,
+    context: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // 1. Get the context to find the DID
+    let ctx = client.get_context(context).await?;
+    let did = ctx
+        .did
+        .ok_or(format!("context '{context}' has no DID assigned"))?;
+
+    // 2. List all active keys in the context
+    let resp = client
+        .list_keys(0, 10000, Some("active"), Some(context))
+        .await?;
+    if resp.keys.is_empty() {
+        return Err("no active keys found in this context".into());
+    }
+
+    // 3. Get secrets for each key and build SecretEntry vec
+    let mut secrets = Vec::new();
+    for key in &resp.keys {
+        let secret = client.get_key_secret(&key.key_id).await?;
+        secrets.push(SecretEntry {
+            key_id: secret.key_id,
+            key_type: secret.key_type,
+            private_key_multibase: secret.private_key_multibase,
+        });
+    }
+
+    // 4. Build and encode the bundle
+    let bundle = DidSecretsBundle { did, secrets };
+    let encoded = bundle.encode().map_err(|e| format!("{e}"))?;
+
+    // 5. Print with security warning
+    eprintln!();
+    eprintln!("\x1b[1;33m╔══════════════════════════════════════════════════════════╗");
+    eprintln!("║  WARNING: The secrets bundle contains private keys.      ║");
+    eprintln!("║  Store it securely and do not share it publicly.         ║");
+    eprintln!("╚══════════════════════════════════════════════════════════╝\x1b[0m");
+    eprintln!();
+    println!("{encoded}");
+    eprintln!();
 
     Ok(())
 }

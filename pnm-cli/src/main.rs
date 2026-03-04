@@ -374,6 +374,11 @@ enum KeyCommands {
         #[arg(long)]
         context: Option<String>,
     },
+    /// Export a portable DID secrets bundle for a context
+    Bundle {
+        /// Application context ID whose DID and keys to bundle
+        context: String,
+    },
     /// List seed generations
     Seeds,
     /// Rotate to a new seed generation
@@ -628,6 +633,9 @@ async fn main() {
             } => keys::cmd_key_list(&client, offset, limit, status, context).await,
             KeyCommands::Secrets { key_ids, context } => {
                 keys::cmd_key_secrets(&client, key_ids, context).await
+            }
+            KeyCommands::Bundle { context } => {
+                keys::cmd_key_bundle(&client, &context).await
             }
             KeyCommands::Seeds => keys::cmd_seeds_list(&client).await,
             KeyCommands::RotateSeed { mnemonic } => keys::cmd_seeds_rotate(&client, mnemonic).await,
