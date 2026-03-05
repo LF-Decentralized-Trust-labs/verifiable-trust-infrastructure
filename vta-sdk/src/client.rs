@@ -821,13 +821,36 @@ impl VtaClient {
         .await
     }
 
-    pub async fn delete_context(&self, id: &str) -> Result<(), Box<dyn std::error::Error>> {
+    pub async fn preview_delete_context(
+        &self,
+        id: &str,
+    ) -> Result<
+        context_management::delete::DeleteContextPreviewResultBody,
+        Box<dyn std::error::Error>,
+    > {
+        self.rpc(
+            context_management::PREVIEW_DELETE_CONTEXT,
+            serde_json::json!({ "id": id }),
+            context_management::PREVIEW_DELETE_CONTEXT_RESULT,
+            30,
+            |c, url| c.get(format!("{url}/contexts/{}/delete-preview", encode_path_segment(id))),
+        )
+        .await
+    }
+
+    pub async fn delete_context(&self, id: &str, force: bool) -> Result<(), Box<dyn std::error::Error>> {
         self.rpc_void(
             context_management::DELETE_CONTEXT,
-            serde_json::json!({ "id": id }),
+            serde_json::json!({ "id": id, "force": force }),
             context_management::DELETE_CONTEXT_RESULT,
             30,
-            |c, url| c.delete(format!("{url}/contexts/{}", encode_path_segment(id))),
+            |c, url| {
+                let mut url = format!("{url}/contexts/{}", encode_path_segment(id));
+                if force {
+                    url.push_str("?force=true");
+                }
+                c.delete(url)
+            },
         )
         .await
     }

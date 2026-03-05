@@ -30,3 +30,8 @@ pub const DELETE_CONTEXT: &str =
     "https://firstperson.network/protocols/context-management/1.0/delete-context";
 pub const DELETE_CONTEXT_RESULT: &str =
     "https://firstperson.network/protocols/context-management/1.0/delete-context-result";
+
+pub const PREVIEW_DELETE_CONTEXT: &str =
+    "https://firstperson.network/protocols/context-management/1.0/preview-delete-context";
+pub const PREVIEW_DELETE_CONTEXT_RESULT: &str =
+    "https://firstperson.network/protocols/context-management/1.0/preview-delete-context-result";

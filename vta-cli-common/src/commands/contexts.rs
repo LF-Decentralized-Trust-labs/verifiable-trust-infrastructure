@@ -1,3 +1,5 @@
+use std::io::{self, Write};
+
 use ratatui::{
     layout::Constraint,
     style::{Color, Modifier, Style},
@@ -173,8 +175,68 @@ pub async fn cmd_context_update(
 pub async fn cmd_context_delete(
     client: &VtaClient,
     id: &str,
+    force: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    client.delete_context(id).await?;
+    // Fetch a preview of what will be removed
+    let preview = client.preview_delete_context(id).await?;
+
+    let has_resources = !preview.keys.is_empty()
+        || !preview.webvh_dids.is_empty()
+        || !preview.acl_entries_removed.is_empty()
+        || !preview.acl_entries_updated.is_empty();
+
+    if has_resources {
+        println!("Deleting context '{}' will remove the following resources:\n", id);
+
+        if !preview.keys.is_empty() {
+            println!("  Keys ({}):", preview.keys.len());
+            for key in &preview.keys {
+                println!("    - {key}");
+            }
+        }
+
+        if !preview.webvh_dids.is_empty() {
+            println!("  WebVH DIDs ({}):", preview.webvh_dids.len());
+            for did in &preview.webvh_dids {
+                println!("    - {did}");
+            }
+        }
+
+        if !preview.acl_entries_removed.is_empty() {
+            println!("  ACL entries removed ({}):", preview.acl_entries_removed.len());
+            for did in &preview.acl_entries_removed {
+                println!("    - {did}");
+            }
+        }
+
+        if !preview.acl_entries_updated.is_empty() {
+            println!(
+                "  ACL entries updated (context removed from access list) ({}):",
+                preview.acl_entries_updated.len()
+            );
+            for did in &preview.acl_entries_updated {
+                println!("    - {did}");
+            }
+        }
+
+        println!();
+
+        if !force {
+            print!("Proceed with deletion? [y/N] ");
+            io::stdout().flush()?;
+
+            let mut input = String::new();
+            io::stdin().read_line(&mut input)?;
+            let input = input.trim().to_lowercase();
+
+            if input != "y" && input != "yes" {
+                println!("Aborted.");
+                return Ok(());
+            }
+        }
+    }
+
+    client.delete_context(id, true).await?;
     println!("Context deleted: {id}");
     Ok(())
 }

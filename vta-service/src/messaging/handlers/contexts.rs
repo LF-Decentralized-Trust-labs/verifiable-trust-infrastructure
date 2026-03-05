@@ -48,10 +48,33 @@ didcomm_handler!(handle_update_context,
     )
 );
 
+didcomm_handler!(handle_preview_delete_context,
+    body: vta_sdk::protocols::context_management::delete::DeleteContextPreviewBody,
+    result: context_management::PREVIEW_DELETE_CONTEXT_RESULT,
+    |state, auth, body| operations::contexts::preview_delete_context(
+        &state.contexts_ks,
+        &state.keys_ks,
+        &state.acl_ks,
+        #[cfg(feature = "webvh")]
+        &state.webvh_ks,
+        &auth,
+        &body.id,
+        "didcomm",
+    )
+);
+
 didcomm_handler!(handle_delete_context,
     body: vta_sdk::protocols::context_management::delete::DeleteContextBody,
     result: context_management::DELETE_CONTEXT_RESULT,
     |state, auth, body| operations::contexts::delete_context(
-        &state.contexts_ks, &auth, &body.id, "didcomm",
+        &state.contexts_ks,
+        &state.keys_ks,
+        &state.acl_ks,
+        #[cfg(feature = "webvh")]
+        &state.webvh_ks,
+        &auth,
+        &body.id,
+        body.force,
+        "didcomm",
     )
 );
