@@ -227,10 +227,13 @@ enum ContextCommands {
         #[arg(long)]
         description: Option<String>,
     },
-    /// Delete an application context
+    /// Delete an application context and all associated resources
     Delete {
         /// Context ID
         id: String,
+        /// Skip confirmation and delete immediately
+        #[arg(long, short)]
+        force: bool,
     },
     /// Create a context and generate credentials for its first admin
     Bootstrap {
@@ -524,7 +527,9 @@ async fn main() {
                 did,
                 description,
             } => contexts::cmd_context_update(&client, &id, name, did, description).await,
-            ContextCommands::Delete { id } => contexts::cmd_context_delete(&client, &id).await,
+            ContextCommands::Delete { id, force } => {
+                contexts::cmd_context_delete(&client, &id, force).await
+            }
             ContextCommands::Bootstrap {
                 id,
                 name,

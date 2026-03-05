@@ -185,6 +185,9 @@ async fn dispatch_message(
         context_management::UPDATE_CONTEXT => {
             handlers::contexts::handle_update_context(state, &ctx, msg).await
         }
+        context_management::PREVIEW_DELETE_CONTEXT => {
+            handlers::contexts::handle_preview_delete_context(state, &ctx, msg).await
+        }
         context_management::DELETE_CONTEXT => {
             handlers::contexts::handle_delete_context(state, &ctx, msg).await
         }

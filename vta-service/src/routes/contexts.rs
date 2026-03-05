@@ -1,10 +1,12 @@
 use axum::Json;
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use serde::Deserialize;
 
 use vta_sdk::protocols::context_management::{
-    create::CreateContextResultBody, list::ListContextsResultBody,
+    create::CreateContextResultBody,
+    delete::DeleteContextPreviewResultBody,
+    list::ListContextsResultBody,
 };
 
 use crate::auth::{AuthClaims, SuperAdminAuth};
@@ -24,6 +26,12 @@ pub struct UpdateContextRequest {
     pub name: Option<String>,
     pub did: Option<String>,
     pub description: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct DeleteContextQuery {
+    #[serde(default)]
+    pub force: bool,
 }
 
 pub async fn list_contexts_handler(
@@ -82,11 +90,42 @@ pub async fn update_context_handler(
     Ok(Json(result))
 }
 
+pub async fn preview_delete_context_handler(
+    auth: SuperAdminAuth,
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<DeleteContextPreviewResultBody>, AppError> {
+    let result = operations::contexts::preview_delete_context(
+        &state.contexts_ks,
+        &state.keys_ks,
+        &state.acl_ks,
+        #[cfg(feature = "webvh")]
+        &state.webvh_ks,
+        &auth.0,
+        &id,
+        "rest",
+    )
+    .await?;
+    Ok(Json(result))
+}
+
 pub async fn delete_context_handler(
     auth: SuperAdminAuth,
     State(state): State<AppState>,
     Path(id): Path<String>,
+    Query(query): Query<DeleteContextQuery>,
 ) -> Result<StatusCode, AppError> {
-    operations::contexts::delete_context(&state.contexts_ks, &auth.0, &id, "rest").await?;
+    operations::contexts::delete_context(
+        &state.contexts_ks,
+        &state.keys_ks,
+        &state.acl_ks,
+        #[cfg(feature = "webvh")]
+        &state.webvh_ks,
+        &auth.0,
+        &id,
+        query.force,
+        "rest",
+    )
+    .await?;
     Ok(StatusCode::NO_CONTENT)
 }
