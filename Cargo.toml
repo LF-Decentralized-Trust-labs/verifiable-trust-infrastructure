@@ -65,7 +65,7 @@ chrono = { version = "0.4", features = ["serde"] }
 rand = "0.10"
 
 # DID Web with Verifiable History
-didwebvh-rs = "0.1"
+didwebvh-rs = "0.2"
 
 # URL parsing
 url = "2"

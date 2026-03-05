@@ -6,10 +6,21 @@ use ratatui::{
     widgets::{Block, Cell, Row, Table},
 };
 use vta_sdk::client::{
-    CreateContextRequest, GenerateCredentialsRequest, UpdateContextRequest, VtaClient,
+    CreateContextRequest, CreateDidWebvhRequest, GenerateCredentialsRequest, UpdateContextRequest,
+    VtaClient,
 };
+use vta_sdk::context_provision::{ContextProvisionBundle, ProvisionedDid};
+use vta_sdk::did_secrets::SecretEntry;
 
 use crate::render::print_widget;
+
+pub struct ProvisionDidOptions {
+    pub server_id: Option<String>,
+    pub did_url: Option<String>,
+    pub portable: bool,
+    pub add_mediator_service: bool,
+    pub pre_rotation_count: u32,
+}
 
 pub async fn cmd_context_bootstrap(
     client: &VtaClient,
@@ -238,5 +249,122 @@ pub async fn cmd_context_delete(
 
     client.delete_context(id, true).await?;
     println!("Context deleted: {id}");
+    Ok(())
+}
+
+pub async fn cmd_context_provision(
+    client: &VtaClient,
+    id: &str,
+    name: &str,
+    description: Option<String>,
+    admin_label: Option<String>,
+    did_opts: Option<ProvisionDidOptions>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // 1. Create the context
+    eprintln!("Creating context '{id}'...");
+    let ctx_req = CreateContextRequest {
+        id: id.to_string(),
+        name: name.to_string(),
+        description,
+    };
+    client.create_context(ctx_req).await?;
+
+    // 2. Generate admin credentials scoped to this context
+    eprintln!("Generating admin credentials...");
+    let cred_req = GenerateCredentialsRequest {
+        role: "admin".to_string(),
+        label: admin_label,
+        allowed_contexts: vec![id.to_string()],
+    };
+    let cred_resp = client.generate_credentials(cred_req).await?;
+
+    // 3. Fetch VTA config for URL/DID
+    let config = client.get_config().await?;
+
+    // 4. Optionally create a DID and collect its secrets
+    let provisioned_did = if let Some(opts) = did_opts {
+        eprintln!("Creating WebVH DID...");
+        let req = CreateDidWebvhRequest {
+            context_id: id.to_string(),
+            server_id: opts.server_id,
+            url: opts.did_url,
+            path: None,
+            label: Some(id.to_string()),
+            portable: opts.portable,
+            add_mediator_service: opts.add_mediator_service,
+            additional_services: None,
+            pre_rotation_count: opts.pre_rotation_count,
+        };
+        let did_result = client.create_did_webvh(req).await?;
+
+        // Collect secrets for the DID keys
+        eprintln!("Fetching DID key secrets...");
+        let mut secrets = Vec::new();
+        // Signing key
+        let signing = client.get_key_secret(&did_result.signing_key_id).await?;
+        secrets.push(SecretEntry {
+            key_id: signing.key_id,
+            key_type: signing.key_type,
+            private_key_multibase: signing.private_key_multibase,
+        });
+        // Key-agreement key
+        let ka = client.get_key_secret(&did_result.ka_key_id).await?;
+        secrets.push(SecretEntry {
+            key_id: ka.key_id,
+            key_type: ka.key_type,
+            private_key_multibase: ka.private_key_multibase,
+        });
+        // Pre-rotation keys
+        for i in 0..did_result.pre_rotation_key_count {
+            let pre_rot_id = format!("{}#pre-rotation-{i}", did_result.did);
+            let pre_rot = client.get_key_secret(&pre_rot_id).await?;
+            secrets.push(SecretEntry {
+                key_id: pre_rot.key_id,
+                key_type: pre_rot.key_type,
+                private_key_multibase: pre_rot.private_key_multibase,
+            });
+        }
+
+        Some(ProvisionedDid {
+            id: did_result.did,
+            did_document: did_result.did_document,
+            log_entry: did_result.log_entry,
+            secrets,
+        })
+    } else {
+        None
+    };
+
+    // 5. Build the provision bundle
+    let bundle = ContextProvisionBundle {
+        context_id: id.to_string(),
+        context_name: name.to_string(),
+        vta_url: config.public_url,
+        vta_did: config.community_vta_did,
+        credential: cred_resp.credential,
+        admin_did: cred_resp.did,
+        did: provisioned_did,
+    };
+
+    let encoded = bundle.encode().map_err(|e| format!("{e}"))?;
+
+    // 6. Output
+    eprintln!();
+    eprintln!("\x1b[1;33m╔══════════════════════════════════════════════════════════════╗");
+    eprintln!("║  Context provision bundle (contains secrets — save securely) ║");
+    eprintln!("╚══════════════════════════════════════════════════════════════╝\x1b[0m");
+    eprintln!();
+    eprintln!("  Context:   {} ({})", id, name);
+    eprintln!("  Admin DID: {}", bundle.admin_did);
+    if let Some(ref did) = bundle.did {
+        eprintln!("  DID:       {}", did.id);
+        if did.log_entry.is_some() {
+            eprintln!("             (includes log entry for self-hosting)");
+        }
+    }
+    eprintln!();
+    println!("{encoded}");
+    eprintln!();
+
     Ok(())
 }
