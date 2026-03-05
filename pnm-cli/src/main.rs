@@ -250,6 +250,41 @@ enum ContextCommands {
         #[arg(long)]
         admin_label: Option<String>,
     },
+    /// Provision a new application context with a portable config bundle
+    ///
+    /// Creates a context, generates admin credentials, and optionally creates a
+    /// WebVH DID. Outputs a single base64-encoded bundle that contains
+    /// everything an application needs to connect, authenticate, and
+    /// self-administer its context.
+    Provision {
+        /// Context slug (lowercase alphanumeric + hyphens)
+        #[arg(long)]
+        id: String,
+        /// Human-readable name
+        #[arg(long)]
+        name: String,
+        /// Optional description
+        #[arg(long)]
+        description: Option<String>,
+        /// Admin label
+        #[arg(long)]
+        admin_label: Option<String>,
+        /// Create a DID using this WebVH server (mutually exclusive with --did-url)
+        #[arg(long)]
+        server: Option<String>,
+        /// Create a DID at this URL for self-hosting (mutually exclusive with --server)
+        #[arg(long)]
+        did_url: Option<String>,
+        /// Make the DID portable (default: true)
+        #[arg(long, default_value = "true")]
+        portable: bool,
+        /// Add a mediator service endpoint to the DID
+        #[arg(long)]
+        mediator_service: bool,
+        /// Number of pre-rotation keys to generate
+        #[arg(long, default_value = "0")]
+        pre_rotation: u32,
+    },
 }
 
 #[derive(Subcommand)]
@@ -537,6 +572,41 @@ async fn main() {
                 admin_label,
             } => {
                 contexts::cmd_context_bootstrap(&client, &id, &name, description, admin_label).await
+            }
+            ContextCommands::Provision {
+                id,
+                name,
+                description,
+                admin_label,
+                server,
+                did_url,
+                portable,
+                mediator_service,
+                pre_rotation,
+            } => {
+                if server.is_some() && did_url.is_some() {
+                    Err("--server and --did-url are mutually exclusive".into())
+                } else {
+                    let did_opts = match (&server, &did_url) {
+                        (None, None) => None,
+                        _ => Some(contexts::ProvisionDidOptions {
+                            server_id: server,
+                            did_url,
+                            portable,
+                            add_mediator_service: mediator_service,
+                            pre_rotation_count: pre_rotation,
+                        }),
+                    };
+                    contexts::cmd_context_provision(
+                        &client,
+                        &id,
+                        &name,
+                        description,
+                        admin_label,
+                        did_opts,
+                    )
+                    .await
+                }
             }
         },
         Commands::Acl { command } => match command {

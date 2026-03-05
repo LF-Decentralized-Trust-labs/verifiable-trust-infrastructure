@@ -23,7 +23,7 @@ azure-secrets = ["vta-sdk/azure-secrets"]
 [dependencies]
 vta-sdk = { path = "../vta-sdk", features = ["session"] }
 vta-cli-common = { path = "../vta-cli-common" }
-affinidi-did-resolver-cache-sdk = "0.7"
+affinidi-did-resolver-cache-sdk = "0.8"
 clap = { workspace = true, features = ["env"] }
 dialoguer = "0.12"
 dirs = "6"
