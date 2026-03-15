@@ -39,6 +39,6 @@ tracing = { workspace = true, optional = true }
 uuid = { workspace = true, optional = true }
 affinidi-did-resolver-cache-sdk = { version = "0.8", optional = true }
 keyring = { version = "3", optional = true }
-azure_security_keyvault_secrets = { version = "0.11", optional = true }
-azure_identity = { version = "0.32", optional = true }
+azure_security_keyvault_secrets = { version = "0.12", optional = true }
+azure_identity = { version = "0.33", optional = true }
 tokio = { workspace = true, optional = true }

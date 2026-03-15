@@ -168,7 +168,7 @@ pub async fn run_create_did_webvh(
 
     // Build parameters
     let parameters = WebVHParameters {
-        update_keys: Some(Arc::new(vec![signing_pub.clone()])),
+        update_keys: Some(Arc::new(vec![signing_pub.clone().into()])),
         portable: Some(portable),
         ..Default::default()
     };
@@ -177,18 +177,21 @@ pub async fn run_create_did_webvh(
     let mut did_state = DIDWebVHState::default();
     did_state
         .create_log_entry(None, &did_document, &parameters, &signing_secret)
+        .await
         .map_err(|e| format!("Failed to create DID log entry: {e}"))?;
 
-    let scid = did_state.scid.clone();
-    let log_entry_state = did_state.log_entries.last().unwrap();
+    let scid = did_state.scid().to_string();
+    let log_entry_state = did_state.log_entries().last().unwrap();
 
     let fallback_did = format!("did:webvh:{scid}:{}", webvh_url.domain);
     let final_did = match log_entry_state.log_entry.get_did_document() {
-        Ok(doc) => doc
-            .get("id")
-            .and_then(|id| id.as_str())
-            .map(String::from)
-            .unwrap_or(fallback_did),
+        Ok(doc) => {
+            let doc: serde_json::Value = doc;
+            doc.get("id")
+                .and_then(|id: &serde_json::Value| id.as_str())
+                .map(String::from)
+                .unwrap_or(fallback_did)
+        }
         Err(_) => fallback_did,
     };
 
