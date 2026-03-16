@@ -241,12 +241,34 @@ pub async fn create_did_webvh(
 
     if serverless {
         // Serverless: extract final DID document from log entry, return it + log entry.
-        // Skip publish, context DID update, and WebvhDidRecord/log storage.
+        // Skip publish but DO store the DID record and log locally.
         let final_did_document = log_entry_state
             .log_entry
             .get_did_document()
             .ok()
             .unwrap_or(did_document);
+
+        // Update context with the new DID
+        ctx.did = Some(final_did.clone());
+        ctx.updated_at = Utc::now();
+        crate::contexts::store_context(contexts_ks, &ctx)
+            .await
+            .map_err(|e| AppError::Internal(format!("{e}")))?;
+
+        // Store DID record and log
+        let did_record = WebvhDidRecord {
+            did: final_did.clone(),
+            server_id: "serverless".to_string(),
+            mnemonic: String::new(),
+            scid: scid.clone(),
+            context_id: params.context_id.clone(),
+            portable: params.portable,
+            log_entry_count: 1,
+            created_at: now,
+            updated_at: now,
+        };
+        webvh_store::store_did(webvh_ks, &did_record).await?;
+        webvh_store::store_did_log(webvh_ks, &final_did, &log_content).await?;
 
         info!(
             channel,
@@ -343,6 +365,20 @@ pub async fn get_did_webvh(
     auth.require_context(&record.context_id)?;
     info!(channel, did = %did, "webvh DID retrieved");
     Ok(record)
+}
+
+pub async fn get_did_webvh_log(
+    webvh_ks: &KeyspaceHandle,
+    auth: &AuthClaims,
+    did: &str,
+    channel: &str,
+) -> Result<Option<String>, AppError> {
+    let record = webvh_store::get_did(webvh_ks, did)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("webvh DID not found: {did}")))?;
+    auth.require_context(&record.context_id)?;
+    info!(channel, did = %did, "webvh DID log retrieved");
+    webvh_store::get_did_log(webvh_ks, did).await
 }
 
 pub async fn list_dids_webvh(

@@ -86,6 +86,10 @@ pub fn router() -> Router<AppState> {
         .route(
             "/webvh/dids/{did}",
             get(did_webvh::get_did_handler).delete(did_webvh::delete_did_handler),
+        )
+        .route(
+            "/webvh/dids/{did}/log",
+            get(did_webvh::get_did_log_handler),
         );
 
     router

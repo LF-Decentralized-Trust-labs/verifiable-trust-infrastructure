@@ -255,6 +255,14 @@ pub struct CreateDidWebvhRequest {
     pub pre_rotation_count: u32,
 }
 
+// ── WebVH DID log types ──────────────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+pub struct GetDidLogResponse {
+    pub did: String,
+    pub log: Option<String>,
+}
+
 // ── Credential types ────────────────────────────────────────────────
 
 #[derive(Debug, Serialize)]
@@ -977,6 +985,20 @@ impl VtaClient {
             did_management::GET_DID_WEBVH_RESULT,
             30,
             |c, url| c.get(format!("{url}/webvh/dids/{}", encode_path_segment(did))),
+        )
+        .await
+    }
+
+    pub async fn get_did_webvh_log(
+        &self,
+        did: &str,
+    ) -> Result<GetDidLogResponse, Box<dyn std::error::Error>> {
+        self.rpc(
+            did_management::GET_DID_WEBVH_LOG,
+            serde_json::json!({ "did": did }),
+            did_management::GET_DID_WEBVH_LOG_RESULT,
+            30,
+            |c, url| c.get(format!("{url}/webvh/dids/{}/log", encode_path_segment(did))),
         )
         .await
     }

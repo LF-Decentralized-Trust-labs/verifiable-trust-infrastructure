@@ -21,6 +21,11 @@ pub const LIST_DIDS_WEBVH: &str =
 pub const LIST_DIDS_WEBVH_RESULT: &str =
     "https://firstperson.network/protocols/did-management/1.0/list-dids-webvh-result";
 
+pub const GET_DID_WEBVH_LOG: &str =
+    "https://firstperson.network/protocols/did-management/1.0/get-did-webvh-log";
+pub const GET_DID_WEBVH_LOG_RESULT: &str =
+    "https://firstperson.network/protocols/did-management/1.0/get-did-webvh-log-result";
+
 pub const DELETE_DID_WEBVH: &str =
     "https://firstperson.network/protocols/did-management/1.0/delete-did-webvh";
 pub const DELETE_DID_WEBVH_RESULT: &str =

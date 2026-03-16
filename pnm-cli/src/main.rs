@@ -287,22 +287,19 @@ enum ContextCommands {
     },
     /// Regenerate a provision bundle for an existing context
     ///
-    /// Fetches context metadata and builds a new provision bundle.
-    /// By default generates a new admin credential; pass --credential
-    /// to reuse an existing one instead.
+    /// Builds a new provision bundle using a VTA-stored key as the admin
+    /// credential. Pass --key to specify a key ID directly, or omit it
+    /// to interactively select from existing keys or create a new one.
     Reprovision {
         /// Context ID to reprovision
         #[arg(long)]
         id: String,
-        /// Reuse this existing credential (base64url-encoded) instead of generating a new one
+        /// Key ID of an existing VTA-stored Ed25519 key to use as admin credential
         #[arg(long)]
-        credential: Option<String>,
-        /// Label for the new admin credential (ignored when --credential is provided)
+        key: Option<String>,
+        /// Label for a newly created admin key (used when no --key is provided)
         #[arg(long)]
         admin_label: Option<String>,
-        /// Include DID key secrets in the bundle
-        #[arg(long)]
-        include_did: bool,
     },
 }
 
@@ -629,14 +626,11 @@ async fn main() {
             }
             ContextCommands::Reprovision {
                 id,
-                credential,
+                key,
                 admin_label,
-                include_did,
             } => {
-                contexts::cmd_context_reprovision(
-                    &client, &id, credential, admin_label, include_did,
-                )
-                .await
+                contexts::cmd_context_reprovision(&client, &id, key, admin_label)
+                    .await
             }
         },
         Commands::Acl { command } => match command {
