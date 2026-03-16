@@ -285,6 +285,25 @@ enum ContextCommands {
         #[arg(long, default_value = "0")]
         pre_rotation: u32,
     },
+    /// Regenerate a provision bundle for an existing context
+    ///
+    /// Fetches context metadata and builds a new provision bundle.
+    /// By default generates a new admin credential; pass --credential
+    /// to reuse an existing one instead.
+    Reprovision {
+        /// Context ID to reprovision
+        #[arg(long)]
+        id: String,
+        /// Reuse this existing credential (base64url-encoded) instead of generating a new one
+        #[arg(long)]
+        credential: Option<String>,
+        /// Label for the new admin credential (ignored when --credential is provided)
+        #[arg(long)]
+        admin_label: Option<String>,
+        /// Include DID key secrets in the bundle
+        #[arg(long)]
+        include_did: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -607,6 +626,17 @@ async fn main() {
                     )
                     .await
                 }
+            }
+            ContextCommands::Reprovision {
+                id,
+                credential,
+                admin_label,
+                include_did,
+            } => {
+                contexts::cmd_context_reprovision(
+                    &client, &id, credential, admin_label, include_did,
+                )
+                .await
             }
         },
         Commands::Acl { command } => match command {

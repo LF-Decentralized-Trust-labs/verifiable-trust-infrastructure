@@ -10,6 +10,7 @@ use vta_sdk::client::{
     VtaClient,
 };
 use vta_sdk::context_provision::{ContextProvisionBundle, ProvisionedDid};
+use vta_sdk::credentials::CredentialBundle;
 use vta_sdk::did_secrets::SecretEntry;
 
 use crate::render::print_widget;
@@ -361,6 +362,105 @@ pub async fn cmd_context_provision(
         if did.log_entry.is_some() {
             eprintln!("             (includes log entry for self-hosting)");
         }
+    }
+    eprintln!();
+    println!("{encoded}");
+    eprintln!();
+
+    Ok(())
+}
+
+pub async fn cmd_context_reprovision(
+    client: &VtaClient,
+    id: &str,
+    credential: Option<String>,
+    admin_label: Option<String>,
+    include_did: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // 1. Fetch the existing context
+    eprintln!("Fetching context '{id}'...");
+    let ctx = client.get_context(id).await?;
+
+    // 2. Resolve admin credential: reuse existing or generate new
+    let (admin_credential, admin_did, is_new_credential) = if let Some(ref cred) = credential {
+        let decoded = CredentialBundle::decode(cred)
+            .map_err(|e| format!("Invalid credential: {e}"))?;
+        eprintln!("Reusing existing admin credential...");
+        (cred.clone(), decoded.did, false)
+    } else {
+        eprintln!("Generating new admin credentials...");
+        let cred_req = GenerateCredentialsRequest {
+            role: "admin".to_string(),
+            label: admin_label,
+            allowed_contexts: vec![id.to_string()],
+        };
+        let cred_resp = client.generate_credentials(cred_req).await?;
+        (cred_resp.credential, cred_resp.did, true)
+    };
+
+    // 3. Fetch VTA config for URL/DID
+    let config = client.get_config().await?;
+
+    // 4. Optionally collect DID key secrets
+    let provisioned_did = if include_did {
+        if let Some(ref did_id) = ctx.did {
+            eprintln!("Fetching DID key secrets...");
+            let keys_resp = client
+                .list_keys(0, 10000, Some("active"), Some(id))
+                .await?;
+            let mut secrets = Vec::new();
+            for key in &keys_resp.keys {
+                let secret = client.get_key_secret(&key.key_id).await?;
+                secrets.push(SecretEntry {
+                    key_id: secret.key_id,
+                    key_type: secret.key_type,
+                    private_key_multibase: secret.private_key_multibase,
+                });
+            }
+            Some(ProvisionedDid {
+                id: did_id.clone(),
+                did_document: None,
+                log_entry: None,
+                secrets,
+            })
+        } else {
+            eprintln!("Warning: context has no DID assigned, skipping DID material");
+            None
+        }
+    } else {
+        None
+    };
+
+    // 5. Build the provision bundle
+    let bundle = ContextProvisionBundle {
+        context_id: id.to_string(),
+        context_name: ctx.name.clone(),
+        vta_url: config.public_url,
+        vta_did: config.community_vta_did,
+        credential: admin_credential,
+        admin_did,
+        did: provisioned_did,
+    };
+
+    let encoded = bundle.encode().map_err(|e| format!("{e}"))?;
+
+    // 6. Output
+    eprintln!();
+    eprintln!("\x1b[1;33m╔══════════════════════════════════════════════════════════════╗");
+    eprintln!("║  Context provision bundle (contains secrets — save securely) ║");
+    eprintln!("╚══════════════════════════════════════════════════════════════╝\x1b[0m");
+    eprintln!();
+    eprintln!("  Context:   {} ({})", id, ctx.name);
+    eprintln!("  Admin DID: {}", bundle.admin_did);
+    if let Some(ref did) = bundle.did {
+        eprintln!("  DID:       {}", did.id);
+    }
+    eprintln!();
+    if is_new_credential {
+        eprintln!("  Note: This is a NEW admin credential. Previous credentials");
+        eprintln!("        remain valid — revoke them separately if needed.");
+    } else {
+        eprintln!("  Note: Using existing admin credential.");
     }
     eprintln!();
     println!("{encoded}");
