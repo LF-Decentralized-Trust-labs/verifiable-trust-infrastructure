@@ -60,114 +60,76 @@ pub struct TokenResult {
     pub access_expires_at: u64,
 }
 
-// ── SessionStore ────────────────────────────────────────────────────
+// ── SessionBackend trait ────────────────────────────────────────────
 
-/// Reusable session storage for VTA authentication.
+/// Pluggable storage backend for VTA session credentials.
 ///
-/// Stores sessions in either the OS keyring or a local JSON file,
-/// depending on which feature is enabled.
-pub struct SessionStore {
-    #[cfg(feature = "keyring")]
-    service_name: String,
-    #[cfg(all(
-        feature = "config-session",
-        not(feature = "keyring"),
-        not(feature = "azure-secrets")
-    ))]
-    sessions_dir: PathBuf,
-    #[cfg(all(feature = "azure-secrets", not(feature = "keyring")))]
-    azure_vault_url: String,
-    #[cfg(all(feature = "azure-secrets", not(feature = "keyring")))]
-    azure_secret_prefix: String,
-    #[cfg(not(any(
-        feature = "keyring",
-        feature = "config-session",
-        feature = "azure-secrets"
-    )))]
-    sessions_dir: PathBuf,
+/// Implement this trait to store VTA sessions in a custom backend
+/// (e.g., the same secrets store your application already uses).
+///
+/// The `key` parameter identifies the session (e.g., "default", "setup").
+/// The `value` is a JSON-serialized session blob containing credentials
+/// and cached tokens.
+pub trait SessionBackend: Send + Sync {
+    /// Load a session by key. Returns `None` if not found.
+    fn load(&self, key: &str) -> Option<String>;
+    /// Store a session. The value is JSON-serialized session data.
+    fn save(&self, key: &str, value: &str) -> Result<(), Box<dyn std::error::Error>>;
+    /// Remove a session by key.
+    fn clear(&self, key: &str);
 }
 
-impl SessionStore {
-    /// Create a new session store.
-    ///
-    /// - `service_name`: keyring service name (used with `keyring` feature)
-    /// - `sessions_dir`: directory for `sessions.json` (used with `config-session` feature)
-    pub fn new(service_name: &str, sessions_dir: PathBuf) -> Self {
-        // Suppress unused-variable warnings based on active feature
-        let _ = &sessions_dir;
-        let _ = service_name;
+// ── Built-in backends ───────────────────────────────────────────────
 
-        Self {
-            #[cfg(feature = "keyring")]
-            service_name: service_name.to_string(),
-            #[cfg(all(
-                feature = "config-session",
-                not(feature = "keyring"),
-                not(feature = "azure-secrets")
-            ))]
-            sessions_dir,
-            #[cfg(all(feature = "azure-secrets", not(feature = "keyring")))]
-            azure_vault_url: std::env::var("AZURE_KEYVAULT_URL").unwrap_or_default(),
-            #[cfg(all(feature = "azure-secrets", not(feature = "keyring")))]
-            azure_secret_prefix: service_name.to_string(),
-            #[cfg(not(any(
-                feature = "keyring",
-                feature = "config-session",
-                feature = "azure-secrets"
-            )))]
-            sessions_dir,
+/// OS keyring backend (requires `keyring` feature).
+#[cfg(feature = "keyring")]
+struct KeyringBackend {
+    service_name: String,
+}
+
+#[cfg(feature = "keyring")]
+impl SessionBackend for KeyringBackend {
+    fn load(&self, key: &str) -> Option<String> {
+        let entry = keyring::Entry::new(&self.service_name, key).ok()?;
+        match entry.get_password() {
+            Ok(v) => Some(v),
+            Err(keyring::Error::NoEntry) => None,
+            Err(e) => {
+                eprintln!("Warning: keyring read error: {e}");
+                None
+            }
         }
     }
 
-    // ── Storage backends ────────────────────────────────────────────
-
-    #[cfg(feature = "keyring")]
-    fn load(&self, key: &str) -> Option<Session> {
-        let entry = keyring::Entry::new(&self.service_name, key).ok()?;
-        let json = match entry.get_password() {
-            Ok(v) => v,
-            Err(keyring::Error::NoEntry) => return None,
-            Err(e) => {
-                eprintln!("Warning: keyring read error: {e}");
-                return None;
-            }
-        };
-        serde_json::from_str(&json).ok()
-    }
-
-    #[cfg(feature = "keyring")]
-    fn save(&self, key: &str, session: &Session) -> Result<(), Box<dyn std::error::Error>> {
+    fn save(&self, key: &str, value: &str) -> Result<(), Box<dyn std::error::Error>> {
         let entry = keyring::Entry::new(&self.service_name, key)
             .map_err(|e| format!("keyring entry error: {e}"))?;
-        let json = serde_json::to_string(session)?;
         entry
-            .set_password(&json)
+            .set_password(value)
             .map_err(|e| format!("failed to store session in keyring: {e}"))?;
         Ok(())
     }
 
-    #[cfg(feature = "keyring")]
     fn clear(&self, key: &str) {
         if let Ok(entry) = keyring::Entry::new(&self.service_name, key) {
             let _ = entry.delete_credential();
         }
     }
+}
 
-    #[cfg(all(
-        feature = "config-session",
-        not(feature = "keyring"),
-        not(feature = "azure-secrets")
-    ))]
+/// Local JSON file backend (requires `config-session` feature, or used
+/// as plaintext fallback when no secure backend is compiled in).
+struct FileBackend {
+    sessions_dir: PathBuf,
+    warn: bool,
+}
+
+impl FileBackend {
     fn sessions_path(&self) -> PathBuf {
         self.sessions_dir.join("sessions.json")
     }
 
-    #[cfg(all(
-        feature = "config-session",
-        not(feature = "keyring"),
-        not(feature = "azure-secrets")
-    ))]
-    fn load_sessions_map(&self) -> std::collections::HashMap<String, Session> {
+    fn load_map(&self) -> std::collections::HashMap<String, serde_json::Value> {
         let path = self.sessions_path();
         let data = match std::fs::read_to_string(&path) {
             Ok(d) => d,
@@ -176,67 +138,70 @@ impl SessionStore {
         serde_json::from_str(&data).unwrap_or_default()
     }
 
-    #[cfg(all(
-        feature = "config-session",
-        not(feature = "keyring"),
-        not(feature = "azure-secrets")
-    ))]
-    fn save_sessions_map(
+    fn save_map(
         &self,
-        map: &std::collections::HashMap<String, Session>,
+        map: &std::collections::HashMap<String, serde_json::Value>,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let path = self.sessions_path();
         let json = serde_json::to_string_pretty(map)?;
         std::fs::write(&path, json)?;
         Ok(())
     }
+}
 
-    #[cfg(all(
-        feature = "config-session",
-        not(feature = "keyring"),
-        not(feature = "azure-secrets")
-    ))]
-    fn load(&self, key: &str) -> Option<Session> {
-        self.load_sessions_map().get(key).cloned()
+impl SessionBackend for FileBackend {
+    fn load(&self, key: &str) -> Option<String> {
+        if self.warn {
+            eprintln!("WARNING: No secure session store — using plaintext file storage");
+        }
+        let map = self.load_map();
+        map.get(key).map(|v| v.to_string())
     }
 
-    #[cfg(all(
-        feature = "config-session",
-        not(feature = "keyring"),
-        not(feature = "azure-secrets")
-    ))]
-    fn save(&self, key: &str, session: &Session) -> Result<(), Box<dyn std::error::Error>> {
-        let mut map = self.load_sessions_map();
-        map.insert(key.to_string(), session.clone());
-        self.save_sessions_map(&map)
+    fn save(&self, key: &str, value: &str) -> Result<(), Box<dyn std::error::Error>> {
+        if self.warn {
+            eprintln!("WARNING: No secure session store — using plaintext file storage");
+        }
+        if let Some(parent) = self.sessions_dir.parent() {
+            std::fs::create_dir_all(parent).ok();
+        }
+        std::fs::create_dir_all(&self.sessions_dir).ok();
+        let mut map = self.load_map();
+        let parsed: serde_json::Value = serde_json::from_str(value)?;
+        map.insert(key.to_string(), parsed);
+        self.save_map(&map)
     }
 
-    #[cfg(all(
-        feature = "config-session",
-        not(feature = "keyring"),
-        not(feature = "azure-secrets")
-    ))]
     fn clear(&self, key: &str) {
-        let mut map = self.load_sessions_map();
+        let mut map = self.load_map();
         map.remove(key);
-        let _ = self.save_sessions_map(&map);
+        let _ = self.save_map(&map);
     }
+}
 
-    // ── Azure Key Vault backend ─────────────────────────────────────
+/// Azure Key Vault backend (requires `azure-secrets` feature).
+#[cfg(all(feature = "azure-secrets", not(feature = "keyring")))]
+struct AzureBackend {
+    vault_url: String,
+    secret_prefix: String,
+}
 
-    #[cfg(all(feature = "azure-secrets", not(feature = "keyring")))]
-    fn azure_secret_name(&self, key: &str) -> String {
-        format!("{}-{}", self.azure_secret_prefix, key)
+#[cfg(all(feature = "azure-secrets", not(feature = "keyring")))]
+impl AzureBackend {
+    fn secret_name(&self, key: &str) -> String {
+        format!("{}-{}", self.secret_prefix, key)
     }
+}
 
-    #[cfg(all(feature = "azure-secrets", not(feature = "keyring")))]
-    fn load(&self, key: &str) -> Option<Session> {
+#[cfg(all(feature = "azure-secrets", not(feature = "keyring")))]
+impl SessionBackend for AzureBackend {
+    fn load(&self, key: &str) -> Option<String> {
         use azure_identity::DeveloperToolsCredential;
         use azure_security_keyvault_secrets::SecretClient;
 
         let credential = DeveloperToolsCredential::new(None).ok()?;
-        let client = SecretClient::new(&self.azure_vault_url, credential, None).ok()?;
-        let secret_name = self.azure_secret_name(key);
+        let client = SecretClient::new(&self.vault_url, credential, None).ok()?;
+        let secret_name = self.secret_name(key);
 
         let result = tokio::runtime::Handle::current()
             .block_on(async { client.get_secret(&secret_name, None).await });
@@ -244,27 +209,24 @@ impl SessionStore {
         match result {
             Ok(response) => {
                 let model = response.into_model().ok()?;
-                let json = model.value?;
-                serde_json::from_str(&json).ok()
+                model.value
             }
             Err(_) => None,
         }
     }
 
-    #[cfg(all(feature = "azure-secrets", not(feature = "keyring")))]
-    fn save(&self, key: &str, session: &Session) -> Result<(), Box<dyn std::error::Error>> {
+    fn save(&self, key: &str, value: &str) -> Result<(), Box<dyn std::error::Error>> {
         use azure_identity::DeveloperToolsCredential;
         use azure_security_keyvault_secrets::SecretClient;
 
         let credential = DeveloperToolsCredential::new(None)
             .map_err(|e| format!("Azure credential error: {e}"))?;
-        let client = SecretClient::new(&self.azure_vault_url, credential, None)
+        let client = SecretClient::new(&self.vault_url, credential, None)
             .map_err(|e| format!("Azure client error: {e}"))?;
-        let secret_name = self.azure_secret_name(key);
-        let json = serde_json::to_string(session)?;
+        let secret_name = self.secret_name(key);
 
         let params = azure_security_keyvault_secrets::models::SetSecretParameters {
-            value: Some(json),
+            value: Some(value.to_string()),
             ..Default::default()
         };
 
@@ -281,7 +243,6 @@ impl SessionStore {
         Ok(())
     }
 
-    #[cfg(all(feature = "azure-secrets", not(feature = "keyring")))]
     fn clear(&self, key: &str) {
         use azure_identity::DeveloperToolsCredential;
         use azure_security_keyvault_secrets::SecretClient;
@@ -289,97 +250,116 @@ impl SessionStore {
         let Ok(credential) = DeveloperToolsCredential::new(None) else {
             return;
         };
-        let Ok(client) = SecretClient::new(&self.azure_vault_url, credential, None) else {
+        let Ok(client) = SecretClient::new(&self.vault_url, credential, None) else {
             return;
         };
-        let secret_name = self.azure_secret_name(key);
+        let secret_name = self.secret_name(key);
 
         let _ = tokio::runtime::Handle::current()
             .block_on(async { client.delete_secret(&secret_name, None).await });
     }
+}
 
-    // ── Plaintext fallback backend ──────────────────────────────────
+/// Create the default session backend based on compiled features.
+///
+/// Priority: keyring → azure-secrets → config-session → plaintext fallback.
+fn default_backend(service_name: &str, sessions_dir: PathBuf) -> Box<dyn SessionBackend> {
+    let _ = service_name;
+    let _ = &sessions_dir;
 
-    #[cfg(not(any(
-        feature = "keyring",
-        feature = "config-session",
-        feature = "azure-secrets"
-    )))]
-    fn sessions_path(&self) -> PathBuf {
-        self.sessions_dir.join("sessions.json")
+    #[cfg(feature = "keyring")]
+    {
+        return Box::new(KeyringBackend {
+            service_name: service_name.to_string(),
+        });
     }
 
-    #[cfg(not(any(
-        feature = "keyring",
-        feature = "config-session",
-        feature = "azure-secrets"
-    )))]
-    fn load_sessions_map(&self) -> std::collections::HashMap<String, Session> {
-        let path = self.sessions_path();
-        let data = match std::fs::read_to_string(&path) {
-            Ok(d) => d,
-            Err(_) => return std::collections::HashMap::new(),
-        };
-        serde_json::from_str(&data).unwrap_or_default()
+    #[cfg(all(feature = "azure-secrets", not(feature = "keyring")))]
+    {
+        return Box::new(AzureBackend {
+            vault_url: std::env::var("AZURE_KEYVAULT_URL").unwrap_or_default(),
+            secret_prefix: service_name.to_string(),
+        });
     }
 
-    #[cfg(not(any(
-        feature = "keyring",
+    #[cfg(all(
         feature = "config-session",
-        feature = "azure-secrets"
-    )))]
-    fn save_sessions_map(
-        &self,
-        map: &std::collections::HashMap<String, Session>,
-    ) -> Result<(), Box<dyn std::error::Error>> {
-        let path = self.sessions_path();
-        let json = serde_json::to_string_pretty(map)?;
-        std::fs::write(&path, json)?;
-        Ok(())
+        not(feature = "keyring"),
+        not(feature = "azure-secrets")
+    ))]
+    {
+        return Box::new(FileBackend {
+            sessions_dir,
+            warn: false,
+        });
     }
 
-    #[cfg(not(any(
-        feature = "keyring",
-        feature = "config-session",
-        feature = "azure-secrets"
-    )))]
-    fn load(&self, key: &str) -> Option<Session> {
-        eprintln!("WARNING: No secure session store — using plaintext file storage");
-        self.load_sessions_map().get(key).cloned()
-    }
+    #[allow(unreachable_code)]
+    Box::new(FileBackend {
+        sessions_dir,
+        warn: true,
+    })
+}
 
-    #[cfg(not(any(
-        feature = "keyring",
-        feature = "config-session",
-        feature = "azure-secrets"
-    )))]
-    fn save(&self, key: &str, session: &Session) -> Result<(), Box<dyn std::error::Error>> {
-        eprintln!("WARNING: No secure session store — using plaintext file storage");
-        if let Some(parent) = self.sessions_dir.parent() {
-            std::fs::create_dir_all(parent).ok();
+// ── SessionStore ────────────────────────────────────────────────────
+
+/// Reusable session storage for VTA authentication.
+///
+/// Uses a pluggable [`SessionBackend`] for credential persistence.
+/// By default, the backend is selected based on compiled features
+/// (keyring → azure → config-file → plaintext). Consumers can
+/// provide their own backend via [`SessionStore::with_backend`].
+pub struct SessionStore {
+    backend: Box<dyn SessionBackend>,
+}
+
+impl SessionStore {
+    /// Create a new session store with the default backend.
+    ///
+    /// The backend is selected based on compiled features:
+    /// - `keyring` → OS keyring (uses `service_name`)
+    /// - `azure-secrets` → Azure Key Vault (uses `service_name` as prefix)
+    /// - `config-session` → local JSON file (uses `sessions_dir`)
+    /// - fallback → plaintext JSON file with warning
+    pub fn new(service_name: &str, sessions_dir: PathBuf) -> Self {
+        Self {
+            backend: default_backend(service_name, sessions_dir),
         }
-        std::fs::create_dir_all(&self.sessions_dir).ok();
-        let mut map = self.load_sessions_map();
-        map.insert(key.to_string(), session.clone());
-        self.save_sessions_map(&map)
     }
 
-    #[cfg(not(any(
-        feature = "keyring",
-        feature = "config-session",
-        feature = "azure-secrets"
-    )))]
-    fn clear(&self, key: &str) {
-        let mut map = self.load_sessions_map();
-        map.remove(key);
-        let _ = self.save_sessions_map(&map);
+    /// Create a session store with a custom backend.
+    ///
+    /// Use this to integrate with your application's existing secrets
+    /// storage (e.g., AWS Secrets Manager, GCP Secret Manager, etc.).
+    pub fn with_backend(backend: Box<dyn SessionBackend>) -> Self {
+        Self { backend }
+    }
+
+    // ── Internal session serialization ───────────────────────────────
+
+    fn load_session(&self, key: &str) -> Option<Session> {
+        let json = self.backend.load(key)?;
+        serde_json::from_str(&json).ok()
+    }
+
+    fn save_session(
+        &self,
+        key: &str,
+        session: &Session,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let json = serde_json::to_string(session)?;
+        self.backend.save(key, &json)
+    }
+
+    fn clear_session(&self, key: &str) {
+        self.backend.clear(key);
     }
 
     // ── Public API ──────────────────────────────────────────────────
 
     /// Returns true if a session exists for the given key.
     pub fn has_session(&self, key: &str) -> bool {
-        self.load(key).is_some()
+        self.load_session(key).is_some()
     }
 
     /// Import a base64-encoded credential and authenticate.
@@ -410,7 +390,7 @@ impl SessionStore {
             access_token: None,
             access_expires_at: None,
         };
-        self.save(key, &session)?;
+        self.save_session(key, &session)?;
         debug!(keyring_key = key, "session saved");
 
         // Perform authentication
@@ -424,7 +404,7 @@ impl SessionStore {
 
         session.access_token = Some(token.access_token);
         session.access_expires_at = Some(token.access_expires_at);
-        self.save(key, &session)?;
+        self.save_session(key, &session)?;
 
         Ok(LoginResult {
             client_did: bundle.did,
@@ -450,17 +430,17 @@ impl SessionStore {
             access_token: None,
             access_expires_at: None,
         };
-        self.save(key, &session)
+        self.save_session(key, &session)
     }
 
     /// Clear stored credentials and cached tokens.
     pub fn logout(&self, key: &str) {
-        self.clear(key);
+        self.clear_session(key);
     }
 
     /// Load the stored session for diagnostics (DID resolution, etc.).
     pub fn loaded_session(&self, key: &str) -> Option<SessionInfo> {
-        self.load(key).map(|s| SessionInfo {
+        self.load_session(key).map(|s| SessionInfo {
             client_did: s.client_did,
             vta_did: s.vta_did,
             private_key_multibase: s.private_key,
@@ -469,7 +449,7 @@ impl SessionStore {
 
     /// Get the status of a stored session.
     pub fn session_status(&self, key: &str) -> Option<SessionStatus> {
-        let session = self.load(key)?;
+        let session = self.load_session(key)?;
         let token_status = match (session.access_token, session.access_expires_at) {
             (Some(_), Some(exp)) => {
                 let now = now_epoch();
@@ -503,7 +483,7 @@ impl SessionStore {
     ) -> Result<String, Box<dyn std::error::Error>> {
         debug!(base_url, keyring_key = key, "ensuring authentication");
 
-        let mut session = self.load(key).ok_or(
+        let mut session = self.load_session(key).ok_or(
             "Not authenticated.\n\nTo authenticate, import a credential:\n  <cli> auth login <credential-string>",
         )?;
 
@@ -535,7 +515,7 @@ impl SessionStore {
         let token = result.access_token.clone();
         session.access_token = Some(result.access_token);
         session.access_expires_at = Some(result.access_expires_at);
-        self.save(key, &session)?;
+        self.save_session(key, &session)?;
         debug!("new token cached");
 
         Ok(token)
@@ -553,7 +533,7 @@ impl SessionStore {
         key: &str,
         url_override: Option<&str>,
     ) -> Result<crate::client::VtaClient, Box<dyn std::error::Error>> {
-        let session = self.load(key).ok_or(
+        let session = self.load_session(key).ok_or(
             "Not authenticated.\n\nTo authenticate, import a credential:\n  <cli> auth login <credential-string>",
         )?;
 
@@ -1029,5 +1009,45 @@ mod tests {
     #[test]
     fn test_url_from_did_key_returns_none() {
         assert_eq!(url_from_did("did:key:z6MkTest"), None);
+    }
+
+    #[test]
+    fn test_in_memory_backend() {
+        use std::collections::HashMap;
+        use std::sync::Mutex;
+
+        struct InMemoryBackend {
+            data: Mutex<HashMap<String, String>>,
+        }
+
+        impl SessionBackend for InMemoryBackend {
+            fn load(&self, key: &str) -> Option<String> {
+                self.data.lock().unwrap().get(key).cloned()
+            }
+            fn save(&self, key: &str, value: &str) -> Result<(), Box<dyn std::error::Error>> {
+                self.data.lock().unwrap().insert(key.to_string(), value.to_string());
+                Ok(())
+            }
+            fn clear(&self, key: &str) {
+                self.data.lock().unwrap().remove(key);
+            }
+        }
+
+        let backend = InMemoryBackend {
+            data: Mutex::new(HashMap::new()),
+        };
+        let store = SessionStore::with_backend(Box::new(backend));
+
+        assert!(!store.has_session("test"));
+
+        store.store_direct("test", "did:key:z6Mk1", "zSeed", "did:key:zVTA", "https://vta.example.com").unwrap();
+        assert!(store.has_session("test"));
+
+        let info = store.loaded_session("test").unwrap();
+        assert_eq!(info.client_did, "did:key:z6Mk1");
+        assert_eq!(info.vta_did, "did:key:zVTA");
+
+        store.logout("test");
+        assert!(!store.has_session("test"));
     }
 }

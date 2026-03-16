@@ -1,5 +1,6 @@
 #[cfg(feature = "client")]
 pub mod client;
+pub mod context_provision;
 pub mod contexts;
 pub mod credentials;
 pub mod did_key;

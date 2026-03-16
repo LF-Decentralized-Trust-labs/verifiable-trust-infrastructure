@@ -2,7 +2,7 @@ use std::sync::{Arc, OnceLock};
 
 use affinidi_did_resolver_cache_sdk::DIDCacheClient;
 use chrono::Utc;
-use didwebvh_rs::DIDWebVHState;
+use didwebvh_rs::create::{CreateDIDConfig, create_did};
 use didwebvh_rs::log_entry::LogEntryMethods;
 use didwebvh_rs::parameters::Parameters as WebVHParameters;
 use didwebvh_rs::url::WebVHURL;
@@ -41,7 +41,8 @@ use ed25519_dalek_bip32::{DerivationPath, ExtendedSigningKey};
 
 pub struct CreateDidWebvhParams {
     pub context_id: String,
-    pub server_id: String,
+    pub server_id: Option<String>,
+    pub url: Option<String>,
     pub path: Option<String>,
     pub label: Option<String>,
     pub portable: bool,
@@ -66,17 +67,26 @@ pub async fn create_did_webvh(
     auth.require_admin()?;
     auth.require_context(&params.context_id)?;
 
+    // Validate exactly one of server_id / url is provided
+    let serverless = match (&params.server_id, &params.url) {
+        (Some(_), Some(_)) => {
+            return Err(AppError::Validation(
+                "server_id and url are mutually exclusive".into(),
+            ));
+        }
+        (None, None) => {
+            return Err(AppError::Validation(
+                "either server_id or url is required".into(),
+            ));
+        }
+        (None, Some(_)) => true,
+        (Some(_), None) => false,
+    };
+
     // Resolve context
     let mut ctx = crate::contexts::get_context(contexts_ks, &params.context_id)
         .await?
         .ok_or_else(|| AppError::NotFound(format!("context not found: {}", params.context_id)))?;
-
-    // Resolve server
-    let server = webvh_store::get_server(webvh_ks, &params.server_id)
-        .await?
-        .ok_or_else(|| {
-            AppError::NotFound(format!("webvh server not found: {}", params.server_id))
-        })?;
 
     // Load seed
     let active_seed_id = get_active_seed_id(keys_ks)
@@ -99,20 +109,34 @@ pub async fn create_did_webvh(
     .await
     .map_err(|e| AppError::Internal(format!("{e}")))?;
 
-    // Resolve server transport (REST or DIDComm)
-    let transport =
-        WebvhTransport::from_server(&server, did_resolver, didcomm_bridge, config).await?;
+    // Resolve URL: serverless uses user-provided URL, server-managed requests from server
+    let (url_str, mnemonic) = if serverless {
+        let url_str = params.url.as_ref().unwrap().clone();
+        // Validate the URL
+        let parsed_url = Url::parse(&url_str)
+            .map_err(|e| AppError::Validation(format!("invalid url: {e}")))?;
+        WebVHURL::parse_url(&parsed_url)
+            .map_err(|e| AppError::Validation(format!("failed to parse WebVH URL: {e}")))?;
+        (url_str, None)
+    } else {
+        let server_id = params.server_id.as_ref().unwrap();
+        let server = webvh_store::get_server(webvh_ks, server_id)
+            .await?
+            .ok_or_else(|| {
+                AppError::NotFound(format!("webvh server not found: {server_id}"))
+            })?;
 
-    // Request URI from server
-    let uri_response = transport.request_uri(params.path.as_deref()).await?;
-    let mnemonic = uri_response.mnemonic;
+        let transport =
+            WebvhTransport::from_server(&server, did_resolver, didcomm_bridge, config).await?;
+        let uri_response = transport.request_uri(params.path.as_deref()).await?;
 
-    // Parse the did_url into a WebVHURL
-    let parsed_url = Url::parse(&uri_response.did_url)
-        .map_err(|e| AppError::Internal(format!("invalid did_url from server: {e}")))?;
-    let webvh_url = WebVHURL::parse_url(&parsed_url)
-        .map_err(|e| AppError::Internal(format!("failed to parse WebVH URL: {e}")))?;
-    let did_id = webvh_url.to_string();
+        // Validate the URL
+        let parsed_url = Url::parse(&uri_response.did_url)
+            .map_err(|e| AppError::Internal(format!("invalid did_url from server: {e}")))?;
+        WebVHURL::parse_url(&parsed_url)
+            .map_err(|e| AppError::Internal(format!("failed to parse WebVH URL: {e}")))?;
+        (uri_response.did_url, Some(uri_response.mnemonic))
+    };
 
     // Convert signing key ID to did:key format (required by didwebvh-rs)
     derived.signing_secret.id = [
@@ -131,7 +155,6 @@ pub async fn create_did_webvh(
 
     // Build DID document
     let did_document = build_did_document(
-        &did_id,
         &derived,
         config,
         params.add_mediator_service,
@@ -150,43 +173,35 @@ pub async fn create_did_webvh(
 
     // Build parameters
     let parameters = WebVHParameters {
-        update_keys: Some(Arc::new(vec![derived.signing_pub.clone()])),
+        update_keys: Some(Arc::new(vec![derived.signing_pub.clone().into()])),
         portable: Some(params.portable),
         next_key_hashes: if next_key_hashes.is_empty() {
             None
         } else {
-            Some(Arc::new(next_key_hashes))
+            Some(Arc::new(next_key_hashes.into_iter().map(Into::into).collect()))
         },
         ..Default::default()
     };
 
-    // Create the log entry
-    let mut did_state = DIDWebVHState::default();
-    did_state
-        .create_log_entry(None, &did_document, &parameters, &derived.signing_secret)
-        .map_err(|e| AppError::Internal(format!("failed to create DID log entry: {e}")))?;
+    // Create the DID
+    let create_config = CreateDIDConfig::builder()
+        .address(&url_str)
+        .authorization_key(derived.signing_secret.clone())
+        .did_document(did_document.clone())
+        .parameters(parameters)
+        .build()
+        .map_err(|e| AppError::Internal(format!("failed to build DID config: {e}")))?;
 
-    let scid = did_state.scid.clone();
-    let log_entry_state = did_state.log_entries.last().unwrap();
+    let result = create_did(create_config).await
+        .map_err(|e| AppError::Internal(format!("failed to create DID: {e}")))?;
 
-    let fallback_did = format!("did:webvh:{scid}:{}", webvh_url.domain);
-    let final_did = match log_entry_state.log_entry.get_did_document() {
-        Ok(doc) => doc
-            .get("id")
-            .and_then(|id| id.as_str())
-            .map(String::from)
-            .unwrap_or(fallback_did),
-        Err(_) => fallback_did,
-    };
-
-    // Serialize log entry for publishing
-    let log_content = serde_json::to_string(&log_entry_state.log_entry)
+    let final_did = result.did().to_string();
+    let scid = result.log_entry().get_scid()
+        .unwrap_or_default().to_string();
+    let log_content = serde_json::to_string(result.log_entry())
         .map_err(|e| AppError::Internal(format!("failed to serialize DID log: {e}")))?;
 
-    // Publish to webvh-server
-    transport.publish_did(&mnemonic, &log_content).await?;
-
-    // Save key records
+    // Save key records (common to both paths)
     keys::save_entity_key_records(
         &final_did,
         &derived,
@@ -213,49 +228,120 @@ pub async fn create_did_webvh(
         .map_err(|e| AppError::Internal(format!("{e}")))?;
     }
 
-    // Update context with the new DID
-    ctx.did = Some(final_did.clone());
-    ctx.updated_at = Utc::now();
-    crate::contexts::store_context(contexts_ks, &ctx)
-        .await
-        .map_err(|e| AppError::Internal(format!("{e}")))?;
-
-    // Store DID record and log in fjall
     let now = Utc::now();
-    let did_record = WebvhDidRecord {
-        did: final_did.clone(),
-        server_id: params.server_id.clone(),
-        mnemonic: mnemonic.clone(),
-        scid: scid.clone(),
-        context_id: params.context_id.clone(),
-        portable: params.portable,
-        log_entry_count: 1,
-        created_at: now,
-        updated_at: now,
-    };
-    webvh_store::store_did(webvh_ks, &did_record).await?;
-    webvh_store::store_did_log(webvh_ks, &final_did, &log_content).await?;
 
-    info!(
-        channel,
-        did = %final_did,
-        context = %params.context_id,
-        server = %params.server_id,
-        "did:webvh created and published"
-    );
+    if serverless {
+        // Serverless: extract final DID document from log entry, return it + log entry.
+        // Skip publish but DO store the DID record and log locally.
+        let final_did_document = result
+            .log_entry()
+            .get_did_document()
+            .ok()
+            .unwrap_or(did_document);
 
-    Ok(CreateDidWebvhResultBody {
-        did: final_did.clone(),
-        context_id: params.context_id,
-        server_id: params.server_id,
-        mnemonic,
-        scid,
-        portable: params.portable,
-        signing_key_id: format!("{final_did}#key-0"),
-        ka_key_id: format!("{final_did}#key-1"),
-        pre_rotation_key_count: pre_rotation_keys.len() as u32,
-        created_at: now,
-    })
+        // Update context with the new DID
+        ctx.did = Some(final_did.clone());
+        ctx.updated_at = Utc::now();
+        crate::contexts::store_context(contexts_ks, &ctx)
+            .await
+            .map_err(|e| AppError::Internal(format!("{e}")))?;
+
+        // Store DID record and log
+        let did_record = WebvhDidRecord {
+            did: final_did.clone(),
+            server_id: "serverless".to_string(),
+            mnemonic: String::new(),
+            scid: scid.clone(),
+            context_id: params.context_id.clone(),
+            portable: params.portable,
+            log_entry_count: 1,
+            created_at: now,
+            updated_at: now,
+        };
+        webvh_store::store_did(webvh_ks, &did_record).await?;
+        webvh_store::store_did_log(webvh_ks, &final_did, &log_content).await?;
+
+        info!(
+            channel,
+            did = %final_did,
+            context = %params.context_id,
+            "did:webvh created (serverless)"
+        );
+
+        Ok(CreateDidWebvhResultBody {
+            did: final_did.clone(),
+            context_id: params.context_id,
+            server_id: None,
+            mnemonic: None,
+            scid,
+            portable: params.portable,
+            signing_key_id: format!("{final_did}#key-0"),
+            ka_key_id: format!("{final_did}#key-1"),
+            pre_rotation_key_count: pre_rotation_keys.len() as u32,
+            created_at: now,
+            did_document: Some(final_did_document),
+            log_entry: Some(log_content),
+        })
+    } else {
+        // Server-managed: publish, update context, store records
+        let server_id = params.server_id.as_ref().unwrap();
+        let mnemonic = mnemonic.as_ref().unwrap();
+
+        let server = webvh_store::get_server(webvh_ks, server_id)
+            .await?
+            .ok_or_else(|| {
+                AppError::NotFound(format!("webvh server not found: {server_id}"))
+            })?;
+
+        let transport =
+            WebvhTransport::from_server(&server, did_resolver, didcomm_bridge, config).await?;
+        transport.publish_did(mnemonic, &log_content).await?;
+
+        // Update context with the new DID
+        ctx.did = Some(final_did.clone());
+        ctx.updated_at = Utc::now();
+        crate::contexts::store_context(contexts_ks, &ctx)
+            .await
+            .map_err(|e| AppError::Internal(format!("{e}")))?;
+
+        // Store DID record and log
+        let did_record = WebvhDidRecord {
+            did: final_did.clone(),
+            server_id: server_id.clone(),
+            mnemonic: mnemonic.clone(),
+            scid: scid.clone(),
+            context_id: params.context_id.clone(),
+            portable: params.portable,
+            log_entry_count: 1,
+            created_at: now,
+            updated_at: now,
+        };
+        webvh_store::store_did(webvh_ks, &did_record).await?;
+        webvh_store::store_did_log(webvh_ks, &final_did, &log_content).await?;
+
+        info!(
+            channel,
+            did = %final_did,
+            context = %params.context_id,
+            server = %server_id,
+            "did:webvh created and published"
+        );
+
+        Ok(CreateDidWebvhResultBody {
+            did: final_did.clone(),
+            context_id: params.context_id,
+            server_id: Some(server_id.clone()),
+            mnemonic: Some(mnemonic.clone()),
+            scid,
+            portable: params.portable,
+            signing_key_id: format!("{final_did}#key-0"),
+            ka_key_id: format!("{final_did}#key-1"),
+            pre_rotation_key_count: pre_rotation_keys.len() as u32,
+            created_at: now,
+            did_document: None,
+            log_entry: None,
+        })
+    }
 }
 
 pub async fn get_did_webvh(
@@ -270,6 +356,30 @@ pub async fn get_did_webvh(
     auth.require_context(&record.context_id)?;
     info!(channel, did = %did, "webvh DID retrieved");
     Ok(record)
+}
+
+pub async fn get_did_webvh_log(
+    webvh_ks: &KeyspaceHandle,
+    auth: &AuthClaims,
+    did: &str,
+    channel: &str,
+) -> Result<GetDidWebvhLogResult, AppError> {
+    let record = webvh_store::get_did(webvh_ks, did)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("webvh DID not found: {did}")))?;
+    auth.require_context(&record.context_id)?;
+    let log = webvh_store::get_did_log(webvh_ks, did).await?;
+    info!(channel, did = %did, "webvh DID log retrieved");
+    Ok(GetDidWebvhLogResult {
+        did: did.to_string(),
+        log,
+    })
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct GetDidWebvhLogResult {
+    pub did: String,
+    pub log: Option<String>,
 }
 
 pub async fn list_dids_webvh(
@@ -573,7 +683,6 @@ async fn validate_server_did(
 // ---------------------------------------------------------------------------
 
 pub(crate) fn build_did_document(
-    did_id: &str,
     derived: &keys::DerivedEntityKeys,
     config: &AppConfig,
     add_mediator_service: bool,
@@ -584,24 +693,24 @@ pub(crate) fn build_did_document(
             "https://www.w3.org/ns/did/v1",
             "https://www.w3.org/ns/cid/v1"
         ],
-        "id": did_id,
+        "id": "{DID}",
         "verificationMethod": [
             {
-                "id": format!("{did_id}#key-0"),
+                "id": "{DID}#key-0",
                 "type": "Multikey",
-                "controller": did_id,
+                "controller": "{DID}",
                 "publicKeyMultibase": &derived.signing_pub
             },
             {
-                "id": format!("{did_id}#key-1"),
+                "id": "{DID}#key-1",
                 "type": "Multikey",
-                "controller": did_id,
+                "controller": "{DID}",
                 "publicKeyMultibase": &derived.ka_pub
             }
         ],
-        "authentication": [format!("{did_id}#key-0")],
-        "assertionMethod": [format!("{did_id}#key-0")],
-        "keyAgreement": [format!("{did_id}#key-1")]
+        "authentication": ["{DID}#key-0"],
+        "assertionMethod": ["{DID}#key-0"],
+        "keyAgreement": ["{DID}#key-1"]
     });
 
     // Optionally add mediator DIDComm service
@@ -612,7 +721,7 @@ pub(crate) fn build_did_document(
             .entry("service")
             .or_insert_with(|| json!([]));
         services.as_array_mut().unwrap().push(json!({
-            "id": format!("{did_id}#vta-didcomm"),
+            "id": "{DID}#vta-didcomm",
             "type": "DIDCommMessaging",
             "serviceEndpoint": [{
                 "accept": ["didcomm/v2"],

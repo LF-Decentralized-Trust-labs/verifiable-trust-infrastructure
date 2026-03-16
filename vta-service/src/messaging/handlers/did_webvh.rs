@@ -23,6 +23,7 @@ pub async fn handle_create_did_webvh(
     let params = operations::did_webvh::CreateDidWebvhParams {
         context_id: body.context_id,
         server_id: body.server_id,
+        url: body.url,
         path: body.path,
         label: body.label,
         portable: body.portable.unwrap_or(true),
@@ -61,6 +62,14 @@ didcomm_handler!(handle_get_did_webvh,
     body: vta_sdk::protocols::did_management::get::GetDidWebvhBody,
     result: did_management::GET_DID_WEBVH_RESULT,
     |state, auth, body| operations::did_webvh::get_did_webvh(
+        &state.webvh_ks, &auth, &body.did, "didcomm",
+    )
+);
+
+didcomm_handler!(handle_get_did_webvh_log,
+    body: vta_sdk::protocols::did_management::get::GetDidWebvhBody,
+    result: did_management::GET_DID_WEBVH_LOG_RESULT,
+    |state, auth, body| operations::did_webvh::get_did_webvh_log(
         &state.webvh_ks, &auth, &body.did, "didcomm",
     )
 );

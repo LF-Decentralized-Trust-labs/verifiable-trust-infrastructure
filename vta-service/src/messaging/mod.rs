@@ -185,6 +185,9 @@ async fn dispatch_message(
         context_management::UPDATE_CONTEXT => {
             handlers::contexts::handle_update_context(state, &ctx, msg).await
         }
+        context_management::PREVIEW_DELETE_CONTEXT => {
+            handlers::contexts::handle_preview_delete_context(state, &ctx, msg).await
+        }
         context_management::DELETE_CONTEXT => {
             handlers::contexts::handle_delete_context(state, &ctx, msg).await
         }
@@ -215,6 +218,10 @@ async fn dispatch_message(
         #[cfg(feature = "webvh")]
         did_management::GET_DID_WEBVH => {
             handlers::did_webvh::handle_get_did_webvh(state, &ctx, msg).await
+        }
+        #[cfg(feature = "webvh")]
+        did_management::GET_DID_WEBVH_LOG => {
+            handlers::did_webvh::handle_get_did_webvh_log(state, &ctx, msg).await
         }
         #[cfg(feature = "webvh")]
         did_management::LIST_DIDS_WEBVH => {

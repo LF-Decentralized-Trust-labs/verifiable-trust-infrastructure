@@ -115,9 +115,12 @@ enum WebvhCommands {
         /// Application context ID
         #[arg(long)]
         context: String,
-        /// WebVH server ID
+        /// WebVH server ID (mutually exclusive with --did-url)
         #[arg(long)]
-        server: String,
+        server: Option<String>,
+        /// DID URL for serverless creation (mutually exclusive with --server)
+        #[arg(long)]
+        did_url: Option<String>,
         /// Optional path on the WebVH server
         #[arg(long)]
         path: Option<String>,
@@ -224,10 +227,13 @@ enum ContextCommands {
         #[arg(long)]
         description: Option<String>,
     },
-    /// Delete an application context
+    /// Delete an application context and all associated resources
     Delete {
         /// Context ID
         id: String,
+        /// Skip confirmation and delete immediately
+        #[arg(long, short)]
+        force: bool,
     },
     /// Create a context and generate credentials for its first admin
     Bootstrap {
@@ -241,6 +247,57 @@ enum ContextCommands {
         #[arg(long)]
         description: Option<String>,
         /// Admin label
+        #[arg(long)]
+        admin_label: Option<String>,
+    },
+    /// Provision a new application context with a portable config bundle
+    ///
+    /// Creates a context, generates admin credentials, and optionally creates a
+    /// WebVH DID. Outputs a single base64-encoded bundle that contains
+    /// everything an application needs to connect, authenticate, and
+    /// self-administer its context.
+    Provision {
+        /// Context slug (lowercase alphanumeric + hyphens)
+        #[arg(long)]
+        id: String,
+        /// Human-readable name
+        #[arg(long)]
+        name: String,
+        /// Optional description
+        #[arg(long)]
+        description: Option<String>,
+        /// Admin label
+        #[arg(long)]
+        admin_label: Option<String>,
+        /// Create a DID using this WebVH server (mutually exclusive with --did-url)
+        #[arg(long)]
+        server: Option<String>,
+        /// Create a DID at this URL for self-hosting (mutually exclusive with --server)
+        #[arg(long)]
+        did_url: Option<String>,
+        /// Make the DID portable (default: true)
+        #[arg(long, default_value = "true")]
+        portable: bool,
+        /// Add a mediator service endpoint to the DID
+        #[arg(long)]
+        mediator_service: bool,
+        /// Number of pre-rotation keys to generate
+        #[arg(long, default_value = "0")]
+        pre_rotation: u32,
+    },
+    /// Regenerate a provision bundle for an existing context
+    ///
+    /// Builds a new provision bundle using a VTA-stored key as the admin
+    /// credential. Pass --key to specify a key ID directly, or omit it
+    /// to interactively select from existing keys or create a new one.
+    Reprovision {
+        /// Context ID to reprovision
+        #[arg(long)]
+        id: String,
+        /// Key ID of an existing VTA-stored Ed25519 key to use as admin credential
+        #[arg(long)]
+        key: Option<String>,
+        /// Label for a newly created admin key (used when no --key is provided)
         #[arg(long)]
         admin_label: Option<String>,
     },
@@ -521,7 +578,9 @@ async fn main() {
                 did,
                 description,
             } => contexts::cmd_context_update(&client, &id, name, did, description).await,
-            ContextCommands::Delete { id } => contexts::cmd_context_delete(&client, &id).await,
+            ContextCommands::Delete { id, force } => {
+                contexts::cmd_context_delete(&client, &id, force).await
+            }
             ContextCommands::Bootstrap {
                 id,
                 name,
@@ -529,6 +588,49 @@ async fn main() {
                 admin_label,
             } => {
                 contexts::cmd_context_bootstrap(&client, &id, &name, description, admin_label).await
+            }
+            ContextCommands::Provision {
+                id,
+                name,
+                description,
+                admin_label,
+                server,
+                did_url,
+                portable,
+                mediator_service,
+                pre_rotation,
+            } => {
+                if server.is_some() && did_url.is_some() {
+                    Err("--server and --did-url are mutually exclusive".into())
+                } else {
+                    let did_opts = match (&server, &did_url) {
+                        (None, None) => None,
+                        _ => Some(contexts::ProvisionDidOptions {
+                            server_id: server,
+                            did_url,
+                            portable,
+                            add_mediator_service: mediator_service,
+                            pre_rotation_count: pre_rotation,
+                        }),
+                    };
+                    contexts::cmd_context_provision(
+                        &client,
+                        &id,
+                        &name,
+                        description,
+                        admin_label,
+                        did_opts,
+                    )
+                    .await
+                }
+            }
+            ContextCommands::Reprovision {
+                id,
+                key,
+                admin_label,
+            } => {
+                contexts::cmd_context_reprovision(&client, &id, key, admin_label)
+                    .await
             }
         },
         Commands::Acl { command } => match command {
@@ -569,31 +671,41 @@ async fn main() {
             WebvhCommands::CreateDid {
                 context,
                 server,
+                did_url,
                 path,
                 label,
                 portable,
                 mediator_service,
                 services,
                 pre_rotation,
-            } => match services
-                .map(|s| serde_json::from_str::<Vec<serde_json::Value>>(&s))
-                .transpose()
-            {
-                Err(e) => Err(format!("invalid --services JSON: {e}").into()),
-                Ok(additional_services) => {
-                    let req = vta_sdk::client::CreateDidWebvhRequest {
-                        context_id: context,
-                        server_id: server,
-                        path,
-                        label,
-                        portable,
-                        add_mediator_service: mediator_service,
-                        additional_services,
-                        pre_rotation_count: pre_rotation,
-                    };
-                    webvh::cmd_webvh_did_create(&client, req).await
+            } => {
+                if server.is_none() && did_url.is_none() {
+                    Err("either --server or --did-url is required".into())
+                } else if server.is_some() && did_url.is_some() {
+                    Err("--server and --did-url are mutually exclusive".into())
+                } else {
+                    match services
+                        .map(|s| serde_json::from_str::<Vec<serde_json::Value>>(&s))
+                        .transpose()
+                    {
+                        Err(e) => Err(format!("invalid --services JSON: {e}").into()),
+                        Ok(additional_services) => {
+                            let req = vta_sdk::client::CreateDidWebvhRequest {
+                                context_id: context,
+                                server_id: server,
+                                url: did_url,
+                                path,
+                                label,
+                                portable,
+                                add_mediator_service: mediator_service,
+                                additional_services,
+                                pre_rotation_count: pre_rotation,
+                            };
+                            webvh::cmd_webvh_did_create(&client, req).await
+                        }
+                    }
                 }
-            },
+            }
             WebvhCommands::ListDids { context, server } => {
                 webvh::cmd_webvh_did_list(&client, context.as_deref(), server.as_deref()).await
             }

@@ -54,6 +54,10 @@ pub fn router() -> Router<AppState> {
                 .patch(contexts::update_context_handler)
                 .delete(contexts::delete_context_handler),
         )
+        .route(
+            "/contexts/{id}/delete-preview",
+            get(contexts::preview_delete_context_handler),
+        )
         // ACL routes (flattened for consistency)
         .route("/acl", get(acl::list_acl).post(acl::create_acl))
         .route(
@@ -82,6 +86,10 @@ pub fn router() -> Router<AppState> {
         .route(
             "/webvh/dids/{did}",
             get(did_webvh::get_did_handler).delete(did_webvh::delete_did_handler),
+        )
+        .route(
+            "/webvh/dids/{did}/log",
+            get(did_webvh::get_did_log_handler),
         );
 
     router

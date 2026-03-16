@@ -62,6 +62,11 @@ pub async fn list_dids(ks: &KeyspaceHandle) -> Result<Vec<WebvhDidRecord>, AppEr
     Ok(dids)
 }
 
+pub async fn get_did_log(ks: &KeyspaceHandle, did: &str) -> Result<Option<String>, AppError> {
+    let bytes = ks.get_raw(log_key(did)).await?;
+    Ok(bytes.map(|b| String::from_utf8_lossy(&b).into_owned()))
+}
+
 pub async fn store_did_log(
     ks: &KeyspaceHandle,
     did: &str,

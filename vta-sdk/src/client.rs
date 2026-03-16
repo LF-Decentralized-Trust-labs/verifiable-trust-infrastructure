@@ -240,7 +240,10 @@ pub struct UpdateWebvhServerRequest {
 #[derive(Debug, Serialize)]
 pub struct CreateDidWebvhRequest {
     pub context_id: String,
-    pub server_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub server_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -250,6 +253,14 @@ pub struct CreateDidWebvhRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub additional_services: Option<Vec<serde_json::Value>>,
     pub pre_rotation_count: u32,
+}
+
+// ── WebVH DID log types ──────────────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+pub struct GetDidLogResponse {
+    pub did: String,
+    pub log: Option<String>,
 }
 
 // ── Credential types ────────────────────────────────────────────────
@@ -818,13 +829,36 @@ impl VtaClient {
         .await
     }
 
-    pub async fn delete_context(&self, id: &str) -> Result<(), Box<dyn std::error::Error>> {
+    pub async fn preview_delete_context(
+        &self,
+        id: &str,
+    ) -> Result<
+        context_management::delete::DeleteContextPreviewResultBody,
+        Box<dyn std::error::Error>,
+    > {
+        self.rpc(
+            context_management::PREVIEW_DELETE_CONTEXT,
+            serde_json::json!({ "id": id }),
+            context_management::PREVIEW_DELETE_CONTEXT_RESULT,
+            30,
+            |c, url| c.get(format!("{url}/contexts/{}/delete-preview", encode_path_segment(id))),
+        )
+        .await
+    }
+
+    pub async fn delete_context(&self, id: &str, force: bool) -> Result<(), Box<dyn std::error::Error>> {
         self.rpc_void(
             context_management::DELETE_CONTEXT,
-            serde_json::json!({ "id": id }),
+            serde_json::json!({ "id": id, "force": force }),
             context_management::DELETE_CONTEXT_RESULT,
             30,
-            |c, url| c.delete(format!("{url}/contexts/{}", encode_path_segment(id))),
+            |c, url| {
+                let mut url = format!("{url}/contexts/{}", encode_path_segment(id));
+                if force {
+                    url.push_str("?force=true");
+                }
+                c.delete(url)
+            },
         )
         .await
     }
@@ -951,6 +985,20 @@ impl VtaClient {
             did_management::GET_DID_WEBVH_RESULT,
             30,
             |c, url| c.get(format!("{url}/webvh/dids/{}", encode_path_segment(did))),
+        )
+        .await
+    }
+
+    pub async fn get_did_webvh_log(
+        &self,
+        did: &str,
+    ) -> Result<GetDidLogResponse, Box<dyn std::error::Error>> {
+        self.rpc(
+            did_management::GET_DID_WEBVH_LOG,
+            serde_json::json!({ "did": did }),
+            did_management::GET_DID_WEBVH_LOG_RESULT,
+            30,
+            |c, url| c.get(format!("{url}/webvh/dids/{}/log", encode_path_segment(did))),
         )
         .await
     }

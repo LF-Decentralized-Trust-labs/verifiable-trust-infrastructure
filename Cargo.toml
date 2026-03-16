@@ -12,7 +12,7 @@ resolver = "3"
 
 [workspace.package]
 description = "Verifiable Trust Communities - Verifiable Trust Agent SDK and Services"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 publish = false
 authors = ["Glenn Gore <glenn@affinidi.com>"]
@@ -24,7 +24,7 @@ repository = "https://github.com/FirstPersonNetwork/vtc-vta-rs"
 [workspace.dependencies]
 
 # Affinidi Trust Development Kit
-affinidi-tdk = "0.5"
+affinidi-tdk = "0.6"
 
 # Decentralized Trust Graph Credentials
 # NOTE: When this is published, switch from git to crates.io
@@ -65,7 +65,7 @@ chrono = { version = "0.4", features = ["serde"] }
 rand = "0.10"
 
 # DID Web with Verifiable History
-didwebvh-rs = "0.1"
+didwebvh-rs = "0.3"
 
 # URL parsing
 url = "2"

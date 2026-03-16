@@ -2,7 +2,9 @@ use chrono::Utc;
 use tracing::info;
 
 use vta_sdk::protocols::context_management::{
-    create::CreateContextResultBody, delete::DeleteContextResultBody, list::ListContextsResultBody,
+    create::CreateContextResultBody,
+    delete::{DeleteContextPreviewResultBody, DeleteContextResultBody},
+    list::ListContextsResultBody,
 };
 
 use crate::auth::extractor::AuthClaims;
@@ -150,10 +152,43 @@ pub async fn update_context(
     Ok(to_result_body(&record))
 }
 
-pub async fn delete_context(
+/// Collect a preview of all resources associated with a context.
+pub async fn preview_delete_context(
     contexts_ks: &KeyspaceHandle,
+    keys_ks: &KeyspaceHandle,
+    acl_ks: &KeyspaceHandle,
+    #[cfg(feature = "webvh")] webvh_ks: &KeyspaceHandle,
     auth: &AuthClaims,
     id: &str,
+    channel: &str,
+) -> Result<DeleteContextPreviewResultBody, AppError> {
+    auth.require_super_admin()?;
+
+    get_context(contexts_ks, id)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("context not found: {id}")))?;
+
+    let preview = collect_context_resources(
+        keys_ks,
+        acl_ks,
+        #[cfg(feature = "webvh")]
+        webvh_ks,
+        id,
+    )
+    .await?;
+
+    info!(channel, id = %id, keys = preview.keys.len(), dids = preview.webvh_dids.len(), "context delete preview");
+    Ok(preview)
+}
+
+pub async fn delete_context(
+    contexts_ks: &KeyspaceHandle,
+    keys_ks: &KeyspaceHandle,
+    acl_ks: &KeyspaceHandle,
+    #[cfg(feature = "webvh")] webvh_ks: &KeyspaceHandle,
+    auth: &AuthClaims,
+    id: &str,
+    force: bool,
     channel: &str,
 ) -> Result<DeleteContextResultBody, AppError> {
     auth.require_super_admin()?;
@@ -162,11 +197,120 @@ pub async fn delete_context(
         .await?
         .ok_or_else(|| AppError::NotFound(format!("context not found: {id}")))?;
 
+    let preview = collect_context_resources(
+        keys_ks,
+        acl_ks,
+        #[cfg(feature = "webvh")]
+        webvh_ks,
+        id,
+    )
+    .await?;
+
+    let has_resources = !preview.keys.is_empty()
+        || !preview.webvh_dids.is_empty()
+        || !preview.acl_entries_removed.is_empty()
+        || !preview.acl_entries_updated.is_empty();
+
+    if has_resources && !force {
+        return Err(AppError::Validation(
+            "context has associated resources; use force=true to delete, or preview first".into(),
+        ));
+    }
+
+    // Delete keys
+    for key_id in &preview.keys {
+        keys_ks
+            .remove(crate::keys::store_key(key_id))
+            .await?;
+    }
+
+    // Delete WebVH DIDs and their logs
+    #[cfg(feature = "webvh")]
+    for did in &preview.webvh_dids {
+        crate::webvh_store::delete_did(webvh_ks, did).await?;
+        // Remove the log entry (best-effort, may not exist for serverless DIDs)
+        let _ = webvh_ks.remove(format!("log:{did}")).await;
+    }
+
+    // Remove or update ACL entries
+    for did in &preview.acl_entries_removed {
+        crate::acl::delete_acl_entry(acl_ks, did).await?;
+    }
+    for did in &preview.acl_entries_updated {
+        if let Some(mut entry) = crate::acl::get_acl_entry(acl_ks, did).await? {
+            entry.allowed_contexts.retain(|c| c != id);
+            crate::acl::store_acl_entry(acl_ks, &entry).await?;
+        }
+    }
+
+    // Delete the context record itself
     delete_context_store(contexts_ks, id).await?;
 
-    info!(channel, id = %id, "context deleted");
+    info!(
+        channel,
+        id = %id,
+        keys_removed = preview.keys.len(),
+        dids_removed = preview.webvh_dids.len(),
+        acl_removed = preview.acl_entries_removed.len(),
+        acl_updated = preview.acl_entries_updated.len(),
+        "context deleted with cascade"
+    );
     Ok(DeleteContextResultBody {
         id: id.to_string(),
         deleted: true,
     })
+}
+
+/// Scan all keyspaces and collect resources associated with a context.
+async fn collect_context_resources(
+    keys_ks: &KeyspaceHandle,
+    acl_ks: &KeyspaceHandle,
+    #[cfg(feature = "webvh")] webvh_ks: &KeyspaceHandle,
+    context_id: &str,
+) -> Result<DeleteContextPreviewResultBody, AppError> {
+    use crate::keys::KeyRecord;
+
+    let mut preview = DeleteContextPreviewResultBody {
+        id: context_id.to_string(),
+        ..Default::default()
+    };
+
+    // Keys
+    let raw_keys = keys_ks.prefix_iter_raw("key:").await?;
+    for (_key, value) in raw_keys {
+        let record: KeyRecord = serde_json::from_slice(&value)?;
+        if record.context_id.as_deref() == Some(context_id) {
+            preview.keys.push(record.key_id);
+        }
+    }
+
+    // WebVH DIDs
+    #[cfg(feature = "webvh")]
+    {
+        use vta_sdk::webvh::WebvhDidRecord;
+        let raw_dids = webvh_ks.prefix_iter_raw("did:").await?;
+        for (_key, value) in raw_dids {
+            let record: WebvhDidRecord = serde_json::from_slice(&value)?;
+            if record.context_id == context_id {
+                preview.webvh_dids.push(record.did);
+            }
+        }
+    }
+
+    // ACL entries
+    let raw_acl = acl_ks.prefix_iter_raw("acl:").await?;
+    for (_key, value) in raw_acl {
+        let entry: crate::acl::AclEntry = serde_json::from_slice(&value)?;
+        if entry.allowed_contexts.contains(&context_id.to_string()) {
+            if entry.allowed_contexts.len() == 1 {
+                // This entry only has this context — it will be deleted entirely
+                preview.acl_entries_removed.push(entry.did);
+            } else {
+                // This entry has other contexts — just remove this one from the list
+                preview.acl_entries_updated.push(entry.did);
+            }
+        }
+    }
+
+    Ok(preview)
 }

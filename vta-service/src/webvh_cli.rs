@@ -151,7 +151,8 @@ pub async fn run_create_did(
     let auth = cli_super_admin();
     let params = operations::did_webvh::CreateDidWebvhParams {
         context_id: context_id.clone(),
-        server_id,
+        server_id: Some(server_id),
+        url: None,
         path,
         label,
         portable,
@@ -179,9 +180,13 @@ pub async fn run_create_did(
 
     eprintln!("\x1b[1;32mCreated DID:\x1b[0m {}", result.did);
     eprintln!("  Context:    {}", result.context_id);
-    eprintln!("  Server:     {}", result.server_id);
+    if let Some(ref server_id) = result.server_id {
+        eprintln!("  Server:     {}", server_id);
+    }
     eprintln!("  SCID:       {}", result.scid);
-    eprintln!("  Mnemonic:   {}", result.mnemonic);
+    if let Some(ref mnemonic) = result.mnemonic {
+        eprintln!("  Mnemonic:   {}", mnemonic);
+    }
     eprintln!("  Portable:   {}", result.portable);
     eprintln!("  Signing:    {}", result.signing_key_id);
     eprintln!("  KA:         {}", result.ka_key_id);
