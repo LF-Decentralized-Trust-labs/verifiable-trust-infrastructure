@@ -175,20 +175,14 @@ pub async fn get_did_handler(
     Ok(Json(result))
 }
 
-#[derive(Debug, serde::Serialize)]
-pub struct GetDidLogResponse {
-    pub did: String,
-    pub log: Option<String>,
-}
-
 pub async fn get_did_log_handler(
     auth: AuthClaims,
     State(state): State<AppState>,
     Path(did): Path<String>,
-) -> Result<Json<GetDidLogResponse>, AppError> {
-    let log =
+) -> Result<Json<operations::did_webvh::GetDidWebvhLogResult>, AppError> {
+    let result =
         operations::did_webvh::get_did_webvh_log(&state.webvh_ks, &auth, &did, "rest").await?;
-    Ok(Json(GetDidLogResponse { did, log }))
+    Ok(Json(result))
 }
 
 pub async fn delete_did_handler(

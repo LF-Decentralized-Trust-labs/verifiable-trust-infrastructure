@@ -372,13 +372,23 @@ pub async fn get_did_webvh_log(
     auth: &AuthClaims,
     did: &str,
     channel: &str,
-) -> Result<Option<String>, AppError> {
+) -> Result<GetDidWebvhLogResult, AppError> {
     let record = webvh_store::get_did(webvh_ks, did)
         .await?
         .ok_or_else(|| AppError::NotFound(format!("webvh DID not found: {did}")))?;
     auth.require_context(&record.context_id)?;
+    let log = webvh_store::get_did_log(webvh_ks, did).await?;
     info!(channel, did = %did, "webvh DID log retrieved");
-    webvh_store::get_did_log(webvh_ks, did).await
+    Ok(GetDidWebvhLogResult {
+        did: did.to_string(),
+        log,
+    })
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct GetDidWebvhLogResult {
+    pub did: String,
+    pub log: Option<String>,
 }
 
 pub async fn list_dids_webvh(

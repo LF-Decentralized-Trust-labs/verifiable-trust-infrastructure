@@ -66,6 +66,14 @@ didcomm_handler!(handle_get_did_webvh,
     )
 );
 
+didcomm_handler!(handle_get_did_webvh_log,
+    body: vta_sdk::protocols::did_management::get::GetDidWebvhBody,
+    result: did_management::GET_DID_WEBVH_LOG_RESULT,
+    |state, auth, body| operations::did_webvh::get_did_webvh_log(
+        &state.webvh_ks, &auth, &body.did, "didcomm",
+    )
+);
+
 didcomm_handler!(handle_list_dids_webvh,
     body: vta_sdk::protocols::did_management::list::ListDidsWebvhBody,
     result: did_management::LIST_DIDS_WEBVH_RESULT,

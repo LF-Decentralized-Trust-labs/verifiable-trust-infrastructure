@@ -220,6 +220,10 @@ async fn dispatch_message(
             handlers::did_webvh::handle_get_did_webvh(state, &ctx, msg).await
         }
         #[cfg(feature = "webvh")]
+        did_management::GET_DID_WEBVH_LOG => {
+            handlers::did_webvh::handle_get_did_webvh_log(state, &ctx, msg).await
+        }
+        #[cfg(feature = "webvh")]
         did_management::LIST_DIDS_WEBVH => {
             handlers::did_webvh::handle_list_dids_webvh(state, &ctx, msg).await
         }
