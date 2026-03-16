@@ -2,7 +2,7 @@ use std::sync::{Arc, OnceLock};
 
 use affinidi_did_resolver_cache_sdk::DIDCacheClient;
 use chrono::Utc;
-use didwebvh_rs::DIDWebVHState;
+use didwebvh_rs::create::{CreateDIDConfig, create_did};
 use didwebvh_rs::log_entry::LogEntryMethods;
 use didwebvh_rs::parameters::Parameters as WebVHParameters;
 use didwebvh_rs::url::WebVHURL;
@@ -110,13 +110,14 @@ pub async fn create_did_webvh(
     .map_err(|e| AppError::Internal(format!("{e}")))?;
 
     // Resolve URL: serverless uses user-provided URL, server-managed requests from server
-    let (webvh_url, mnemonic) = if serverless {
-        let url_str = params.url.as_ref().unwrap();
-        let parsed_url = Url::parse(url_str)
+    let (url_str, mnemonic) = if serverless {
+        let url_str = params.url.as_ref().unwrap().clone();
+        // Validate the URL
+        let parsed_url = Url::parse(&url_str)
             .map_err(|e| AppError::Validation(format!("invalid url: {e}")))?;
-        let wurl = WebVHURL::parse_url(&parsed_url)
+        WebVHURL::parse_url(&parsed_url)
             .map_err(|e| AppError::Validation(format!("failed to parse WebVH URL: {e}")))?;
-        (wurl, None)
+        (url_str, None)
     } else {
         let server_id = params.server_id.as_ref().unwrap();
         let server = webvh_store::get_server(webvh_ks, server_id)
@@ -129,14 +130,13 @@ pub async fn create_did_webvh(
             WebvhTransport::from_server(&server, did_resolver, didcomm_bridge, config).await?;
         let uri_response = transport.request_uri(params.path.as_deref()).await?;
 
+        // Validate the URL
         let parsed_url = Url::parse(&uri_response.did_url)
             .map_err(|e| AppError::Internal(format!("invalid did_url from server: {e}")))?;
-        let wurl = WebVHURL::parse_url(&parsed_url)
+        WebVHURL::parse_url(&parsed_url)
             .map_err(|e| AppError::Internal(format!("failed to parse WebVH URL: {e}")))?;
-        (wurl, Some(uri_response.mnemonic))
+        (uri_response.did_url, Some(uri_response.mnemonic))
     };
-
-    let did_id = webvh_url.to_string();
 
     // Convert signing key ID to did:key format (required by didwebvh-rs)
     derived.signing_secret.id = [
@@ -155,7 +155,6 @@ pub async fn create_did_webvh(
 
     // Build DID document
     let did_document = build_did_document(
-        &did_id,
         &derived,
         config,
         params.add_mediator_service,
@@ -184,30 +183,22 @@ pub async fn create_did_webvh(
         ..Default::default()
     };
 
-    // Create the log entry
-    let mut did_state = DIDWebVHState::default();
-    did_state
-        .create_log_entry(None, &did_document, &parameters, &derived.signing_secret)
-        .await
-        .map_err(|e| AppError::Internal(format!("failed to create DID log entry: {e}")))?;
+    // Create the DID
+    let create_config = CreateDIDConfig::builder()
+        .address(&url_str)
+        .authorization_key(derived.signing_secret.clone())
+        .did_document(did_document.clone())
+        .parameters(parameters)
+        .build()
+        .map_err(|e| AppError::Internal(format!("failed to build DID config: {e}")))?;
 
-    let scid = did_state.scid().to_string();
-    let log_entry_state = did_state.log_entries().last().unwrap();
+    let result = create_did(create_config).await
+        .map_err(|e| AppError::Internal(format!("failed to create DID: {e}")))?;
 
-    let fallback_did = format!("did:webvh:{scid}:{}", webvh_url.domain);
-    let final_did = match log_entry_state.log_entry.get_did_document() {
-        Ok(doc) => {
-            let doc: serde_json::Value = doc;
-            doc.get("id")
-                .and_then(|id: &serde_json::Value| id.as_str())
-                .map(String::from)
-                .unwrap_or(fallback_did)
-        }
-        Err(_) => fallback_did,
-    };
-
-    // Serialize log entry
-    let log_content = serde_json::to_string(&log_entry_state.log_entry)
+    let final_did = result.did().to_string();
+    let scid = result.log_entry().get_scid()
+        .unwrap_or_default().to_string();
+    let log_content = serde_json::to_string(result.log_entry())
         .map_err(|e| AppError::Internal(format!("failed to serialize DID log: {e}")))?;
 
     // Save key records (common to both paths)
@@ -242,8 +233,8 @@ pub async fn create_did_webvh(
     if serverless {
         // Serverless: extract final DID document from log entry, return it + log entry.
         // Skip publish but DO store the DID record and log locally.
-        let final_did_document = log_entry_state
-            .log_entry
+        let final_did_document = result
+            .log_entry()
             .get_did_document()
             .ok()
             .unwrap_or(did_document);
@@ -692,7 +683,6 @@ async fn validate_server_did(
 // ---------------------------------------------------------------------------
 
 pub(crate) fn build_did_document(
-    did_id: &str,
     derived: &keys::DerivedEntityKeys,
     config: &AppConfig,
     add_mediator_service: bool,
@@ -703,24 +693,24 @@ pub(crate) fn build_did_document(
             "https://www.w3.org/ns/did/v1",
             "https://www.w3.org/ns/cid/v1"
         ],
-        "id": did_id,
+        "id": "{DID}",
         "verificationMethod": [
             {
-                "id": format!("{did_id}#key-0"),
+                "id": "{DID}#key-0",
                 "type": "Multikey",
-                "controller": did_id,
+                "controller": "{DID}",
                 "publicKeyMultibase": &derived.signing_pub
             },
             {
-                "id": format!("{did_id}#key-1"),
+                "id": "{DID}#key-1",
                 "type": "Multikey",
-                "controller": did_id,
+                "controller": "{DID}",
                 "publicKeyMultibase": &derived.ka_pub
             }
         ],
-        "authentication": [format!("{did_id}#key-0")],
-        "assertionMethod": [format!("{did_id}#key-0")],
-        "keyAgreement": [format!("{did_id}#key-1")]
+        "authentication": ["{DID}#key-0"],
+        "assertionMethod": ["{DID}#key-0"],
+        "keyAgreement": ["{DID}#key-1"]
     });
 
     // Optionally add mediator DIDComm service
@@ -731,7 +721,7 @@ pub(crate) fn build_did_document(
             .entry("service")
             .or_insert_with(|| json!([]));
         services.as_array_mut().unwrap().push(json!({
-            "id": format!("{did_id}#vta-didcomm"),
+            "id": "{DID}#vta-didcomm",
             "type": "DIDCommMessaging",
             "serviceEndpoint": [{
                 "accept": ["didcomm/v2"],

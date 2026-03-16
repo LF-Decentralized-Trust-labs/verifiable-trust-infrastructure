@@ -3,8 +3,7 @@ use std::sync::Arc;
 
 use chrono::Utc;
 use dialoguer::{Confirm, Input, Select};
-use didwebvh_rs::DIDWebVHState;
-use didwebvh_rs::log_entry::LogEntryMethods;
+use didwebvh_rs::create::{CreateDIDConfig, create_did};
 use didwebvh_rs::parameters::Parameters as WebVHParameters;
 use serde_json::json;
 
@@ -67,7 +66,6 @@ pub async fn run_create_did_webvh(
 
     // Prompt for URL and convert to WebVHURL
     let webvh_url = setup::prompt_webvh_url(label)?;
-    let did_id = webvh_url.to_string();
 
     // Convert the Signing Key ID to did:key format (required by didwebvh-rs)
     derived.signing_secret.id = [
@@ -79,7 +77,7 @@ pub async fn run_create_did_webvh(
     .concat();
 
     // Build base DID document using shared helper (without services)
-    let mut did_document = ops::build_did_document(&did_id, &derived, &config, false, &None);
+    let mut did_document = ops::build_did_document(&derived, &config, false, &None);
 
     // Interactive service endpoint selection
     if let Some(ref msg) = config.messaging {
@@ -97,7 +95,7 @@ pub async fn run_create_did_webvh(
             // Reference the mediator DID for routing
             did_document["service"] = json!([
                 {
-                    "id": format!("{did_id}#vta-didcomm"),
+                    "id": "{DID}#vta-didcomm",
                     "type": "DIDCommMessaging",
                     "serviceEndpoint": [{
                         "accept": ["didcomm/v2"],
@@ -146,27 +144,20 @@ pub async fn run_create_did_webvh(
         ..Default::default()
     };
 
-    // Create the log entry
-    let mut did_state = DIDWebVHState::default();
-    did_state
-        .create_log_entry(None, &did_document, &parameters, &derived.signing_secret)
-        .await
-        .map_err(|e| format!("Failed to create DID log entry: {e}"))?;
+    // Create the DID
+    let url_str = webvh_url.get_http_url(None).map_err(|e| format!("{e}"))?.to_string();
+    let create_config = CreateDIDConfig::builder()
+        .address(url_str)
+        .authorization_key(derived.signing_secret.clone())
+        .did_document(did_document)
+        .parameters(parameters)
+        .build()
+        .map_err(|e| format!("failed to build DID config: {e}"))?;
 
-    let scid = did_state.scid().to_string();
-    let log_entry_state = did_state.log_entries().last().unwrap();
+    let result = create_did(create_config).await
+        .map_err(|e| format!("failed to create DID: {e}"))?;
 
-    let fallback_did = format!("did:webvh:{scid}:{}", webvh_url.domain);
-    let final_did = match log_entry_state.log_entry.get_did_document() {
-        Ok(doc) => {
-            let doc: serde_json::Value = doc;
-            doc.get("id")
-                .and_then(|id: &serde_json::Value| id.as_str())
-                .map(String::from)
-                .unwrap_or(fallback_did)
-        }
-        Err(_) => fallback_did,
-    };
+    let final_did = result.did().to_string();
 
     eprintln!("\x1b[1;32mCreated DID:\x1b[0m {final_did}");
 
@@ -212,8 +203,8 @@ pub async fn run_create_did_webvh(
         .default(default_file)
         .interact_text()?;
 
-    log_entry_state
-        .log_entry
+    result
+        .log_entry()
         .save_to_file(&did_file)
         .map_err(|e| format!("Failed to save DID log file: {e}"))?;
 

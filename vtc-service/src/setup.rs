@@ -7,8 +7,7 @@ use affinidi_tdk::{
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD as BASE64;
 use dialoguer::{Confirm, Input, Select};
-use didwebvh_rs::DIDWebVHState;
-use didwebvh_rs::log_entry::LogEntryMethods;
+use didwebvh_rs::create::{CreateDIDConfig, create_did};
 use didwebvh_rs::parameters::Parameters as WebVHParameters;
 use rand::Rng;
 use serde_json::json;
@@ -764,7 +763,6 @@ async fn create_webvh_did(
 ) -> Result<String, Box<dyn std::error::Error>> {
     // Prompt for URL and convert to WebVHURL
     let webvh_url = prompt_webvh_url(label)?;
-    let did_id = webvh_url.to_string();
 
     // Convert the Signing Key ID to did:key format (required by didwebvh-rs)
     signing_secret.id = [
@@ -781,17 +779,17 @@ async fn create_webvh_did(
             "https://www.w3.org/ns/did/v1",
             "https://www.w3.org/ns/cid/v1"
         ],
-        "id": &did_id,
+        "id": "{DID}",
         "verificationMethod": [
             {
-                "id": format!("{did_id}#key-0"),
+                "id": "{DID}#key-0",
                 "type": "Multikey",
-                "controller": &did_id,
+                "controller": "{DID}",
                 "publicKeyMultibase": signing_pub
             }
         ],
-        "authentication": [format!("{did_id}#key-0")],
-        "assertionMethod": [format!("{did_id}#key-0")]
+        "authentication": ["{DID}#key-0"],
+        "assertionMethod": ["{DID}#key-0"]
     });
 
     // Add X25519 key agreement method
@@ -799,12 +797,12 @@ async fn create_webvh_did(
         .as_array_mut()
         .unwrap()
         .push(json!({
-            "id": format!("{did_id}#key-1"),
+            "id": "{DID}#key-1",
             "type": "Multikey",
-            "controller": &did_id,
+            "controller": "{DID}",
             "publicKeyMultibase": ka_pub
         }));
-    did_document["keyAgreement"] = json!([format!("{did_id}#key-1")]);
+    did_document["keyAgreement"] = json!(["{DID}#key-1"]);
 
     // Add service endpoints
     let mut services = Vec::new();
@@ -812,7 +810,7 @@ async fn create_webvh_did(
     if let Some(msg) = messaging {
         // VTC DID: add #didcomm referencing the mediator DID
         services.push(json!({
-            "id": format!("{did_id}#didcomm"),
+            "id": "{DID}#didcomm",
             "type": "DIDCommMessaging",
             "serviceEndpoint": [{
                 "accept": ["didcomm/v2"],
@@ -824,7 +822,7 @@ async fn create_webvh_did(
     // Add #vtc service endpoint if a public URL is configured
     if let Some(url) = vtc_public_url {
         services.push(json!({
-            "id": format!("{did_id}#vtc"),
+            "id": "{DID}#vtc",
             "type": "VerifiableTrustCommunity",
             "serviceEndpoint": url
         }));
@@ -854,27 +852,20 @@ async fn create_webvh_did(
         ..Default::default()
     };
 
-    // Create the log entry
-    let mut did_state = DIDWebVHState::default();
-    did_state
-        .create_log_entry(None, &did_document, &parameters, signing_secret)
-        .await
-        .map_err(|e| format!("Failed to create DID log entry: {e}"))?;
+    // Create the DID
+    let url_str = webvh_url.get_http_url(None).map_err(|e| format!("{e}"))?.to_string();
+    let create_config = CreateDIDConfig::builder()
+        .address(url_str)
+        .authorization_key(signing_secret.clone())
+        .did_document(did_document)
+        .parameters(parameters)
+        .build()
+        .map_err(|e| format!("failed to build DID config: {e}"))?;
 
-    let scid = did_state.scid().to_string();
-    let log_entry_state = did_state.log_entries().last().unwrap();
+    let result = create_did(create_config).await
+        .map_err(|e| format!("failed to create DID: {e}"))?;
 
-    let fallback_did = format!("did:webvh:{scid}:{}", webvh_url.domain);
-    let final_did = match log_entry_state.log_entry.get_did_document() {
-        Ok(doc) => {
-            let doc: serde_json::Value = doc;
-            doc.get("id")
-                .and_then(|id: &serde_json::Value| id.as_str())
-                .map(String::from)
-                .unwrap_or(fallback_did)
-        }
-        Err(_) => fallback_did,
-    };
+    let final_did = result.did().to_string();
 
     eprintln!("\x1b[1;32mCreated DID:\x1b[0m {final_did}");
 
@@ -885,8 +876,8 @@ async fn create_webvh_did(
         .default(default_file)
         .interact_text()?;
 
-    log_entry_state
-        .log_entry
+    result
+        .log_entry()
         .save_to_file(&did_file)
         .map_err(|e| format!("Failed to save DID log file: {e}"))?;
 
