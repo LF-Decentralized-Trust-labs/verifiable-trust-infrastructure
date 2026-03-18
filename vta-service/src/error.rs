@@ -50,6 +50,10 @@ pub enum AppError {
 
     #[error("bad gateway: {0}")]
     BadGateway(String),
+
+    #[cfg(feature = "tee")]
+    #[error("TEE attestation error: {0}")]
+    TeeAttestation(String),
 }
 
 impl IntoResponse for AppError {
@@ -70,6 +74,8 @@ impl IntoResponse for AppError {
             AppError::Forbidden(_) => StatusCode::FORBIDDEN,
             AppError::Validation(_) => StatusCode::BAD_REQUEST,
             AppError::BadGateway(_) => StatusCode::BAD_GATEWAY,
+            #[cfg(feature = "tee")]
+            AppError::TeeAttestation(_) => StatusCode::SERVICE_UNAVAILABLE,
         };
 
         if status.is_server_error() {

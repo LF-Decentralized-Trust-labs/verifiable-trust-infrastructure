@@ -8,6 +8,8 @@ mod config;
 mod gcp;
 #[cfg(feature = "keyring")]
 mod keyring;
+#[cfg(feature = "tee")]
+pub mod kms_tee;
 mod plaintext;
 
 #[cfg(feature = "aws-secrets")]
@@ -20,6 +22,8 @@ pub use config::ConfigSeedStore;
 pub use gcp::GcpSeedStore;
 #[cfg(feature = "keyring")]
 pub use keyring::KeyringSeedStore;
+#[cfg(feature = "tee")]
+pub use kms_tee::KmsTeeSeedStore;
 pub use plaintext::PlaintextSeedStore;
 
 use std::future::Future;

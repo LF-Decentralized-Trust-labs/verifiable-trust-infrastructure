@@ -44,12 +44,18 @@ pub struct AppState {
     #[cfg(feature = "didcomm")]
     pub didcomm_bridge: Arc<OnceLock<DIDCommBridge>>,
     pub jwt_keys: Option<Arc<JwtKeys>>,
+    #[cfg(feature = "tee")]
+    pub tee_state: Option<crate::tee::TeeState>,
+    #[cfg(feature = "tee")]
+    pub mnemonic_guard: Option<Arc<crate::tee::mnemonic_guard::MnemonicExportGuard>>,
 }
 
 pub async fn run(
     config: AppConfig,
     store: Store,
     seed_store: Arc<dyn SeedStore>,
+    storage_encryption_key: Option<[u8; 32]>,
+    #[cfg(feature = "tee")] mnemonic_guard: Option<Arc<crate::tee::mnemonic_guard::MnemonicExportGuard>>,
 ) -> Result<(), AppError> {
     // Determine which services will actually start (feature flag AND config)
     let rest_enabled = cfg!(feature = "rest") && config.services.rest;
@@ -63,17 +69,32 @@ pub async fn run(
         ));
     }
 
-    // Open cached keyspace handles
-    let keys_ks = store.keyspace("keys")?;
-    let sessions_ks = store.keyspace("sessions")?;
-    let acl_ks = store.keyspace("acl")?;
-    let contexts_ks = store.keyspace("contexts")?;
+    // Open cached keyspace handles.
+    // In TEE mode with a storage key, all values are AES-256-GCM encrypted.
+    let apply_encryption = |ks: KeyspaceHandle| -> KeyspaceHandle {
+        match storage_encryption_key {
+            Some(key) => {
+                info!("storage encryption enabled for keyspace");
+                ks.with_encryption(key)
+            }
+            None => ks,
+        }
+    };
+
+    let keys_ks = apply_encryption(store.keyspace("keys")?);
+    let sessions_ks = apply_encryption(store.keyspace("sessions")?);
+    let acl_ks = apply_encryption(store.keyspace("acl")?);
+    let contexts_ks = apply_encryption(store.keyspace("contexts")?);
     #[cfg(feature = "webvh")]
-    let webvh_ks = store.keyspace("webvh")?;
+    let webvh_ks = apply_encryption(store.keyspace("webvh")?);
 
     // Initialize auth infrastructure
     let (did_resolver, secrets_resolver, jwt_keys) =
         init_auth(&config, &*seed_store, &keys_ks).await;
+
+    // Initialize TEE attestation subsystem
+    #[cfg(feature = "tee")]
+    let tee_state = crate::tee::init_tee(&config.tee)?;
 
     // Bind TCP listener only if REST is enabled
     #[cfg(feature = "rest")]
@@ -121,6 +142,8 @@ pub async fn run(
             config: Arc::new(RwLock::new(config.clone())),
             did_resolver: did_resolver.clone(),
             didcomm_bridge: didcomm_bridge.clone(),
+            #[cfg(feature = "tee")]
+            tee_state: tee_state.clone(),
         })
     } else {
         None
@@ -144,6 +167,10 @@ pub async fn run(
             #[cfg(feature = "didcomm")]
             didcomm_bridge: didcomm_bridge.clone(),
             jwt_keys,
+            #[cfg(feature = "tee")]
+            tee_state,
+            #[cfg(feature = "tee")]
+            mnemonic_guard: mnemonic_guard.clone(),
         };
         let mut rest_shutdown_rx = shutdown_rx.clone();
         Some(

@@ -1,0 +1,171 @@
+#!/bin/bash
+# =============================================================================
+# VTA Nitro Enclave Entrypoint
+# =============================================================================
+#
+# This script runs INSIDE the Nitro Enclave. It:
+# 1. Brings up the loopback network interface
+# 2. Starts vsock↔TCP proxy processes for outbound connectivity
+# 3. Configures the VTA for enclave operation (REST + DIDComm)
+# 4. Starts the VTA service
+#
+# The parent EC2 instance must run parent-proxy.sh to forward traffic.
+#
+# Network Architecture (inside enclave):
+#
+#   Inbound (clients → VTA):
+#     vsock listen :5100 → socat → VTA REST :8100
+#
+#   Outbound (VTA → mediator):
+#     VTA → localhost:4443 → socat → vsock connect parent:5200
+#     Parent: vsock listen :5200 → wss://mediator.example.com
+#
+#   Outbound (VTA → DID resolver / general HTTPS):
+#     VTA → localhost:4444 → socat → vsock connect parent:5300
+#     Parent: vsock listen :5300 → https://resolver endpoint
+#
+# =============================================================================
+
+set -euo pipefail
+
+# ---------------------------------------------------------------------------
+# Port assignments (must match parent-proxy.sh)
+# ---------------------------------------------------------------------------
+PARENT_CID="${PARENT_CID:-3}"          # CID 3 = parent instance
+
+VSOCK_INBOUND_PORT="${VSOCK_INBOUND_PORT:-5100}"     # Inbound REST (vsock → VTA)
+VSOCK_MEDIATOR_PORT="${VSOCK_MEDIATOR_PORT:-5200}"    # Outbound mediator (VTA → vsock)
+VSOCK_HTTPS_PORT="${VSOCK_HTTPS_PORT:-5300}"           # Outbound HTTPS (VTA → vsock)
+
+VTA_PORT="${VTA_PORT:-8100}"
+LOCAL_MEDIATOR_PORT="${LOCAL_MEDIATOR_PORT:-4443}"     # VTA connects here for mediator
+LOCAL_HTTPS_PORT="${LOCAL_HTTPS_PORT:-4444}"            # VTA connects here for HTTPS
+
+echo "=== VTA Nitro Enclave ==="
+echo "VTA version:  $(vta --version 2>/dev/null || echo unknown)"
+echo "NSM device:   $(ls -la /dev/nsm 2>/dev/null || echo 'NOT FOUND')"
+echo "Parent CID:   ${PARENT_CID}"
+echo ""
+
+# ---------------------------------------------------------------------------
+# Verify NSM device
+# ---------------------------------------------------------------------------
+if [ ! -e /dev/nsm ]; then
+    echo "ERROR: /dev/nsm not found — this must run inside a Nitro Enclave"
+    echo "       Use 'nitro-cli build-enclave' + 'nitro-cli run-enclave'"
+    exit 1
+fi
+
+# ---------------------------------------------------------------------------
+# Bring up loopback interface (enclaves start with no network)
+# ---------------------------------------------------------------------------
+echo "Configuring loopback interface..."
+ip addr add 127.0.0.1/8 dev lo 2>/dev/null || true
+ip link set lo up 2>/dev/null || true
+
+# ---------------------------------------------------------------------------
+# Start inbound proxy: vsock → VTA REST API
+# ---------------------------------------------------------------------------
+echo "Starting inbound proxy: vsock:${VSOCK_INBOUND_PORT} → localhost:${VTA_PORT}"
+socat VSOCK-LISTEN:${VSOCK_INBOUND_PORT},reuseaddr,fork \
+    TCP-CONNECT:127.0.0.1:${VTA_PORT} &
+INBOUND_PID=$!
+
+# ---------------------------------------------------------------------------
+# Start outbound proxy: VTA mediator → parent (for DIDComm WebSocket)
+# ---------------------------------------------------------------------------
+echo "Starting mediator proxy: localhost:${LOCAL_MEDIATOR_PORT} → vsock:${PARENT_CID}:${VSOCK_MEDIATOR_PORT}"
+socat TCP-LISTEN:${LOCAL_MEDIATOR_PORT},reuseaddr,fork,bind=127.0.0.1 \
+    VSOCK-CONNECT:${PARENT_CID}:${VSOCK_MEDIATOR_PORT} &
+MEDIATOR_PID=$!
+
+# ---------------------------------------------------------------------------
+# Start outbound proxy: VTA HTTPS → parent (for DID resolution, WebVH, etc.)
+# ---------------------------------------------------------------------------
+echo "Starting HTTPS proxy: localhost:${LOCAL_HTTPS_PORT} → vsock:${PARENT_CID}:${VSOCK_HTTPS_PORT}"
+socat TCP-LISTEN:${LOCAL_HTTPS_PORT},reuseaddr,fork,bind=127.0.0.1 \
+    VSOCK-CONNECT:${PARENT_CID}:${VSOCK_HTTPS_PORT} &
+HTTPS_PID=$!
+
+echo ""
+echo "Proxy PIDs: inbound=${INBOUND_PID} mediator=${MEDIATOR_PID} https=${HTTPS_PID}"
+
+# ---------------------------------------------------------------------------
+# Cleanup on exit
+# ---------------------------------------------------------------------------
+cleanup() {
+    echo "Shutting down proxies..."
+    kill $INBOUND_PID $MEDIATOR_PID $HTTPS_PID 2>/dev/null || true
+    wait 2>/dev/null || true
+}
+trap cleanup EXIT
+
+# ---------------------------------------------------------------------------
+# Generate or use provided config
+# ---------------------------------------------------------------------------
+CONFIG_PATH="${VTA_CONFIG_PATH:-/etc/vta/config.toml}"
+
+if [ ! -f "$CONFIG_PATH" ]; then
+    # Determine mediator URL: if set externally, point through our local proxy
+    MEDIATOR_URL="${VTA_MEDIATOR_URL:-}"
+    MEDIATOR_DID="${VTA_MEDIATOR_DID:-}"
+
+    echo "Generating default enclave config at $CONFIG_PATH"
+    cat > "$CONFIG_PATH" <<TOML
+# VTA Configuration — Nitro Enclave (auto-generated)
+
+[services]
+rest = true
+didcomm = true
+
+[server]
+host = "127.0.0.1"
+port = ${VTA_PORT}
+
+[log]
+level = "info"
+format = "json"
+
+[store]
+data_dir = "/var/lib/vta/data"
+
+[tee]
+mode = "required"
+embed_in_did = true
+attestation_cache_ttl = 300
+
+[secrets]
+# Set VTA_SECRETS_SEED env var
+
+[auth]
+# Set VTA_AUTH_JWT_SIGNING_KEY env var
+TOML
+
+    # Add messaging section if mediator is configured
+    if [ -n "$MEDIATOR_URL" ] && [ -n "$MEDIATOR_DID" ]; then
+        # Rewrite the mediator URL to go through our local proxy
+        # e.g., wss://mediator.example.com → ws://127.0.0.1:4443
+        cat >> "$CONFIG_PATH" <<TOML
+
+[messaging]
+mediator_url = "ws://127.0.0.1:${LOCAL_MEDIATOR_PORT}"
+mediator_did = "${MEDIATOR_DID}"
+TOML
+        echo "DIDComm enabled: mediator=${MEDIATOR_URL} (proxied via localhost:${LOCAL_MEDIATOR_PORT})"
+    else
+        echo "WARNING: VTA_MEDIATOR_URL / VTA_MEDIATOR_DID not set — DIDComm disabled"
+        # Disable DIDComm if no mediator configured
+        sed -i 's/didcomm = true/didcomm = false/' "$CONFIG_PATH"
+    fi
+
+    echo "Config written to $CONFIG_PATH"
+fi
+
+# ---------------------------------------------------------------------------
+# Start VTA
+# ---------------------------------------------------------------------------
+echo ""
+echo "Starting VTA on 127.0.0.1:${VTA_PORT} (TEE mode: required)"
+echo ""
+
+exec vta --config "$CONFIG_PATH"

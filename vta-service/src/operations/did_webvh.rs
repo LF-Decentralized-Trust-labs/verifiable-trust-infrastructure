@@ -742,6 +742,23 @@ pub(crate) fn build_did_document(
         }
     }
 
+    // Add TeeAttestation service when TEE is active and embed_in_did is enabled
+    #[cfg(feature = "tee")]
+    if config.tee.embed_in_did
+        && let Some(ref public_url) = config.public_url
+    {
+        let services = did_document
+            .as_object_mut()
+            .unwrap()
+            .entry("service")
+            .or_insert_with(|| json!([]));
+        services.as_array_mut().unwrap().push(json!({
+            "id": "{DID}#tee-attestation",
+            "type": "TeeAttestation",
+            "serviceEndpoint": format!("{}/attestation/report", public_url.trim_end_matches('/'))
+        }));
+    }
+
     did_document
 }
 

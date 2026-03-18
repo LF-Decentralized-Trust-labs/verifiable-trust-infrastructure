@@ -14,6 +14,15 @@ pub struct Claims {
     #[serde(default)]
     pub contexts: Vec<String>,
     pub exp: u64,
+    /// Indicates the VTA is running inside a Trusted Execution Environment.
+    /// Only present (and `true`) when the `tee` feature is active and a TEE
+    /// was detected at startup.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub tee_attested: bool,
+}
+
+fn is_false(v: &bool) -> bool {
+    !*v
 }
 
 /// Holds the JWT encoding and decoding keys derived from an Ed25519 seed.
@@ -83,6 +92,7 @@ impl JwtKeys {
         role: String,
         contexts: Vec<String>,
         expiry_secs: u64,
+        tee_attested: bool,
     ) -> Claims {
         let exp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -97,6 +107,7 @@ impl JwtKeys {
             role,
             contexts,
             exp,
+            tee_attested,
         }
     }
 }

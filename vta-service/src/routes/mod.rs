@@ -1,4 +1,6 @@
 mod acl;
+#[cfg(feature = "tee")]
+mod attestation;
 mod auth;
 mod config;
 mod contexts;
@@ -65,6 +67,23 @@ pub fn router() -> Router<AppState> {
             get(acl::get_acl)
                 .patch(acl::update_acl)
                 .delete(acl::delete_acl),
+        );
+
+    // TEE attestation routes (feature-gated)
+    #[cfg(feature = "tee")]
+    let router = router
+        .route(
+            "/attestation/status",
+            get(attestation::status),
+        )
+        .route(
+            "/attestation/report",
+            get(attestation::cached_report).post(attestation::generate_report),
+        )
+        // Mnemonic export (super admin only, time-limited)
+        .route(
+            "/attestation/mnemonic",
+            get(attestation::mnemonic_status).post(attestation::mnemonic_export),
         );
 
     // WebVH routes (feature-gated)

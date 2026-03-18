@@ -60,7 +60,10 @@ pub async fn challenge(
 
     Ok(Json(ChallengeResponse {
         session_id,
-        data: ChallengeData { challenge },
+        data: ChallengeData {
+            challenge,
+            tee_attestation: None,
+        },
     }))
 }
 

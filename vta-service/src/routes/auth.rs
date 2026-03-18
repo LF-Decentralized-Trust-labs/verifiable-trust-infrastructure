@@ -54,11 +54,41 @@ pub async fn challenge(
     let sessions = state.sessions_ks.clone();
     store_session(&sessions, &session).await?;
 
+    // Optionally bind a TEE attestation report to the challenge nonce.
+    // This proves the challenge was generated inside a trusted execution environment.
+    #[cfg(feature = "tee")]
+    let tee_attestation = if let Some(ref tee_state) = state.tee_state {
+        let config = state.config.read().await;
+        let vta_did = config.vta_did.clone();
+        drop(config);
+
+        let user_data = vta_did.as_deref().unwrap_or("").as_bytes();
+        let nonce_bytes = &challenge_bytes[..];
+
+        match tee_state.provider.attest(user_data, nonce_bytes) {
+            Ok(mut report) => {
+                report.vta_did = vta_did;
+                Some(serde_json::to_value(&report).unwrap_or_default())
+            }
+            Err(e) => {
+                warn!("failed to generate TEE attestation for challenge: {e}");
+                None
+            }
+        }
+    } else {
+        None
+    };
+    #[cfg(not(feature = "tee"))]
+    let tee_attestation = None;
+
     info!(did = %session.did, session_id = %session.session_id, "auth challenge issued");
 
     Ok(Json(ChallengeResponse {
         session_id,
-        data: ChallengeData { challenge },
+        data: ChallengeData {
+            challenge,
+            tee_attestation,
+        },
     }))
 }
 
@@ -157,12 +187,19 @@ pub async fn authenticate(
     let refresh_expiry = config.auth.refresh_token_expiry;
     drop(config);
 
+    // Check if VTA is running in a TEE
+    #[cfg(feature = "tee")]
+    let tee_attested = state.tee_state.is_some();
+    #[cfg(not(feature = "tee"))]
+    let tee_attested = false;
+
     let claims = JwtKeys::new_claims(
         session.did.clone(),
         session.session_id.clone(),
         role.to_string(),
         allowed_contexts,
         access_expiry,
+        tee_attested,
     );
     let access_expires_at = claims.exp;
     let access_token = jwt_keys.encode(&claims)?;
@@ -278,12 +315,18 @@ pub async fn refresh(
     let access_expiry = config.auth.access_token_expiry;
     drop(config);
 
+    #[cfg(feature = "tee")]
+    let tee_attested = state.tee_state.is_some();
+    #[cfg(not(feature = "tee"))]
+    let tee_attested = false;
+
     let claims = JwtKeys::new_claims(
         session.did.clone(),
         session.session_id.clone(),
         role.to_string(),
         allowed_contexts,
         access_expiry,
+        tee_attested,
     );
     let access_expires_at = claims.exp;
     let access_token = jwt_keys.encode(&claims)?;

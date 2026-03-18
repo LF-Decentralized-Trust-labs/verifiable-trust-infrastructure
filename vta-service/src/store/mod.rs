@@ -13,9 +13,19 @@ pub struct Store {
     db: fjall::Database,
 }
 
+/// Handle to a fjall keyspace with optional transparent encryption.
+///
+/// When an encryption key is set (via `with_encryption`), all **values**
+/// are AES-256-GCM encrypted before writing and decrypted after reading.
+/// Keys are stored in plaintext so prefix scans still work.
+///
+/// When no encryption key is set, all operations pass through unchanged.
 #[derive(Clone)]
 pub struct KeyspaceHandle {
     keyspace: fjall::Keyspace,
+    /// Optional AES-256-GCM encryption key for value-level encryption.
+    /// When `Some`, all values are encrypted/decrypted transparently.
+    encryption_key: Option<[u8; 32]>,
 }
 
 impl Store {
@@ -31,7 +41,10 @@ impl Store {
 
     pub fn keyspace(&self, name: &str) -> Result<KeyspaceHandle, AppError> {
         let keyspace = self.db.keyspace(name, KeyspaceCreateOptions::default)?;
-        Ok(KeyspaceHandle { keyspace })
+        Ok(KeyspaceHandle {
+            keyspace,
+            encryption_key: None,
+        })
     }
 
     pub async fn persist(&self) -> Result<(), AppError> {
@@ -44,6 +57,24 @@ impl Store {
 }
 
 impl KeyspaceHandle {
+    /// Return a clone of this handle with AES-256-GCM encryption enabled.
+    ///
+    /// All subsequent `insert`/`get`/`insert_raw`/`get_raw`/`prefix_iter_raw`/`swap`
+    /// operations will transparently encrypt values before writing and decrypt
+    /// after reading. Keys remain in plaintext.
+    ///
+    /// Each encrypted value has the format:
+    ///   `[12-byte random nonce][ciphertext][16-byte GCM auth tag]`
+    pub fn with_encryption(mut self, key: [u8; 32]) -> Self {
+        self.encryption_key = Some(key);
+        self
+    }
+
+    /// Returns true if this handle has encryption enabled.
+    pub fn is_encrypted(&self) -> bool {
+        self.encryption_key.is_some()
+    }
+
     pub async fn insert<V: Serialize>(
         &self,
         key: impl Into<Vec<u8>>,
@@ -51,6 +82,7 @@ impl KeyspaceHandle {
     ) -> Result<(), AppError> {
         let key = key.into();
         let bytes = serde_json::to_vec(value)?;
+        let bytes = self.maybe_encrypt(bytes)?;
         let ks = self.keyspace.clone();
         tokio::task::spawn_blocking(move || ks.insert(key, bytes))
             .await
@@ -64,9 +96,13 @@ impl KeyspaceHandle {
     ) -> Result<Option<V>, AppError> {
         let key = key.into();
         let ks = self.keyspace.clone();
+        let enc_key = self.encryption_key;
         tokio::task::spawn_blocking(move || -> Result<Option<V>, AppError> {
             match ks.get(key)? {
-                Some(bytes) => Ok(Some(serde_json::from_slice(&bytes)?)),
+                Some(bytes) => {
+                    let bytes = maybe_decrypt_bytes(enc_key.as_ref(), &bytes)?;
+                    Ok(Some(serde_json::from_slice(&bytes)?))
+                }
                 None => Ok(None),
             }
         })
@@ -89,7 +125,7 @@ impl KeyspaceHandle {
         value: impl Into<Vec<u8>>,
     ) -> Result<(), AppError> {
         let key = key.into();
-        let value = value.into();
+        let value = self.maybe_encrypt(value.into())?;
         let ks = self.keyspace.clone();
         tokio::task::spawn_blocking(move || ks.insert(key, value))
             .await
@@ -100,10 +136,16 @@ impl KeyspaceHandle {
     pub async fn get_raw(&self, key: impl Into<Vec<u8>>) -> Result<Option<Vec<u8>>, AppError> {
         let key = key.into();
         let ks = self.keyspace.clone();
-        let result = tokio::task::spawn_blocking(move || ks.get(key))
-            .await
-            .map_err(|e| AppError::Internal(format!("blocking task panicked: {e}")))??;
-        Ok(result.map(|v| v.to_vec()))
+        let enc_key = self.encryption_key;
+        let result = tokio::task::spawn_blocking(move || -> Result<Option<Vec<u8>>, AppError> {
+            match ks.get(key)? {
+                Some(bytes) => Ok(Some(maybe_decrypt_bytes(enc_key.as_ref(), &bytes)?)),
+                None => Ok(None),
+            }
+        })
+        .await
+        .map_err(|e| AppError::Internal(format!("blocking task panicked: {e}")))?;
+        result
     }
 
     /// Iterate all key-value pairs whose key starts with `prefix`.
@@ -113,11 +155,13 @@ impl KeyspaceHandle {
     ) -> Result<Vec<RawKvPair>, AppError> {
         let prefix = prefix.into();
         let ks = self.keyspace.clone();
+        let enc_key = self.encryption_key;
         tokio::task::spawn_blocking(move || -> Result<Vec<RawKvPair>, AppError> {
             let mut results = Vec::new();
             for guard in ks.prefix(&prefix) {
                 let (key, value) = guard.into_inner()?;
-                results.push((key.to_vec(), value.to_vec()));
+                let value = maybe_decrypt_bytes(enc_key.as_ref(), &value)?;
+                results.push((key.to_vec(), value));
             }
             Ok(results)
         })
@@ -144,6 +188,7 @@ impl KeyspaceHandle {
         let old_key = old_key.into();
         let new_key = new_key.into();
         let bytes = serde_json::to_vec(value)?;
+        let bytes = self.maybe_encrypt(bytes)?;
         let ks = self.keyspace.clone();
         tokio::task::spawn_blocking(move || -> Result<bool, AppError> {
             if ks.contains_key(&new_key)? {
@@ -155,6 +200,73 @@ impl KeyspaceHandle {
         })
         .await
         .map_err(|e| AppError::Internal(format!("blocking task panicked: {e}")))?
+    }
+
+    /// Encrypt bytes if encryption is enabled, otherwise return unchanged.
+    fn maybe_encrypt(&self, plaintext: Vec<u8>) -> Result<Vec<u8>, AppError> {
+        match self.encryption_key {
+            Some(ref key) => encrypt_value(key, &plaintext),
+            None => Ok(plaintext),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// AES-256-GCM encryption helpers
+// ---------------------------------------------------------------------------
+
+const NONCE_LEN: usize = 12;
+const TAG_LEN: usize = 16;
+
+/// Encrypt plaintext with AES-256-GCM.
+/// Output: `[12-byte random nonce][ciphertext + 16-byte auth tag]`
+fn encrypt_value(key: &[u8; 32], plaintext: &[u8]) -> Result<Vec<u8>, AppError> {
+    use aes_gcm::{Aes256Gcm, KeyInit, Nonce, aead::Aead};
+
+    let cipher = Aes256Gcm::new_from_slice(key)
+        .map_err(|e| AppError::Internal(format!("AES key error: {e}")))?;
+
+    let mut nonce_bytes = [0u8; NONCE_LEN];
+    rand::fill(&mut nonce_bytes);
+    let nonce = Nonce::from_slice(&nonce_bytes);
+
+    let ciphertext = cipher
+        .encrypt(nonce, plaintext)
+        .map_err(|e| AppError::Internal(format!("AES-GCM encryption failed: {e}")))?;
+
+    let mut output = Vec::with_capacity(NONCE_LEN + ciphertext.len());
+    output.extend_from_slice(&nonce_bytes);
+    output.extend_from_slice(&ciphertext);
+    Ok(output)
+}
+
+/// Decrypt AES-256-GCM encrypted value.
+/// Input: `[12-byte nonce][ciphertext + 16-byte auth tag]`
+fn decrypt_value(key: &[u8; 32], data: &[u8]) -> Result<Vec<u8>, AppError> {
+    use aes_gcm::{Aes256Gcm, KeyInit, Nonce, aead::Aead};
+
+    if data.len() < NONCE_LEN + TAG_LEN {
+        return Err(AppError::Internal(
+            "encrypted value too short (missing nonce or auth tag)".into(),
+        ));
+    }
+
+    let cipher = Aes256Gcm::new_from_slice(key)
+        .map_err(|e| AppError::Internal(format!("AES key error: {e}")))?;
+
+    let nonce = Nonce::from_slice(&data[..NONCE_LEN]);
+    let ciphertext = &data[NONCE_LEN..];
+
+    cipher
+        .decrypt(nonce, ciphertext)
+        .map_err(|e| AppError::Internal(format!("AES-GCM decryption failed (data may be corrupt or key mismatch): {e}")))
+}
+
+/// Decrypt bytes if an encryption key is provided, otherwise return a copy.
+fn maybe_decrypt_bytes(key: Option<&[u8; 32]>, data: &[u8]) -> Result<Vec<u8>, AppError> {
+    match key {
+        Some(k) => decrypt_value(k, data),
+        None => Ok(data.to_vec()),
     }
 }
 
@@ -304,5 +416,75 @@ mod tests {
             // This test documents the behavior.
             println!("Without persist: {} of 5 keys survived reopen", raw.len());
         }
+    }
+
+    #[tokio::test]
+    async fn test_encrypted_roundtrip() {
+        let (store, _dir) = temp_store();
+        let ks = store
+            .keyspace("encrypted")
+            .unwrap()
+            .with_encryption([0xAB; 32]);
+
+        // Insert a JSON value
+        let record = make_key_record("enc-1", "Encrypted key", "m/44'/0'/0'");
+        ks.insert("key:enc-1", &record).await.unwrap();
+
+        // Read it back
+        let got: KeyRecord = ks.get("key:enc-1").await.unwrap().unwrap();
+        assert_eq!(got.key_id, "enc-1");
+        assert_eq!(got.label.as_deref(), Some("Encrypted key"));
+
+        // Raw bytes roundtrip
+        ks.insert_raw("raw:test", b"hello world".to_vec())
+            .await
+            .unwrap();
+        let raw = ks.get_raw("raw:test").await.unwrap().unwrap();
+        assert_eq!(raw, b"hello world");
+
+        // Prefix scan returns decrypted values
+        let all = ks.prefix_iter_raw("key:").await.unwrap();
+        assert_eq!(all.len(), 1);
+        let _: KeyRecord = serde_json::from_slice(&all[0].1).unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_encrypted_data_is_actually_encrypted_on_disk() {
+        let (store, _dir) = temp_store();
+        let enc_key = [0x42; 32];
+
+        // Write with encryption
+        let ks_enc = store
+            .keyspace("secrets")
+            .unwrap()
+            .with_encryption(enc_key);
+        ks_enc
+            .insert_raw("test", b"plaintext secret".to_vec())
+            .await
+            .unwrap();
+
+        // Read the same keyspace WITHOUT encryption — should get raw ciphertext
+        let ks_raw = store.keyspace("secrets").unwrap();
+        let on_disk = ks_raw.get_raw("test").await.unwrap().unwrap();
+
+        // The on-disk value should NOT be the plaintext
+        assert_ne!(on_disk, b"plaintext secret");
+        // It should be nonce (12) + ciphertext + tag (16) = at least 28 + plaintext len
+        assert!(on_disk.len() >= 12 + 16 + 16); // nonce + tag + "plaintext secret"
+
+        // But reading with the correct encryption key should work
+        let decrypted = ks_enc.get_raw("test").await.unwrap().unwrap();
+        assert_eq!(decrypted, b"plaintext secret");
+    }
+
+    #[tokio::test]
+    async fn test_passthrough_mode_no_encryption() {
+        let (store, _dir) = temp_store();
+        let ks = store.keyspace("plain").unwrap();
+        assert!(!ks.is_encrypted());
+
+        ks.insert_raw("test", b"visible".to_vec()).await.unwrap();
+        let raw = ks.get_raw("test").await.unwrap().unwrap();
+        assert_eq!(raw, b"visible"); // Not encrypted
     }
 }

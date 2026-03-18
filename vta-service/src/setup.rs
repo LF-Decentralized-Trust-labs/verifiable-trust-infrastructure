@@ -553,6 +553,8 @@ pub async fn run_setup_wizard(
             messaging: None,
             auth: AuthConfig::default(),
             secrets: secrets_config.clone(),
+            #[cfg(feature = "tee")]
+            tee: Default::default(),
             config_path: config_path.clone(),
         })
         .map_err(|e| format!("{e}"))?;
@@ -649,6 +651,8 @@ pub async fn run_setup_wizard(
             ..AuthConfig::default()
         },
         secrets: secrets_config,
+        #[cfg(feature = "tee")]
+        tee: Default::default(),
         config_path: config_path.clone(),
     };
     config.save()?;
