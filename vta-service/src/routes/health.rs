@@ -12,6 +12,9 @@ pub struct HealthResponse {
     mediator_url: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     mediator_did: Option<String>,
+    #[cfg(feature = "tee")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tee_status: Option<crate::tee::types::TeeStatus>,
 }
 
 pub async fn health(State(state): State<AppState>) -> Json<HealthResponse> {
@@ -26,5 +29,7 @@ pub async fn health(State(state): State<AppState>) -> Json<HealthResponse> {
         version: env!("CARGO_PKG_VERSION"),
         mediator_url,
         mediator_did,
+        #[cfg(feature = "tee")]
+        tee_status: state.tee_state.as_ref().map(|ts| ts.status.clone()),
     })
 }

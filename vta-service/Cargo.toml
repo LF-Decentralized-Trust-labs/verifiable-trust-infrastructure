@@ -25,6 +25,12 @@ gcp-secrets = [
   "dep:bytes",
 ]
 azure-secrets = ["dep:azure_security_keyvault_secrets", "dep:azure_identity"]
+tee = [
+  "dep:libc",
+  "dep:hmac",
+  "dep:aws-sdk-kms",
+  "dep:aws-config",
+]
 
 [[bin]]
 name = "vta"
@@ -73,3 +79,7 @@ multibase = { workspace = true }
 url = { workspace = true, optional = true }
 reqwest = { workspace = true, optional = true }
 tempfile = { version = "3", optional = true }
+libc = { version = "0.2", optional = true }
+aes-gcm = "0.10"
+hmac = { version = "0.12", optional = true }
+aws-sdk-kms = { version = "1", optional = true }

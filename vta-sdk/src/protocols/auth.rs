@@ -15,8 +15,14 @@ pub struct ChallengeResponse {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ChallengeData {
     pub challenge: String,
+    /// TEE attestation evidence bound to the challenge nonce.
+    /// Present when the VTA is running inside a TEE, proving the challenge
+    /// was generated within a trusted execution environment.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tee_attestation: Option<serde_json::Value>,
 }
 
 /// Server responds from `POST /auth/`.

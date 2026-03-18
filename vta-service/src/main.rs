@@ -21,6 +21,8 @@ mod server;
 mod setup;
 mod status;
 mod store;
+#[cfg(feature = "tee")]
+mod tee;
 #[cfg(feature = "webvh")]
 mod webvh_cli;
 #[cfg(feature = "webvh")]
@@ -458,11 +460,91 @@ async fn main() {
 
             init_tracing(&config);
 
+            // In TEE mode with KMS config: bootstrap secrets from KMS
+            // (generates on first boot, decrypts on subsequent boots)
+            #[cfg(feature = "tee")]
+            let tee_bootstrap = if config.tee.mode != config::TeeMode::Disabled {
+                if let Some(ref kms_config) = config.tee.kms {
+                    Some(
+                        tee::kms_bootstrap::bootstrap_secrets(kms_config, &config.tee.storage_key_salt)
+                            .await
+                            .expect("TEE KMS bootstrap failed"),
+                    )
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+
             let store = store::Store::open(&config.store).expect("failed to open store");
+
+            // Create seed store: KMS TEE store if bootstrapped, otherwise normal backends
+            #[cfg(feature = "tee")]
+            let seed_store: Arc<dyn keys::seed_store::SeedStore> = if let Some(ref bootstrap) = tee_bootstrap {
+                let kms_config = config.tee.kms.as_ref().unwrap();
+                Arc::new(keys::seed_store::KmsTeeSeedStore::new(
+                    bootstrap.seed.clone(),
+                    kms_config.key_arn.clone(),
+                    kms_config.region.clone(),
+                    kms_config.seed_ciphertext_path.clone(),
+                ))
+            } else {
+                Arc::from(create_seed_store(&config).expect("failed to create seed store"))
+            };
+            #[cfg(not(feature = "tee"))]
             let seed_store: Arc<dyn keys::seed_store::SeedStore> =
                 Arc::from(create_seed_store(&config).expect("failed to create seed store"));
 
-            if let Err(e) = server::run(config, store, seed_store).await {
+            // In TEE mode with KMS: override JWT signing key and extract storage key
+            #[cfg(feature = "tee")]
+            let (config, storage_encryption_key) = if let Some(ref bootstrap) = tee_bootstrap {
+                let mut config = config;
+                let jwt_b64 = BASE64.encode(&bootstrap.jwt_signing_key);
+                config.auth.jwt_signing_key = Some(jwt_b64);
+                (config, Some(bootstrap.storage_key))
+            } else {
+                (config, None)
+            };
+            #[cfg(not(feature = "tee"))]
+            let storage_encryption_key: Option<[u8; 32]> = None;
+
+            // Create mnemonic export guard (TEE mode, first boot only)
+            #[cfg(feature = "tee")]
+            let mnemonic_guard = {
+                let export_window: Option<u64> = std::env::var("VTA_MNEMONIC_EXPORT_WINDOW")
+                    .ok()
+                    .and_then(|v| v.parse().ok());
+
+                if let Some(ref bootstrap) = tee_bootstrap {
+                    if let (Some(entropy), Some(window_secs)) = (bootstrap.entropy, export_window) {
+                        Some(Arc::new(
+                            tee::mnemonic_guard::MnemonicExportGuard::new(entropy, window_secs),
+                        ))
+                    } else if bootstrap.entropy.is_some() && export_window.is_none() {
+                        tracing::info!(
+                            "first boot but VTA_MNEMONIC_EXPORT_WINDOW not set — mnemonic export disabled"
+                        );
+                        Some(Arc::new(tee::mnemonic_guard::MnemonicExportGuard::empty()))
+                    } else {
+                        // Subsequent boot — no entropy to export
+                        Some(Arc::new(tee::mnemonic_guard::MnemonicExportGuard::empty()))
+                    }
+                } else {
+                    None
+                }
+            };
+
+            if let Err(e) = server::run(
+                config,
+                store,
+                seed_store,
+                storage_encryption_key,
+                #[cfg(feature = "tee")]
+                mnemonic_guard,
+            )
+            .await
+            {
                 tracing::error!("server error: {e}");
                 std::process::exit(1);
             }

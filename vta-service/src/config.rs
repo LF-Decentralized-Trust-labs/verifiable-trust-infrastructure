@@ -21,6 +21,9 @@ pub struct AppConfig {
     pub auth: AuthConfig,
     #[serde(default)]
     pub secrets: SecretsConfig,
+    #[cfg(feature = "tee")]
+    #[serde(default)]
+    pub tee: TeeConfig,
     #[serde(skip)]
     pub config_path: PathBuf,
 }
@@ -207,6 +210,89 @@ impl Default for StoreConfig {
     }
 }
 
+/// TEE attestation configuration.
+#[cfg(feature = "tee")]
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct TeeConfig {
+    /// Enforcement mode: required, optional, disabled, simulated.
+    #[serde(default)]
+    pub mode: TeeMode,
+    /// Whether to embed attestation info as a DID document service.
+    #[serde(default)]
+    pub embed_in_did: bool,
+    /// Attestation report cache TTL in seconds (generation is expensive).
+    #[serde(default = "default_attestation_cache_ttl")]
+    pub attestation_cache_ttl: u64,
+    /// KMS-based secret bootstrap configuration (for Nitro Enclaves).
+    #[serde(default)]
+    pub kms: Option<TeeKmsConfig>,
+    /// Storage encryption salt (change to invalidate all stored data).
+    #[serde(default = "default_storage_key_salt")]
+    pub storage_key_salt: String,
+}
+
+/// KMS configuration for TEE secret bootstrap.
+#[cfg(feature = "tee")]
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct TeeKmsConfig {
+    /// AWS region for KMS calls.
+    pub region: String,
+    /// KMS key ARN used to encrypt/decrypt VTA secrets.
+    pub key_arn: String,
+    /// Path to the encrypted seed ciphertext file.
+    /// Written on first boot, read on subsequent boots.
+    #[serde(default = "default_seed_ciphertext_path")]
+    pub seed_ciphertext_path: String,
+    /// Path to the encrypted JWT key ciphertext file.
+    #[serde(default = "default_jwt_ciphertext_path")]
+    pub jwt_ciphertext_path: String,
+}
+
+#[cfg(feature = "tee")]
+fn default_seed_ciphertext_path() -> String {
+    "/mnt/vta-data/secrets/seed.enc".to_string()
+}
+
+#[cfg(feature = "tee")]
+fn default_jwt_ciphertext_path() -> String {
+    "/mnt/vta-data/secrets/jwt.enc".to_string()
+}
+
+#[cfg(feature = "tee")]
+fn default_attestation_cache_ttl() -> u64 {
+    300
+}
+
+#[cfg(feature = "tee")]
+fn default_storage_key_salt() -> String {
+    "vta-tee-storage-v1".to_string()
+}
+
+#[cfg(feature = "tee")]
+impl Default for TeeConfig {
+    fn default() -> Self {
+        Self {
+            mode: TeeMode::default(),
+            embed_in_did: false,
+            attestation_cache_ttl: default_attestation_cache_ttl(),
+            kms: None,
+            storage_key_salt: default_storage_key_salt(),
+        }
+    }
+}
+
+/// TEE enforcement mode.
+#[cfg(feature = "tee")]
+#[derive(Debug, Default, Clone, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum TeeMode {
+    Required,
+    Optional,
+    #[default]
+    Disabled,
+    Simulated,
+}
+
 impl AppConfig {
     pub fn load(config_path: Option<PathBuf>) -> Result<Self, AppError> {
         let path = config_path
@@ -336,6 +422,34 @@ impl AppConfig {
         }
         if let Ok(key) = std::env::var("VTA_AUTH_JWT_SIGNING_KEY") {
             config.auth.jwt_signing_key = Some(key);
+        }
+
+        // TEE env var overrides
+        #[cfg(feature = "tee")]
+        {
+            if let Ok(mode) = std::env::var("VTA_TEE_MODE") {
+                config.tee.mode = match mode.to_lowercase().as_str() {
+                    "required" => TeeMode::Required,
+                    "optional" => TeeMode::Optional,
+                    "disabled" => TeeMode::Disabled,
+                    "simulated" => TeeMode::Simulated,
+                    other => {
+                        return Err(AppError::Config(format!(
+                            "invalid VTA_TEE_MODE '{other}', expected 'required', 'optional', 'disabled', or 'simulated'"
+                        )));
+                    }
+                };
+            }
+            if let Ok(val) = std::env::var("VTA_TEE_EMBED_IN_DID") {
+                config.tee.embed_in_did = val.parse().map_err(|e| {
+                    AppError::Config(format!("invalid VTA_TEE_EMBED_IN_DID: {e}"))
+                })?;
+            }
+            if let Ok(val) = std::env::var("VTA_TEE_ATTESTATION_CACHE_TTL") {
+                config.tee.attestation_cache_ttl = val.parse().map_err(|e| {
+                    AppError::Config(format!("invalid VTA_TEE_ATTESTATION_CACHE_TTL: {e}"))
+                })?;
+            }
         }
 
         Ok(config)

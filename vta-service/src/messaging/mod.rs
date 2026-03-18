@@ -12,6 +12,8 @@ use affinidi_tdk::secrets_resolver::ThreadedSecretsResolver;
 use tokio::sync::{RwLock, broadcast, watch};
 use tracing::{debug, info, warn};
 
+#[cfg(feature = "tee")]
+use vta_sdk::protocols::attestation_management;
 #[cfg(feature = "webvh")]
 use vta_sdk::protocols::did_management;
 use vta_sdk::protocols::{
@@ -37,6 +39,8 @@ pub struct DidcommState {
     pub config: Arc<RwLock<AppConfig>>,
     pub did_resolver: Option<DIDCacheClient>,
     pub didcomm_bridge: Arc<OnceLock<DIDCommBridge>>,
+    #[cfg(feature = "tee")]
+    pub tee_state: Option<crate::tee::TeeState>,
 }
 
 /// Initialize the DIDComm connection to the mediator.
@@ -246,6 +250,16 @@ async fn dispatch_message(
         #[cfg(feature = "webvh")]
         did_management::REMOVE_WEBVH_SERVER => {
             handlers::did_webvh::handle_remove_webvh_server(state, &ctx, msg).await
+        }
+
+        // TEE attestation (unauthenticated — trust is established via attestation)
+        #[cfg(feature = "tee")]
+        attestation_management::GET_TEE_STATUS => {
+            handlers::attestation::handle_tee_status(state, &ctx, msg).await
+        }
+        #[cfg(feature = "tee")]
+        attestation_management::REQUEST_ATTESTATION => {
+            handlers::attestation::handle_request_attestation(state, &ctx, msg).await
         }
 
         // Problem reports (standard DIDComm type)
