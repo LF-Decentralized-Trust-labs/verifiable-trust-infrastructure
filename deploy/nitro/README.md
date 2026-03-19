@@ -507,6 +507,24 @@ The VTA's `affinidi-did-resolver-cache-sdk` connects through the vsock
 proxy to reach the resolver. Inside the enclave, `HTTPS_PROXY` is set
 automatically by the entrypoint.
 
+### DID Resolution Security
+
+The DID resolver runs on the parent EC2 instance (outside the TEE). An
+attacker with parent access could potentially return fake DID documents.
+The actual risk depends on the DID method:
+
+| DID Method | Safe through parent resolver? | Why |
+|---|---|---|
+| `did:key` | **Yes** | No resolution needed — public key is embedded in the DID |
+| `did:webvh` | **Yes** | Cryptographic audit trail — the resolver validates the signed log chain. Faking a document requires forging the entire history signed by the original keys. |
+| `did:web` | **No** | No signatures on the document — relies solely on HTTPS transport trust. An attacker controlling the resolver can return fake documents. |
+
+**For production TEE deployments:** use `did:key` and `did:webvh` exclusively.
+Avoid `did:web` for any security-critical identity (admin DIDs, ACL entries,
+DIDComm peers). If you must resolve `did:web` DIDs, route them through the
+HTTPS CONNECT proxy (which terminates TLS inside the enclave) rather than
+through the parent-side resolver.
+
 > **Fallback:** The shell script `parent-proxy.sh` is still available if you
 > prefer not to build the Rust proxy. It requires `socat` and `vsock-proxy`.
 
