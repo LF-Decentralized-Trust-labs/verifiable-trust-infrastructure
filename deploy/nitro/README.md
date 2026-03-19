@@ -418,31 +418,10 @@ nitro-cli build-enclave \
 This is by design — the PCR0 pin ensures nobody can tamper with the config
 after build.
 
-### After first successful boot: disable allow_first_boot
-
-Once the VTA has generated its secrets on first boot, set `allow_first_boot = false`
-to prevent an attacker from deleting ciphertext files to trigger a new identity:
-
-```bash
-# Edit config
-nano deploy/nitro/config.toml
-# Change: allow_first_boot = false
-
-# Rebuild with the SAME profile as Step 2 (example: default profile)
-docker build -f Dockerfile.nitro -t vta-nitro .
-
-# Sign the EIF
-nitro-cli build-enclave --docker-uri vta-nitro --output-file vta.eif \
-    --signing-certificate ./signing/signing-cert.pem \
-    --private-key ./signing/signing-key.pem
-
-# Update KMS policy with new PCR0
-./deploy/nitro/setup-kms-policy.sh \
-    --pcr0 "LATEST_PCR0" \
-    --pcr8 "$(cat ./signing/pcr8.txt)" \
-    --role "arn:aws:iam::123456789012:role/vta-enclave-role" \
-    --key-arn "arn:aws:kms:us-east-1:123456789012:key/abc-def-456"
-```
+**First boot is auto-detected.** On first deployment, the ciphertext files
+don't exist yet, so the VTA generates new secrets inside the TEE and encrypts
+them to KMS. On subsequent boots it finds the ciphertexts and decrypts them.
+No config changes or redeployment needed between first and subsequent boots.
 
 ## Step 5: Deploy and Run the Enclave
 
@@ -503,7 +482,13 @@ automatically route through the proxy. No code changes needed — `did:web`,
 `did:webvh`, and any HTTPS-based DID method will resolve correctly as long
 as the host is in the allowlist.
 
-## Step 7: First Boot — Seed Generation
+## Step 7: First Boot (auto-detected)
+
+First boot is detected automatically — no config changes needed. The VTA
+checks if ciphertext files exist on the external storage path:
+
+- **Files missing** → first boot: generate new secrets
+- **Files present** → subsequent boot: decrypt from KMS
 
 On first boot, the VTA:
 1. Detects TEE mode (required) + KMS config
@@ -514,6 +499,12 @@ On first boot, the VTA:
 6. Derives AES-256 storage key from seed
 7. Creates default context, VTA identity DID, admin ACL
 8. Starts serving
+
+> **Note on ciphertext deletion:** If an attacker deletes the ciphertext files,
+> the next boot will generate a new identity. This is a denial-of-service (the old
+> identity and data are lost), not a privilege escalation — the attacker still
+> can't authenticate to the new VTA without admin credentials. Back up the
+> ciphertext files and monitor for unexpected identity changes.
 
 **The mnemonic is never displayed.** To export it for backup:
 
