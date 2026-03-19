@@ -146,7 +146,7 @@ This is the smallest attack surface.
 
 ```bash
 docker build -f Dockerfile.nitro \
-    --build-arg FEATURES="didcomm,tee,config-seed" \
+    --build-arg FEATURES="didcomm,tee" \
     -t vta-nitro .
 ```
 
@@ -167,7 +167,7 @@ behind a load balancer, VPN, or other network-level access control.
 
 ```bash
 docker build -f Dockerfile.nitro \
-    --build-arg FEATURES="rest,didcomm,tee,config-seed" \
+    --build-arg FEATURES="rest,didcomm,tee" \
     -t vta-nitro .
 ```
 
@@ -175,7 +175,7 @@ docker build -f Dockerfile.nitro \
 
 ```bash
 docker build -f Dockerfile.nitro \
-    --build-arg FEATURES="rest,tee,config-seed" \
+    --build-arg FEATURES="rest,tee" \
     -t vta-nitro .
 ```
 
@@ -183,19 +183,22 @@ docker build -f Dockerfile.nitro \
 
 The `FEATURES` build arg maps directly to Cargo feature flags. Available features:
 
-| Feature | Purpose | Default |
-|---------|---------|---------|
-| `rest` | REST API endpoints | Yes |
-| `didcomm` | DIDComm v2 messaging | Yes |
-| `tee` | TEE attestation + KMS bootstrap + encrypted storage | No |
-| `config-seed` | Load seed from config file (for containers without keyring) | No |
-| `keyring` | OS keyring seed storage (not available in containers) | Yes |
-| `webvh` | did:webvh DID management | No |
-| `setup` | Interactive setup wizard (requires TTY) | Yes |
-| `aws-secrets` | AWS Secrets Manager seed storage | No |
+| Feature | Purpose | TEE deployment |
+|---------|---------|----------------|
+| `rest` | REST API endpoints | Optional (Profile B/C) |
+| `didcomm` | DIDComm v2 messaging | Recommended (Profile A/B) |
+| `tee` | TEE attestation + KMS bootstrap + encrypted storage | **Required** |
+| `keyring` | OS keyring seed storage | **Do not use** (no keyring in enclaves) |
+| `config-seed` | Load seed from config file | **Do not use** (KMS bootstrap provides the seed) |
+| `aws-secrets` | AWS Secrets Manager seed storage | **Do not use** (KMS bootstrap provides the seed) |
+| `webvh` | did:webvh DID management | Optional |
+| `setup` | Interactive setup wizard (requires TTY) | **Do not use** (no TTY in enclaves) |
 
-For TEE deployments, always include `tee` and `config-seed`. Never include
-`keyring` or `setup` (no keyring or TTY available in enclaves).
+**In TEE mode with KMS bootstrap**, the `tee` feature handles all secret management:
+- The seed is generated inside the TEE on first boot and encrypted to KMS
+- The JWT signing key is generated inside the TEE and encrypted to KMS
+- On subsequent boots, both are decrypted from KMS with attestation verification
+- No other seed storage backend (`config-seed`, `keyring`, `aws-secrets`) is needed
 
 ## Step 3: Build and Sign the Enclave Image
 
