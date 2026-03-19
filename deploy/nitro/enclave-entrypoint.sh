@@ -101,11 +101,13 @@ cleanup() {
 trap cleanup EXIT
 
 # ---------------------------------------------------------------------------
-# Generate or use provided config
+# Config: use the baked-in config, or generate a default if missing
 # ---------------------------------------------------------------------------
 CONFIG_PATH="${VTA_CONFIG_PATH:-/etc/vta/config.toml}"
 
-if [ ! -f "$CONFIG_PATH" ]; then
+if [ -f "$CONFIG_PATH" ]; then
+    echo "Using baked-in config at $CONFIG_PATH"
+else
     # Determine mediator URL: if set externally, point through our local proxy
     MEDIATOR_URL="${VTA_MEDIATOR_URL:-}"
     MEDIATOR_DID="${VTA_MEDIATOR_DID:-}"

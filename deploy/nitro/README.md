@@ -343,32 +343,98 @@ This creates a KMS key with three policy statements:
 | Encrypt | EC2 instance role | `kms:Encrypt` | None (for first-boot seed storage) |
 | **Attestation decrypt** | EC2 instance role | `kms:Decrypt`, `kms:GenerateDataKey` | **PCR0 + PCR8 must match** |
 
-The script outputs the KMS key ARN — add it to your VTA config:
+The script outputs the KMS key ARN. Now update the VTA config and rebuild the
+enclave image.
+
+### 4d: Update Config with KMS Key ARN
+
+Edit the reference config file with the KMS key ARN from Step 4c:
+
+```bash
+# Edit the config
+nano deploy/nitro/config.toml
+```
+
+Replace `REPLACE_WITH_KMS_KEY_ARN` with your actual KMS key ARN:
 
 ```toml
 [tee.kms]
 region = "us-east-1"
 key_arn = "arn:aws:kms:us-east-1:123456789012:key/abc-def-456"
+seed_ciphertext_path = "/mnt/vta-data/secrets/seed.enc"
+jwt_ciphertext_path = "/mnt/vta-data/secrets/jwt.enc"
+allow_first_boot = true     # Set to false after the first successful boot
 ```
 
-### After rebuilding the enclave image
+If you have a DIDComm mediator, also uncomment and configure the `[messaging]`
+section:
 
-PCR0 changes with every Docker image change. Update the KMS policy:
+```toml
+[messaging]
+mediator_url = "ws://127.0.0.1:4443"
+mediator_did = "did:web:mediator.example.com"
+```
+
+### 4e: Rebuild the Enclave Image with Updated Config
+
+The config is baked into the EIF, so any config change requires a rebuild.
+This also generates a new PCR0 (image hash) which must be updated in the
+KMS key policy.
 
 ```bash
+# 1. Rebuild the Docker image (picks up the config change)
+docker build -f Dockerfile.nitro -t vta-nitro .
+
+# 2. Rebuild and sign the EIF
+nitro-cli build-enclave \
+    --docker-uri vta-nitro \
+    --output-file vta.eif \
+    --signing-certificate ./signing/signing-cert.pem \
+    --private-key ./signing/signing-key.pem
+
+# 3. Note the new PCR0 from the output
+#    PCR0: "new_hash_here..."
+
+# 4. Update the KMS key policy with the new PCR0
 ./deploy/nitro/setup-kms-policy.sh \
     --pcr0 "NEW_PCR0_HASH" \
-    --pcr8 "789abc012..." \
+    --pcr8 "$(cat ./signing/pcr8.txt)" \
     --role "arn:aws:iam::123456789012:role/vta-enclave-role" \
     --key-arn "arn:aws:kms:us-east-1:123456789012:key/abc-def-456"
 ```
 
-PCR8 only changes if you regenerate the signing key.
+**Every config or code change follows this cycle:** edit → docker build → nitro
+build-enclave → update KMS policy with new PCR0. This is by design — the
+PCR0 pin ensures nobody can tamper with the config after build.
+
+### After first successful boot: disable allow_first_boot
+
+Once the VTA has generated its secrets on first boot, set `allow_first_boot = false`
+to prevent an attacker from deleting ciphertext files to trigger a new identity:
+
+```bash
+# Edit config
+nano deploy/nitro/config.toml
+# Change: allow_first_boot = false
+
+# Rebuild (same cycle as above)
+docker build -f Dockerfile.nitro -t vta-nitro .
+nitro-cli build-enclave --docker-uri vta-nitro --output-file vta.eif \
+    --signing-certificate ./signing/signing-cert.pem \
+    --private-key ./signing/signing-key.pem
+
+# Update KMS policy with new PCR0
+./deploy/nitro/setup-kms-policy.sh \
+    --pcr0 "LATEST_PCR0" \
+    --pcr8 "$(cat ./signing/pcr8.txt)" \
+    --role "arn:aws:iam::123456789012:role/vta-enclave-role" \
+    --key-arn "arn:aws:kms:us-east-1:123456789012:key/abc-def-456"
+```
 
 ## Step 5: Deploy and Run the Enclave
 
 ```bash
-# Copy EIF to EC2 instance
+# If building on a separate machine, copy EIF to the EC2 instance
 scp vta.eif ec2-user@<instance-ip>:~/
 
 # SSH to instance and start the enclave

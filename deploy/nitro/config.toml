@@ -1,0 +1,68 @@
+# =============================================================================
+# VTA Configuration — AWS Nitro Enclave
+# =============================================================================
+#
+# This config is baked into the Enclave Image File (EIF) during docker build.
+# Changing it requires rebuilding the Docker image and EIF.
+#
+# Secrets (seed, JWT key) are bootstrapped from KMS — NOT stored in this file.
+#
+# Networking: The VTA connects to localhost ports that are proxied through
+# vsock to the parent EC2 instance. The entrypoint script sets up the proxies.
+#
+# Port mapping (inside enclave):
+#   VTA REST API     → 127.0.0.1:8100  (served directly)
+#   DIDComm mediator → 127.0.0.1:4443  (proxied to parent → mediator)
+#   HTTPS traffic    → 127.0.0.1:4444  (proxied to parent → internet)
+# =============================================================================
+
+# VTA identity — set after first DID creation, then rebuild the EIF
+# vta_did = "did:webvh:..."
+# vta_name = "My VTA"
+# public_url = "https://vta.example.com"
+
+[services]
+rest = true
+didcomm = true
+
+[server]
+host = "127.0.0.1"
+port = 8100
+
+[log]
+level = "info"
+format = "json"
+
+[store]
+data_dir = "/var/lib/vta/data"
+
+# DIDComm mediator — URL points to local proxy (vsock-bridged to parent).
+# The parent-proxy.sh forwards this to the actual mediator endpoint.
+# Uncomment and set your mediator DID:
+# [messaging]
+# mediator_url = "ws://127.0.0.1:4443"
+# mediator_did = "did:web:mediator.example.com"
+
+[tee]
+mode = "required"           # Refuse to start if not in a TEE
+embed_in_did = true         # Add TeeAttestation service to DID documents
+attestation_cache_ttl = 300 # 5 minute cache
+storage_key_salt = "vta-tee-storage-v1"
+
+# KMS secret bootstrap — fill in after running setup-kms-policy.sh (Step 4c)
+[tee.kms]
+region = "us-east-1"
+key_arn = "REPLACE_WITH_KMS_KEY_ARN"
+seed_ciphertext_path = "/mnt/vta-data/secrets/seed.enc"
+jwt_ciphertext_path = "/mnt/vta-data/secrets/jwt.enc"
+allow_first_boot = true     # Set to false after the first successful boot
+
+[auth]
+access_token_expiry = 900
+refresh_token_expiry = 86400
+challenge_ttl = 300
+session_cleanup_interval = 600
+# jwt_signing_key is provided by KMS bootstrap — do NOT set it here
+
+[secrets]
+# Seed is provided by KMS bootstrap — do NOT set it here
