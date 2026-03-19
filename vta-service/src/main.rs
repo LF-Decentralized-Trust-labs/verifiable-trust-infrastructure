@@ -80,16 +80,12 @@ enum Commands {
         #[arg(long)]
         label: Option<String>,
     },
-    /// Emergency unseal — re-enables offline CLI commands.
+    /// Unseal the VTA — re-enables offline CLI commands (emergency recovery).
     ///
-    /// This is a DANGEROUS operation that weakens the VTA's security posture.
-    /// Only use in disaster recovery scenarios. After unsealing, re-seal with
-    /// `bootstrap-admin` or via the REST API.
-    Unseal {
-        /// Required confirmation flag
-        #[arg(long)]
-        confirm_dangerous: bool,
-    },
+    /// Requires proof of super admin key ownership via challenge-response:
+    /// the VTA generates a random challenge, you sign it with your admin
+    /// private key using `pnm auth sign-challenge`, and paste the signature.
+    Unseal,
     /// Export admin DID and credential (blocked when sealed)
     ExportAdmin,
     /// Show VTA status and statistics
@@ -317,17 +313,16 @@ async fn main() {
                 std::process::exit(1);
             }
         }
-        Some(Commands::Unseal { confirm_dangerous }) => {
-            if !confirm_dangerous {
-                eprintln!("ERROR: --confirm-dangerous flag is required");
-                eprintln!();
-                eprintln!("Unsealing re-enables offline CLI commands that can modify the VTA.");
-                eprintln!("This weakens security. Only use for disaster recovery.");
-                eprintln!();
-                eprintln!("  vta unseal --confirm-dangerous");
-                std::process::exit(1);
-            }
-            if let Err(e) = run_unseal(cli.config).await {
+        Some(Commands::Unseal) => {
+            let config = match AppConfig::load(cli.config) {
+                Ok(c) => c,
+                Err(e) => {
+                    eprintln!("Error: {e}");
+                    std::process::exit(1);
+                }
+            };
+            let store = store::Store::open(&config.store).expect("failed to open store");
+            if let Err(e) = seal::run_unseal_challenge(&store).await {
                 eprintln!("Error: {e}");
                 std::process::exit(1);
             }
@@ -733,38 +728,6 @@ async fn run_bootstrap_admin(
     eprintln!("  To start the VTA server:");
     eprintln!("    vta --config config.toml");
     eprintln!();
-
-    Ok(())
-}
-
-/// Emergency unseal — re-enables offline CLI commands.
-async fn run_unseal(config_path: Option<PathBuf>) -> Result<(), Box<dyn std::error::Error>> {
-    let config = AppConfig::load(config_path)?;
-    let store = store::Store::open(&config.store)?;
-    let acl_ks = store.keyspace("acl")?;
-
-    let existing = seal::get_seal(&acl_ks).await?;
-    if existing.is_none() {
-        eprintln!("VTA is not sealed.");
-        return Ok(());
-    }
-
-    let existing = existing.unwrap();
-    eprintln!("WARNING: Unsealing the VTA re-enables offline CLI commands.");
-    eprintln!("This weakens security — anyone with filesystem access can modify the VTA.");
-    eprintln!();
-    eprintln!("  Sealed by: {}", existing.sealed_by);
-    eprintln!("  Sealed at: {}", existing.sealed_at.format("%Y-%m-%d %H:%M:%S UTC"));
-    eprintln!();
-    eprintln!("Press Enter to unseal, or Ctrl+C to cancel...");
-    let mut buf = String::new();
-    std::io::stdin().read_line(&mut buf)?;
-
-    seal::unseal(&acl_ks).await?;
-    store.persist().await?;
-
-    eprintln!("VTA unsealed. Offline CLI commands are re-enabled.");
-    eprintln!("Re-seal with: vta bootstrap-admin --did <admin_did>");
 
     Ok(())
 }

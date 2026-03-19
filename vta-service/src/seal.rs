@@ -4,23 +4,34 @@
 //! mode, all CLI commands that modify ACL, keys, config, or export secrets
 //! are refused. Management is only possible via authenticated REST/DIDComm.
 //!
-//! The seal is a marker in the fjall `acl` keyspace. It records the DID of
-//! the admin who sealed it and a timestamp.
+//! # Unseal requires proof of admin key ownership
+//!
+//! The `vta unseal` command uses an offline challenge-response protocol:
+//! 1. VTA generates a random challenge and displays it
+//! 2. Admin signs the challenge with their private key using `pnm` CLI
+//! 3. Admin pastes the signature into the terminal
+//! 4. VTA verifies the Ed25519 signature against the admin's public key
+//!    (extracted from their DID in the ACL)
+//!
+//! This ensures an attacker with server access cannot unseal without
+//! possessing the admin's private key.
 //!
 //! # Security Model
 //!
-//! - Without TEE: The seal is a strong deterrent but not absolute — an attacker
-//!   with raw filesystem access could delete the seal marker from fjall. However,
-//!   this requires knowledge of fjall's internal format, and the seal check runs
-//!   before any command executes.
+//! - Without TEE: The seal is a deterrent. An attacker with deep knowledge
+//!   of fjall internals could manipulate raw bytes, but the seal check runs
+//!   before any command, and the challenge-response prevents casual bypass.
 //!
 //! - With TEE (encrypted storage): The seal marker is AES-256-GCM encrypted.
 //!   An attacker cannot read or modify it without the storage key, which exists
 //!   only inside the enclave. This makes the seal cryptographically enforced.
 
 use chrono::Utc;
+use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
+use tracing::info;
 
+use crate::acl::{self, Role};
 use crate::error::AppError;
 use crate::store::{KeyspaceHandle, Store};
 
@@ -53,7 +64,7 @@ pub async fn require_unsealed(store: &Store) -> Result<(), AppError> {
              Offline CLI commands are disabled. \
              Manage the VTA via the REST API or DIDComm.\n\
              \n\
-             To unseal (EMERGENCY ONLY): vta unseal --confirm-dangerous",
+             To unseal (requires super admin key): vta unseal",
             seal.sealed_by,
             seal.sealed_at.format("%Y-%m-%d %H:%M:%S UTC"),
         )));
@@ -82,7 +93,166 @@ pub async fn seal(acl_ks: &KeyspaceHandle, admin_did: &str) -> Result<SealRecord
     Ok(record)
 }
 
-/// Remove the seal (emergency recovery only).
-pub async fn unseal(acl_ks: &KeyspaceHandle) -> Result<(), AppError> {
-    acl_ks.remove(SEAL_KEY).await
+/// Run the interactive unseal challenge-response protocol.
+///
+/// 1. Finds super admin DIDs in the ACL
+/// 2. Generates a random 32-byte challenge
+/// 3. Displays the challenge for the admin to sign
+/// 4. Reads back the signature
+/// 5. Verifies the Ed25519 signature against the admin's public key
+/// 6. If valid, removes the seal
+pub async fn run_unseal_challenge(store: &Store) -> Result<(), AppError> {
+    let acl_ks = store.keyspace("acl")?;
+
+    // Verify the VTA is actually sealed
+    let seal = get_seal(&acl_ks).await?.ok_or_else(|| {
+        AppError::Config("VTA is not sealed — nothing to unseal".into())
+    })?;
+
+    // Find super admin DIDs
+    let entries = acl::list_acl_entries(&acl_ks).await?;
+    let super_admins: Vec<_> = entries
+        .iter()
+        .filter(|e| e.role == Role::Admin && e.allowed_contexts.is_empty())
+        .collect();
+
+    if super_admins.is_empty() {
+        return Err(AppError::Config(
+            "no super admin ACL entries found — cannot unseal".into(),
+        ));
+    }
+
+    // Generate random challenge
+    let mut challenge_bytes = [0u8; 32];
+    rand::fill(&mut challenge_bytes);
+    let challenge_hex = hex::encode(&challenge_bytes);
+
+    eprintln!();
+    eprintln!("=== VTA Unseal Challenge ===");
+    eprintln!();
+    eprintln!("  Sealed by: {}", seal.sealed_by);
+    eprintln!("  Sealed at: {}", seal.sealed_at.format("%Y-%m-%d %H:%M:%S UTC"));
+    eprintln!();
+    eprintln!("  Authorized super admin DIDs:");
+    for admin in &super_admins {
+        eprintln!("    - {} ({})", admin.did, admin.label.as_deref().unwrap_or("no label"));
+    }
+    eprintln!();
+    eprintln!("  Challenge (hex):");
+    eprintln!("  {challenge_hex}");
+    eprintln!();
+    eprintln!("  Sign this challenge with your super admin key using PNM:");
+    eprintln!();
+    eprintln!("    pnm auth sign-challenge {challenge_hex}");
+    eprintln!();
+    eprintln!("  Then paste the signature (hex) and your DID below.");
+    eprintln!();
+
+    // Read the admin DID
+    eprint!("  Admin DID: ");
+    let mut did_input = String::new();
+    std::io::stdin()
+        .read_line(&mut did_input)
+        .map_err(|e| AppError::Internal(format!("failed to read input: {e}")))?;
+    let admin_did = did_input.trim();
+
+    // Verify the DID is a super admin
+    let admin_entry = super_admins
+        .iter()
+        .find(|e| e.did == admin_did)
+        .ok_or_else(|| {
+            AppError::Forbidden(format!("DID is not a super admin: {admin_did}"))
+        })?;
+
+    // Read the signature
+    eprint!("  Signature (hex): ");
+    let mut sig_input = String::new();
+    std::io::stdin()
+        .read_line(&mut sig_input)
+        .map_err(|e| AppError::Internal(format!("failed to read input: {e}")))?;
+    let sig_hex = sig_input.trim();
+
+    // Verify the signature
+    verify_challenge_signature(admin_did, &challenge_bytes, sig_hex)?;
+
+    // Signature valid — unseal
+    acl_ks.remove(SEAL_KEY).await?;
+    store.persist().await?;
+
+    info!(admin = %admin_did, "VTA unsealed via challenge-response");
+
+    eprintln!();
+    eprintln!("  VTA unsealed successfully.");
+    eprintln!("  Authenticated as: {} ({})",
+        admin_did,
+        admin_entry.label.as_deref().unwrap_or("no label")
+    );
+    eprintln!();
+    eprintln!("  WARNING: Offline CLI commands are now re-enabled.");
+    eprintln!("  Re-seal when done: vta bootstrap-admin --did {admin_did}");
+    eprintln!();
+
+    Ok(())
+}
+
+/// Verify an Ed25519 signature over a challenge using the public key
+/// extracted from a did:key DID.
+fn verify_challenge_signature(
+    did: &str,
+    challenge: &[u8; 32],
+    signature_hex: &str,
+) -> Result<(), AppError> {
+    // Extract the multibase-encoded public key from the DID
+    let multibase_key = if did.starts_with("did:key:") {
+        did.strip_prefix("did:key:").unwrap()
+    } else {
+        return Err(AppError::Validation(format!(
+            "unseal challenge-response only supports did:key DIDs (got: {did}). \
+             For other DID methods, unseal via the REST API with a running VTA."
+        )));
+    };
+
+    // Decode the multibase public key
+    let (_, key_bytes) = multibase::decode(multibase_key)
+        .map_err(|e| AppError::Validation(format!("invalid multibase in DID: {e}")))?;
+
+    // Strip the multicodec prefix (0xed 0x01 for Ed25519)
+    if key_bytes.len() < 2 || key_bytes[0] != 0xed || key_bytes[1] != 0x01 {
+        return Err(AppError::Validation(
+            "DID public key is not Ed25519 (expected multicodec prefix 0xed01)".into(),
+        ));
+    }
+    let raw_pubkey = &key_bytes[2..];
+    if raw_pubkey.len() != 32 {
+        return Err(AppError::Validation(format!(
+            "Ed25519 public key must be 32 bytes, got {}",
+            raw_pubkey.len()
+        )));
+    }
+
+    let pubkey_bytes: [u8; 32] = raw_pubkey.try_into().unwrap();
+    let verifying_key = VerifyingKey::from_bytes(&pubkey_bytes)
+        .map_err(|e| AppError::Validation(format!("invalid Ed25519 public key: {e}")))?;
+
+    // Decode the signature
+    let sig_bytes = hex::decode(signature_hex)
+        .map_err(|e| AppError::Validation(format!("invalid signature hex: {e}")))?;
+    if sig_bytes.len() != 64 {
+        return Err(AppError::Validation(format!(
+            "Ed25519 signature must be 64 bytes, got {}",
+            sig_bytes.len()
+        )));
+    }
+
+    let signature = Signature::from_slice(&sig_bytes)
+        .map_err(|e| AppError::Validation(format!("invalid Ed25519 signature: {e}")))?;
+
+    // Verify
+    verifying_key
+        .verify(challenge, &signature)
+        .map_err(|_| AppError::Forbidden(
+            "signature verification failed — challenge was not signed by this DID's private key".into(),
+        ))?;
+
+    Ok(())
 }
