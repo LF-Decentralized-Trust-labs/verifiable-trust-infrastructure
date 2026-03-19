@@ -447,54 +447,68 @@ world. This includes DID resolution (`did:web`, `did:webvh`) — the enclave has
 no direct network access, so all HTTPS traffic is routed through a vsock proxy
 with an allowlist of permitted hosts.
 
-The proxy auto-reads the mediator configuration from `deploy/nitro/config.toml`
-(the same config baked into the EIF). No need to pass the mediator host as
-an argument.
+The proxy is a Rust binary that auto-reads the mediator configuration from
+`deploy/nitro/config.toml` (the same config baked into the EIF) and auto-detects
+the enclave CID. Build it on the EC2 instance:
 
 ```bash
-# Simple: auto-detect mediator from config.toml, auto-detect enclave CID
-./deploy/nitro/parent-proxy.sh
+# Build the proxy (first time only — on the parent EC2 instance)
+cd deploy/nitro/enclave-proxy
+cargo build --release
+cd ../../..
+
+# Run — auto-detects everything from config.toml
+./deploy/nitro/enclave-proxy/target/release/enclave-proxy
 
 # With additional allowlisted hosts (WebVH servers, etc.)
-./deploy/nitro/parent-proxy.sh webvh-server.example.com:443
+./deploy/nitro/enclave-proxy/target/release/enclave-proxy webvh-server.example.com:443
 
-# Override mediator (if different from config)
-MEDIATOR_HOST=mediator.example.com ./deploy/nitro/parent-proxy.sh
+# Override mediator host
+MEDIATOR_HOST=mediator.example.com ./deploy/nitro/enclave-proxy/target/release/enclave-proxy
 
 # Custom DID resolver URL (e.g., local Affinidi DID resolver)
-RESOLVER_URL=http://localhost:8200 ./deploy/nitro/parent-proxy.sh
+RESOLVER_URL=http://localhost:8200 ./deploy/nitro/enclave-proxy/target/release/enclave-proxy
 ```
 
-This starts four proxy channels:
+The proxy starts three channels:
 
 | Channel | Flow | Purpose |
 |---------|------|---------|
 | Inbound REST | `TCP:8443 → vsock:5100 → Enclave :8100` | External clients access VTA API |
 | Outbound DIDComm | `Enclave → vsock:5200 → TLS → mediator` | VTA DIDComm messaging |
-| Outbound DID resolver | `Enclave → vsock:5300 → DID resolver` | `did:web`, `did:webvh` resolution |
-| Outbound HTTPS | `Enclave → vsock:5300 → allowlisted hosts` | KMS, WebVH servers |
+| Outbound HTTPS | `Enclave → vsock:5300 → allowlisted hosts` | DID resolution, KMS, WebVH |
+
+The HTTPS channel implements an **HTTP CONNECT proxy** with an allowlist.
+Inside the enclave, `HTTPS_PROXY=http://127.0.0.1:4444` routes all HTTPS
+traffic through it. DID resolution (`did:web`, `did:webvh`), KMS calls, and
+WebVH server access all flow through this proxy.
+
+The allowlist is built automatically from:
+- KMS endpoint (`kms.<region>.amazonaws.com`)
+- Mediator host (from config.toml)
+- DID resolver host (from `--resolver-url`)
+- Extra hosts (from CLI args or `ALLOWLIST_HOSTS` env var)
 
 ### DID Resolution
 
-The VTA resolves DIDs (`did:web`, `did:webvh`, etc.) from inside the enclave
-through the HTTPS proxy. The proxy allowlists specific hosts.
-
-**Recommended for production:** Run an
-[Affinidi DID resolver](https://github.com/nicktomlin/affinidi-did-resolver)
-instance on the parent EC2 instance. This avoids maintaining an allowlist of
-individual DID hosting endpoints and provides caching:
+**Recommended for production:** Run an Affinidi DID resolver instance on the
+parent EC2 instance. This avoids maintaining an allowlist of individual DID
+hosting endpoints and provides caching:
 
 ```bash
 # Run a local DID resolver on the parent (separate terminal)
 docker run -d --name did-resolver -p 8200:8080 affinidi/did-resolver
 
 # Point the proxy to the local resolver
-RESOLVER_URL=http://localhost:8200 ./deploy/nitro/parent-proxy.sh
+RESOLVER_URL=http://localhost:8200 ./deploy/nitro/enclave-proxy/target/release/enclave-proxy
 ```
 
 The VTA's `affinidi-did-resolver-cache-sdk` connects through the vsock
 proxy to reach the resolver. Inside the enclave, `HTTPS_PROXY` is set
 automatically by the entrypoint.
+
+> **Fallback:** The shell script `parent-proxy.sh` is still available if you
+> prefer not to build the Rust proxy. It requires `socat` and `vsock-proxy`.
 
 ## Step 7: First Boot (auto-detected)
 
@@ -700,5 +714,6 @@ jobs:
 | `setup-kms-policy.sh` | Admin workstation | Create/update KMS key with PCR-pinned policy |
 | `iam-kms-admin-policy.json` | Admin workstation | IAM policy for the user running setup-kms-policy.sh |
 | `enclave-entrypoint.sh` | Enclave | Set up lo, vsock proxies, start VTA |
-| `parent-proxy.sh` | Parent EC2 | Bridge vsock ↔ TCP/TLS for all channels |
+| `enclave-proxy/` | Parent EC2 | Rust proxy binary — bridges vsock ↔ TCP/TLS, HTTPS CONNECT proxy |
+| `parent-proxy.sh` | Parent EC2 | Shell script fallback (requires socat + vsock-proxy) |
 | `config.toml` | Reference | Example config with KMS + DIDComm |
