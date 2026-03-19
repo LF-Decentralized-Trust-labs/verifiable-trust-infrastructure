@@ -93,12 +93,13 @@ RUN apt-get update && \
 # Copy the VTA binary
 COPY --from=builder /build/target/release/vta /usr/local/bin/vta
 
-# Copy the entrypoint script
+# Copy the entrypoint script and config
 COPY deploy/nitro/enclave-entrypoint.sh /usr/local/bin/enclave-entrypoint.sh
 RUN chmod +x /usr/local/bin/enclave-entrypoint.sh
+COPY deploy/nitro/config.toml /etc/vta/config.toml
 
-# Create data and config directories
-RUN mkdir -p /etc/vta /var/lib/vta
+# Create data directories
+RUN mkdir -p /var/lib/vta
 
 # The entrypoint sets up lo, starts vsock proxies, then runs VTA
 ENTRYPOINT ["/usr/local/bin/enclave-entrypoint.sh"]

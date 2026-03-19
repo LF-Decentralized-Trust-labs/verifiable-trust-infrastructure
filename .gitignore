@@ -2,4 +2,5 @@ target/
 .git/
 **data/
 **config.toml
+!deploy/**/config.toml
 **.jsonl
