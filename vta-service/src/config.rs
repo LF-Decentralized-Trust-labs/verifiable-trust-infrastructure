@@ -246,16 +246,6 @@ pub struct TeeKmsConfig {
     /// Path to the encrypted JWT key ciphertext file.
     #[serde(default = "default_jwt_ciphertext_path")]
     pub jwt_ciphertext_path: String,
-    /// Allow first-boot secret generation.
-    ///
-    /// When `true`, the VTA will generate new secrets if ciphertext files are
-    /// missing (first boot). When `false` (default), missing ciphertexts cause
-    /// a startup failure. This prevents an attacker from deleting ciphertext
-    /// files to trigger a first-boot and hijack the VTA's identity.
-    ///
-    /// Set to `true` only for the initial deployment, then set back to `false`.
-    #[serde(default)]
-    pub allow_first_boot: bool,
 }
 
 #[cfg(feature = "tee")]

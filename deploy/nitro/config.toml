@@ -50,12 +50,14 @@ attestation_cache_ttl = 300 # 5 minute cache
 storage_key_salt = "vta-tee-storage-v1"
 
 # KMS secret bootstrap — fill in after running setup-kms-policy.sh (Step 4c)
+# First boot is auto-detected: if ciphertext files don't exist, the VTA
+# generates new secrets inside the TEE and encrypts them to KMS.
+# Subsequent boots decrypt from the existing ciphertexts.
 [tee.kms]
 region = "us-east-1"
 key_arn = "REPLACE_WITH_KMS_KEY_ARN"
 seed_ciphertext_path = "/mnt/vta-data/secrets/seed.enc"
 jwt_ciphertext_path = "/mnt/vta-data/secrets/jwt.enc"
-allow_first_boot = true     # Set to false after the first successful boot
 
 [auth]
 access_token_expiry = 900
