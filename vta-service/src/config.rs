@@ -246,6 +246,16 @@ pub struct TeeKmsConfig {
     /// Path to the encrypted JWT key ciphertext file.
     #[serde(default = "default_jwt_ciphertext_path")]
     pub jwt_ciphertext_path: String,
+    /// Allow first-boot secret generation.
+    ///
+    /// When `true`, the VTA will generate new secrets if ciphertext files are
+    /// missing (first boot). When `false` (default), missing ciphertexts cause
+    /// a startup failure. This prevents an attacker from deleting ciphertext
+    /// files to trigger a first-boot and hijack the VTA's identity.
+    ///
+    /// Set to `true` only for the initial deployment, then set back to `false`.
+    #[serde(default)]
+    pub allow_first_boot: bool,
 }
 
 #[cfg(feature = "tee")]
@@ -374,8 +384,19 @@ impl AppConfig {
         }
 
         // Secrets env var overrides
+        // SECURITY: Seed env var is only applied when KMS bootstrap is NOT configured.
         if let Ok(seed) = std::env::var("VTA_SECRETS_SEED") {
-            config.secrets.seed = Some(seed);
+            #[cfg(feature = "tee")]
+            {
+                if config.tee.kms.is_none() {
+                    config.secrets.seed = Some(seed);
+                }
+                // If KMS is configured, the TEE block below will log the warning
+            }
+            #[cfg(not(feature = "tee"))]
+            {
+                config.secrets.seed = Some(seed);
+            }
         }
         if let Ok(name) = std::env::var("VTA_SECRETS_AWS_SECRET_NAME") {
             config.secrets.aws_secret_name = Some(name);
@@ -420,15 +441,28 @@ impl AppConfig {
                 AppError::Config(format!("invalid VTA_AUTH_SESSION_CLEANUP_INTERVAL: {e}"))
             })?;
         }
+        // SECURITY: JWT signing key env var is only applied when KMS bootstrap
+        // is NOT configured. When KMS is active, the JWT key comes from KMS and
+        // config/env overrides are blocked (see TEE block below).
         if let Ok(key) = std::env::var("VTA_AUTH_JWT_SIGNING_KEY") {
-            config.auth.jwt_signing_key = Some(key);
+            #[cfg(feature = "tee")]
+            {
+                if config.tee.kms.is_none() {
+                    config.auth.jwt_signing_key = Some(key);
+                }
+                // If KMS is configured, the TEE block below will log the warning
+            }
+            #[cfg(not(feature = "tee"))]
+            {
+                config.auth.jwt_signing_key = Some(key);
+            }
         }
 
         // TEE env var overrides
         #[cfg(feature = "tee")]
         {
             if let Ok(mode) = std::env::var("VTA_TEE_MODE") {
-                config.tee.mode = match mode.to_lowercase().as_str() {
+                let requested = match mode.to_lowercase().as_str() {
                     "required" => TeeMode::Required,
                     "optional" => TeeMode::Optional,
                     "disabled" => TeeMode::Disabled,
@@ -439,7 +473,52 @@ impl AppConfig {
                         )));
                     }
                 };
+
+                // SECURITY: When KMS bootstrap is configured, TEE mode cannot be
+                // downgraded to disabled/simulated via environment variable. An attacker
+                // with server access could otherwise set VTA_TEE_MODE=disabled to bypass
+                // all TEE protections. Only upgrades (optional → required) are allowed.
+                if config.tee.kms.is_some() {
+                    match (&config.tee.mode, &requested) {
+                        // Upgrading security: always allowed
+                        (_, TeeMode::Required) => config.tee.mode = requested,
+                        // Downgrading when KMS is configured: blocked
+                        (TeeMode::Required, TeeMode::Disabled | TeeMode::Simulated | TeeMode::Optional) => {
+                            tracing::warn!(
+                                "SECURITY: VTA_TEE_MODE={mode} rejected — cannot downgrade from 'required' when KMS is configured"
+                            );
+                        }
+                        (_, TeeMode::Disabled | TeeMode::Simulated) => {
+                            tracing::warn!(
+                                "SECURITY: VTA_TEE_MODE={mode} rejected — cannot disable TEE when KMS is configured"
+                            );
+                        }
+                        // Same or lateral: allowed
+                        _ => config.tee.mode = requested,
+                    }
+                } else {
+                    config.tee.mode = requested;
+                }
             }
+
+            // SECURITY: When KMS is configured, the JWT signing key and seed
+            // are bootstrapped from KMS. Config/env overrides for these are
+            // ignored to prevent an attacker from injecting their own keys.
+            if config.tee.kms.is_some() {
+                if std::env::var("VTA_AUTH_JWT_SIGNING_KEY").is_ok() {
+                    tracing::warn!(
+                        "SECURITY: VTA_AUTH_JWT_SIGNING_KEY env var ignored — JWT key is provided by KMS bootstrap in TEE mode"
+                    );
+                    config.auth.jwt_signing_key = None;
+                }
+                if std::env::var("VTA_SECRETS_SEED").is_ok() {
+                    tracing::warn!(
+                        "SECURITY: VTA_SECRETS_SEED env var ignored — seed is provided by KMS bootstrap in TEE mode"
+                    );
+                    config.secrets.seed = None;
+                }
+            }
+
             if let Ok(val) = std::env::var("VTA_TEE_EMBED_IN_DID") {
                 config.tee.embed_in_did = val.parse().map_err(|e| {
                     AppError::Config(format!("invalid VTA_TEE_EMBED_IN_DID: {e}"))
