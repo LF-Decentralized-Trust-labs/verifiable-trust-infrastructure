@@ -24,6 +24,11 @@
 # ---------------------------------------------------------------------------
 FROM rust:1.91-bookworm AS builder
 
+# Install build dependencies (dbus-1 is required by the keyring crate's build script)
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends libdbus-1-dev pkg-config && \
+    rm -rf /var/lib/apt/lists/*
+
 WORKDIR /build
 
 # Cache dependency builds: copy manifests first, create dummy sources, build deps
