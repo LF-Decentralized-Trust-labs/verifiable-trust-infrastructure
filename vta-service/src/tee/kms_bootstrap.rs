@@ -56,6 +56,17 @@ pub async fn bootstrap_secrets(
         })?;
 
         info!("secrets decrypted from KMS (attestation-verified)");
+    } else if !kms_config.allow_first_boot {
+        // ── Ciphertexts missing but first boot not allowed ──
+        // This prevents an attacker from deleting ciphertext files to trigger
+        // a first-boot and hijack the VTA with a new identity.
+        return Err(AppError::TeeAttestation(
+            "secret ciphertext files not found and allow_first_boot is false. \
+             This may indicate the ciphertext files were deleted by an attacker. \
+             If this is genuinely a first deployment, set tee.kms.allow_first_boot = true \
+             in config.toml, deploy once, then set it back to false."
+                .into(),
+        ));
     } else {
         // ── First boot: generate new secrets inside the TEE ──
         info!("no existing ciphertexts found — first boot, generating new secrets in TEE");
