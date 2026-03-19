@@ -88,8 +88,13 @@ sudo apt install -y aws-nitro-enclaves-cli docker.io socat
 
 # Enable services
 sudo systemctl enable --now nitro-enclaves-allocator docker
+
+# Add your user to the docker and ne groups (required before building images)
 sudo usermod -aG docker,ne $USER
-# Log out and back in
+
+# IMPORTANT: Log out and back in (or run `newgrp docker`) for group changes
+# to take effect. Docker commands will fail with "permission denied" until
+# your session picks up the new group membership.
 ```
 
 ### Configure Enclave Resources
