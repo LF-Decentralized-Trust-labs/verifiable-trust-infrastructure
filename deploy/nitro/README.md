@@ -133,10 +133,74 @@ Store the private key securely:
 - **Hardware security module** for maximum security
 - **Never** on the EC2 instance that runs the enclave
 
-## Step 2: Build and Sign the Enclave Image
+## Step 2: Choose a Build Profile
+
+The VTA supports different feature flag combinations for different security
+postures. Choose the profile that matches your deployment:
+
+### Profile A: Hardened (DIDComm only — recommended for production TEE)
+
+All secret-handling operations go through DIDComm (E2E encrypted). REST is
+limited to attestation, health, and auth bootstrap (unauthenticated/read-only).
+This is the smallest attack surface.
 
 ```bash
-# Build the Docker image
+docker build -f Dockerfile.nitro \
+    --build-arg FEATURES="didcomm,tee,config-seed" \
+    -t vta-nitro .
+```
+
+| Available on REST | Available on DIDComm |
+|---|---|
+| `GET /health` | Key management (create, list, get, revoke, secrets) |
+| `GET,POST /attestation/report` | ACL management (CRUD) |
+| `GET /attestation/status` | Config management |
+| `POST /auth/challenge` | Credential generation |
+| `POST /auth/` | Context management |
+| `POST /auth/refresh` | Seed rotation |
+| | WebVH DID operations |
+
+### Profile B: Full API (REST + DIDComm — for development or network-controlled environments)
+
+All operations available on both REST and DIDComm. Use when the REST API is
+behind a load balancer, VPN, or other network-level access control.
+
+```bash
+docker build -f Dockerfile.nitro \
+    --build-arg FEATURES="rest,didcomm,tee,config-seed" \
+    -t vta-nitro .
+```
+
+### Profile C: REST only (no DIDComm — for simple deployments without a mediator)
+
+```bash
+docker build -f Dockerfile.nitro \
+    --build-arg FEATURES="rest,tee,config-seed" \
+    -t vta-nitro .
+```
+
+### Customizing Feature Flags
+
+The `FEATURES` build arg maps directly to Cargo feature flags. Available features:
+
+| Feature | Purpose | Default |
+|---------|---------|---------|
+| `rest` | REST API endpoints | Yes |
+| `didcomm` | DIDComm v2 messaging | Yes |
+| `tee` | TEE attestation + KMS bootstrap + encrypted storage | No |
+| `config-seed` | Load seed from config file (for containers without keyring) | No |
+| `keyring` | OS keyring seed storage (not available in containers) | Yes |
+| `webvh` | did:webvh DID management | No |
+| `setup` | Interactive setup wizard (requires TTY) | Yes |
+| `aws-secrets` | AWS Secrets Manager seed storage | No |
+
+For TEE deployments, always include `tee` and `config-seed`. Never include
+`keyring` or `setup` (no keyring or TTY available in enclaves).
+
+## Step 3: Build and Sign the Enclave Image
+
+```bash
+# Build the Docker image (using your chosen profile from Step 2)
 docker build -f Dockerfile.nitro -t vta-nitro .
 
 # Build AND SIGN the Enclave Image File
@@ -168,7 +232,7 @@ cat ./signing/pcr8.txt
 # Should match the PCR8 from build output
 ```
 
-## Step 3: Set Up KMS Key Policy
+## Step 4: Set Up KMS Key Policy
 
 This creates a KMS key that **only releases secrets to your exact enclave image,
 signed by your certificate, running on your IAM role**.
@@ -213,7 +277,7 @@ PCR0 changes with every Docker image change. Update the KMS policy:
 
 PCR8 only changes if you regenerate the signing key.
 
-## Step 4: Deploy and Run the Enclave
+## Step 5: Deploy and Run the Enclave
 
 ```bash
 # Copy EIF to EC2 instance
@@ -230,7 +294,7 @@ nitro-cli run-enclave \
 nitro-cli describe-enclaves
 ```
 
-## Step 5: Start the Parent Proxy
+## Step 6: Start the Parent Proxy
 
 ```bash
 ./deploy/nitro/parent-proxy.sh mediator.example.com
@@ -241,7 +305,7 @@ This starts three proxy channels:
 2. **Outbound DIDComm**: `Enclave → vsock:5200 → TLS → mediator`
 3. **Outbound HTTPS**: `Enclave → vsock:5300 → allowlisted hosts`
 
-## Step 6: First Boot — Seed Generation
+## Step 7: First Boot — Seed Generation
 
 On first boot, the VTA:
 1. Detects TEE mode (required) + KMS config
@@ -280,7 +344,7 @@ curl -s -X POST http://localhost:8443/attestation/mnemonic \
 After 5 minutes (or one successful export), the entropy is permanently zeroed.
 The VTA continues running — only the mnemonic words are gone.
 
-## Step 7: Subsequent Boots
+## Step 8: Subsequent Boots
 
 On subsequent boots, the VTA:
 1. Finds existing ciphertext files on external storage
@@ -293,7 +357,7 @@ On subsequent boots, the VTA:
 
 No mnemonic export is possible on subsequent boots (no entropy exists).
 
-## Step 8: Verify
+## Step 9: Verify
 
 ```bash
 # Health check
