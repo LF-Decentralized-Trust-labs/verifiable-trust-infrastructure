@@ -50,19 +50,23 @@ openssl req -new -x509 -key "$KEY_PATH" -sha384 \
     -subj "/CN=VTA Enclave Signing Key/O=Verifiable Trust Infrastructure" \
     -out "$CERT_PATH"
 
-# Compute PCR8 using the Nitro PCR extend operation:
-#   PCR8 = SHA-384(zeros_48 || SHA-384(certificate_DER))
-#
-# This matches how nitro-cli computes PCR8 during build-enclave.
-PCR8=$(python3 -c "
+# Compute PCR8 using nitro-cli (authoritative, matches build-enclave exactly).
+# Falls back to manual computation if nitro-cli is not installed (e.g., on a
+# developer laptop where you're only generating the key, not building the EIF).
+if command -v nitro-cli &>/dev/null; then
+    PCR8=$(nitro-cli pcr --signing-certificate "$CERT_PATH" | python3 -c "import sys,json; print(json.load(sys.stdin)['PCR8'])")
+else
+    echo "  NOTE: nitro-cli not found — computing PCR8 manually."
+    echo "  Verify with: nitro-cli pcr --signing-certificate $CERT_PATH"
+    # PCR8 = SHA-384(zeros_48 || SHA-384(certificate_DER))
+    PCR8=$(python3 -c "
 import hashlib, subprocess
-# Get DER-encoded certificate
 der = subprocess.check_output(['openssl', 'x509', '-in', '$CERT_PATH', '-outform', 'DER'])
-# PCR extend: SHA-384(48 zero bytes || SHA-384(certificate_DER))
 cert_hash = hashlib.sha384(der).digest()
 pcr8 = hashlib.sha384(b'\x00' * 48 + cert_hash).hexdigest()
 print(pcr8)
 ")
+fi
 echo "$PCR8" > "$PCR8_PATH"
 
 echo ""
