@@ -447,40 +447,54 @@ world. This includes DID resolution (`did:web`, `did:webvh`) — the enclave has
 no direct network access, so all HTTPS traffic is routed through a vsock proxy
 with an allowlist of permitted hosts.
 
+The proxy auto-reads the mediator configuration from `deploy/nitro/config.toml`
+(the same config baked into the EIF). No need to pass the mediator host as
+an argument.
+
 ```bash
-# Basic: mediator only + default DID resolvers
-./deploy/nitro/parent-proxy.sh mediator.example.com
+# Simple: auto-detect mediator from config.toml, auto-detect enclave CID
+./deploy/nitro/parent-proxy.sh
 
-# With WebVH server and custom DID resolution endpoints
-./deploy/nitro/parent-proxy.sh mediator.example.com 16 \
-    webvh-server.example.com:443 \
-    did-resolver.example.com:443
+# With additional allowlisted hosts (WebVH servers, etc.)
+./deploy/nitro/parent-proxy.sh webvh-server.example.com:443
 
-# Or via environment variable
-ALLOWLIST_HOSTS="webvh-server.example.com:443,custom-resolver.example.com:443" \
-    ./deploy/nitro/parent-proxy.sh mediator.example.com
+# Override mediator (if different from config)
+MEDIATOR_HOST=mediator.example.com ./deploy/nitro/parent-proxy.sh
+
+# Custom DID resolver URL (e.g., local Affinidi DID resolver)
+RESOLVER_URL=http://localhost:8200 ./deploy/nitro/parent-proxy.sh
 ```
 
-This starts three proxy channels:
-1. **Inbound REST**: `TCP:8443 → vsock:5100 → Enclave VTA`
-2. **Outbound DIDComm**: `Enclave → vsock:5200 → TLS → mediator`
-3. **Outbound HTTPS**: `Enclave → vsock:5300 → allowlisted hosts`
+This starts four proxy channels:
 
-The HTTPS proxy (`vsock-proxy`) allowlists these hosts by default:
-- DIDComm mediator hostname
-- `dev.uniresolver.io` (Universal Resolver)
-- `resolver.identity.foundation` (DIF resolver)
-- `kdsintf.amd.com` (AMD attestation)
-- `kms.<region>.amazonaws.com` (AWS KMS)
+| Channel | Flow | Purpose |
+|---------|------|---------|
+| Inbound REST | `TCP:8443 → vsock:5100 → Enclave :8100` | External clients access VTA API |
+| Outbound DIDComm | `Enclave → vsock:5200 → TLS → mediator` | VTA DIDComm messaging |
+| Outbound DID resolver | `Enclave → vsock:5300 → DID resolver` | `did:web`, `did:webvh` resolution |
+| Outbound HTTPS | `Enclave → vsock:5300 → allowlisted hosts` | KMS, WebVH servers |
 
-Add your WebVH servers and any custom DID resolution endpoints as extra
-arguments or via `ALLOWLIST_HOSTS`.
+### DID Resolution
 
-Inside the enclave, the entrypoint sets `HTTPS_PROXY=http://127.0.0.1:4444`
-so all HTTP clients (`reqwest`, used by the DID resolver and WebVH client)
-automatically route through the proxy. No code changes needed — `did:web`,
-`did:webvh`, and any HTTPS-based DID method will resolve correctly as long
-as the host is in the allowlist.
+The VTA resolves DIDs (`did:web`, `did:webvh`, etc.) from inside the enclave
+through the HTTPS proxy. The proxy allowlists specific hosts.
+
+**Recommended for production:** Run an
+[Affinidi DID resolver](https://github.com/nicktomlin/affinidi-did-resolver)
+instance on the parent EC2 instance. This avoids maintaining an allowlist of
+individual DID hosting endpoints and provides caching:
+
+```bash
+# Run a local DID resolver on the parent (separate terminal)
+docker run -d --name did-resolver -p 8200:8080 affinidi/did-resolver
+
+# Point the proxy to the local resolver
+RESOLVER_URL=http://localhost:8200 ./deploy/nitro/parent-proxy.sh
+```
+
+The VTA's `affinidi-did-resolver-cache-sdk` connects through the vsock
+proxy to reach the resolver. Inside the enclave, `HTTPS_PROXY` is set
+automatically by the entrypoint.
 
 ## Step 7: First Boot (auto-detected)
 
