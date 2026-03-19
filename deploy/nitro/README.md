@@ -384,8 +384,15 @@ The config is baked into the EIF, so any config change requires a rebuild.
 This also generates a new PCR0 (image hash) which must be updated in the
 KMS key policy.
 
+**Use the same `docker build` command from your chosen profile in Step 2.**
+If you chose Profile B (Full API), the rebuild cycle is:
+
 ```bash
-# 1. Rebuild the Docker image (picks up the config change)
+# 1. Rebuild the Docker image with the SAME profile as Step 2
+#    Profile A (Hardened):       --build-arg FEATURES="didcomm,tee"
+#    Profile B (Full API):       --build-arg FEATURES="rest,didcomm,tee"
+#    Profile C (REST only):      --build-arg FEATURES="rest,tee"
+#    Or omit --build-arg to use the Dockerfile default (rest,didcomm,tee)
 docker build -f Dockerfile.nitro -t vta-nitro .
 
 # 2. Rebuild and sign the EIF
@@ -406,9 +413,10 @@ nitro-cli build-enclave \
     --key-arn "arn:aws:kms:us-east-1:123456789012:key/abc-def-456"
 ```
 
-**Every config or code change follows this cycle:** edit → docker build → nitro
-build-enclave → update KMS policy with new PCR0. This is by design — the
-PCR0 pin ensures nobody can tamper with the config after build.
+**Every config or code change follows this cycle:** edit → docker build
+(same profile) → nitro build-enclave → update KMS policy with new PCR0.
+This is by design — the PCR0 pin ensures nobody can tamper with the config
+after build.
 
 ### After first successful boot: disable allow_first_boot
 
@@ -420,8 +428,10 @@ to prevent an attacker from deleting ciphertext files to trigger a new identity:
 nano deploy/nitro/config.toml
 # Change: allow_first_boot = false
 
-# Rebuild (same cycle as above)
+# Rebuild with the SAME profile as Step 2 (example: default profile)
 docker build -f Dockerfile.nitro -t vta-nitro .
+
+# Sign the EIF
 nitro-cli build-enclave --docker-uri vta-nitro --output-file vta.eif \
     --signing-certificate ./signing/signing-cert.pem \
     --private-key ./signing/signing-key.pem
