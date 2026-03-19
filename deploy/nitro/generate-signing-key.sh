@@ -10,9 +10,10 @@
 # your CI/CD pipeline, a hardware security module, or a separate AWS account.
 # Only the certificate (public key) needs to be available at build time.
 #
-# PCR8 in the attestation document is the SHA-384 hash of the signing
-# certificate. Include PCR8 in your KMS key policy to ensure only images
-# signed by this key can decrypt secrets.
+# PCR8 in the attestation document is computed using the TPM PCR extend
+# operation: PCR8 = SHA-384(zeros_48 || SHA-384(certificate_DER)).
+# Include PCR8 in your KMS key policy to ensure only images signed by
+# this key can decrypt secrets.
 #
 # Usage:
 #   ./generate-signing-key.sh [output-dir]
@@ -49,8 +50,19 @@ openssl req -new -x509 -key "$KEY_PATH" -sha384 \
     -subj "/CN=VTA Enclave Signing Key/O=Verifiable Trust Infrastructure" \
     -out "$CERT_PATH"
 
-# Compute PCR8 (SHA-384 of the DER-encoded certificate)
-PCR8=$(openssl x509 -in "$CERT_PATH" -outform DER | openssl dgst -sha384 -hex | awk '{print $2}')
+# Compute PCR8 using the Nitro PCR extend operation:
+#   PCR8 = SHA-384(zeros_48 || SHA-384(certificate_DER))
+#
+# This matches how nitro-cli computes PCR8 during build-enclave.
+PCR8=$(python3 -c "
+import hashlib, subprocess
+# Get DER-encoded certificate
+der = subprocess.check_output(['openssl', 'x509', '-in', '$CERT_PATH', '-outform', 'DER'])
+# PCR extend: SHA-384(48 zero bytes || SHA-384(certificate_DER))
+cert_hash = hashlib.sha384(der).digest()
+pcr8 = hashlib.sha384(b'\x00' * 48 + cert_hash).hexdigest()
+print(pcr8)
+")
 echo "$PCR8" > "$PCR8_PATH"
 
 echo ""
