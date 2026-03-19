@@ -232,10 +232,98 @@ cat ./signing/pcr8.txt
 # Should match the PCR8 from build output
 ```
 
-## Step 4: Set Up KMS Key Policy
+## Step 4: Set Up IAM Roles and KMS Key Policy
 
-This creates a KMS key that **only releases secrets to your exact enclave image,
-signed by your certificate, running on your IAM role**.
+This step creates the IAM roles and a KMS key that **only releases secrets to
+your exact enclave image, signed by your certificate, running on your IAM role**.
+
+### 4a: Create the EC2 Instance Role
+
+The EC2 instance running the enclave needs a minimal IAM role. Create it in the
+AWS Console or via CLI:
+
+```bash
+# Create the role with EC2 trust policy
+aws iam create-role \
+    --role-name vta-enclave-role \
+    --assume-role-policy-document '{
+        "Version": "2012-10-17",
+        "Statement": [{
+            "Effect": "Allow",
+            "Principal": {"Service": "ec2.amazonaws.com"},
+            "Action": "sts:AssumeRole"
+        }]
+    }'
+
+# Create an instance profile and attach the role
+aws iam create-instance-profile --instance-profile-name vta-enclave-profile
+aws iam add-role-to-instance-profile \
+    --instance-profile-name vta-enclave-profile \
+    --role-name vta-enclave-role
+```
+
+The KMS permissions for this role are set by the KMS key policy in Step 4c —
+you do NOT need to attach a KMS policy to the role itself. KMS key policies
+are authoritative when they grant access to a principal.
+
+If your EC2 instance is already running, attach the profile:
+```bash
+aws ec2 associate-iam-instance-profile \
+    --instance-id i-0123456789abcdef0 \
+    --iam-instance-profile Name=vta-enclave-profile
+```
+
+### 4b: IAM Permissions for the KMS Setup User
+
+The person (or CI/CD role) running `setup-kms-policy.sh` needs these
+permissions. This is your **admin user**, separate from the EC2 instance role:
+
+```json
+{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Sid": "AllowKMSKeyManagement",
+            "Effect": "Allow",
+            "Action": [
+                "kms:CreateKey",
+                "kms:CreateAlias",
+                "kms:PutKeyPolicy",
+                "kms:DescribeKey",
+                "kms:ListAliases",
+                "kms:TagResource"
+            ],
+            "Resource": "*"
+        },
+        {
+            "Sid": "AllowCheckCallerIdentity",
+            "Effect": "Allow",
+            "Action": "sts:GetCallerIdentity",
+            "Resource": "*"
+        }
+    ]
+}
+```
+
+Attach this policy to your IAM user or role:
+```bash
+# Create the policy
+aws iam create-policy \
+    --policy-name vta-kms-admin \
+    --policy-document file://deploy/nitro/iam-kms-admin-policy.json
+
+# Attach to your IAM user
+aws iam attach-user-policy \
+    --user-name your-admin-user \
+    --policy-arn arn:aws:iam::123456789012:policy/vta-kms-admin
+
+# Or attach to a role (for CI/CD)
+aws iam attach-role-policy \
+    --role-name your-ci-role \
+    --policy-arn arn:aws:iam::123456789012:policy/vta-kms-admin
+```
+
+### 4c: Create the KMS Key with Attestation Policy
 
 ```bash
 chmod +x deploy/nitro/setup-kms-policy.sh
@@ -495,6 +583,7 @@ jobs:
 | `Dockerfile.nitro` | Build host | Multi-stage build → Docker image |
 | `generate-signing-key.sh` | Build host / CI | Generate EC P-384 signing key + certificate |
 | `setup-kms-policy.sh` | Admin workstation | Create/update KMS key with PCR-pinned policy |
+| `iam-kms-admin-policy.json` | Admin workstation | IAM policy for the user running setup-kms-policy.sh |
 | `enclave-entrypoint.sh` | Enclave | Set up lo, vsock proxies, start VTA |
 | `parent-proxy.sh` | Parent EC2 | Bridge vsock ↔ TCP/TLS for all channels |
 | `config.toml` | Reference | Example config with KMS + DIDComm |
