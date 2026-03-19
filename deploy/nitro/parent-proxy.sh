@@ -31,6 +31,9 @@ set -euo pipefail
 
 MEDIATOR_HOST="${1:-}"
 ENCLAVE_CID="${2:-}"
+# Remaining args are additional host:port pairs to allowlist
+shift 2 2>/dev/null || true
+EXTRA_HOSTS=("$@")
 
 # ---------------------------------------------------------------------------
 # Port assignments (must match enclave-entrypoint.sh)
@@ -46,10 +49,15 @@ MEDIATOR_PORT="${MEDIATOR_PORT:-443}"                  # Mediator WSS port
 # Validate args
 # ---------------------------------------------------------------------------
 if [ -z "$MEDIATOR_HOST" ]; then
-    echo "Usage: $0 <mediator_host> [enclave_cid]"
+    echo "Usage: $0 <mediator_host> [enclave_cid] [additional_host1:port] [additional_host2:port] ..."
     echo ""
-    echo "  mediator_host  Hostname of the DIDComm mediator (e.g., mediator.example.com)"
-    echo "  enclave_cid    Enclave CID (auto-detected if omitted)"
+    echo "  mediator_host    Hostname of the DIDComm mediator (e.g., mediator.example.com)"
+    echo "  enclave_cid      Enclave CID (auto-detected if omitted)"
+    echo "  additional_hosts Additional host:port pairs to allowlist for HTTPS proxy"
+    echo "                   (e.g., WebVH servers, DID resolver endpoints)"
+    echo ""
+    echo "Example:"
+    echo "  $0 mediator.example.com 16 webvh.example.com:443 did-resolver.example.com:443"
     echo ""
     echo "Environment variables:"
     echo "  LISTEN_PORT          External REST port (default: 8443)"
@@ -57,6 +65,7 @@ if [ -z "$MEDIATOR_HOST" ]; then
     echo "  VSOCK_INBOUND_PORT   Vsock port for inbound REST (default: 5100)"
     echo "  VSOCK_MEDIATOR_PORT  Vsock port for mediator proxy (default: 5200)"
     echo "  VSOCK_HTTPS_PORT     Vsock port for HTTPS proxy (default: 5300)"
+    echo "  ALLOWLIST_HOSTS      Extra hosts to allowlist (comma-separated host:port)"
     exit 1
 fi
 
@@ -142,17 +151,43 @@ PIDS+=($!)
 if command -v vsock-proxy &>/dev/null; then
     echo "Starting HTTPS proxy (vsock-proxy): vsock:${VSOCK_HTTPS_PORT} → allowlisted HTTPS endpoints"
 
-    # vsock-proxy allowlist: hosts the enclave is permitted to reach.
-    # Add additional hosts as needed (DID resolvers, WebVH servers, etc.)
-    vsock-proxy ${VSOCK_HTTPS_PORT} "${MEDIATOR_HOST}" ${MEDIATOR_PORT} \
-        --config <(cat <<EOF
+    # Build the allowlist YAML dynamically.
+    # Includes: mediator, common DID resolvers, KMS, and any extra hosts from CLI args.
+    ALLOWLIST_FILE=$(mktemp /tmp/vsock-allowlist-XXXXXX.yaml)
+    cat > "$ALLOWLIST_FILE" <<EOF
 allowlist:
 - {address: "${MEDIATOR_HOST}", port: ${MEDIATOR_PORT}}
 - {address: "dev.uniresolver.io", port: 443}
 - {address: "resolver.identity.foundation", port: 443}
 - {address: "kdsintf.amd.com", port: 443}
+- {address: "kms.${REGION:-us-east-1}.amazonaws.com", port: 443}
 EOF
-    ) &
+
+    # Add extra hosts from CLI args (host:port format)
+    for hostport in "${EXTRA_HOSTS[@]}"; do
+        host="${hostport%%:*}"
+        port="${hostport##*:}"
+        [ "$port" = "$host" ] && port=443  # Default to 443 if no port specified
+        echo "- {address: \"${host}\", port: ${port}}" >> "$ALLOWLIST_FILE"
+        echo "  Allowlisted: ${host}:${port}"
+    done
+
+    # Add hosts from ALLOWLIST_HOSTS env var (comma-separated)
+    if [ -n "${ALLOWLIST_HOSTS:-}" ]; then
+        IFS=',' read -ra AHOSTS <<< "$ALLOWLIST_HOSTS"
+        for hostport in "${AHOSTS[@]}"; do
+            hostport=$(echo "$hostport" | xargs)  # trim whitespace
+            host="${hostport%%:*}"
+            port="${hostport##*:}"
+            [ "$port" = "$host" ] && port=443
+            echo "- {address: \"${host}\", port: ${port}}" >> "$ALLOWLIST_FILE"
+            echo "  Allowlisted: ${host}:${port}"
+        done
+    fi
+
+    echo "  Allowlist: $(grep -c 'address:' "$ALLOWLIST_FILE") hosts"
+    vsock-proxy ${VSOCK_HTTPS_PORT} "${MEDIATOR_HOST}" ${MEDIATOR_PORT} \
+        --config "$ALLOWLIST_FILE" &
     PIDS+=($!)
 else
     echo "WARNING: vsock-proxy not found — using socat fallback for HTTPS"

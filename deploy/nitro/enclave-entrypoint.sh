@@ -82,13 +82,27 @@ MEDIATOR_PID=$!
 # ---------------------------------------------------------------------------
 # Start outbound proxy: VTA HTTPS → parent (for DID resolution, WebVH, etc.)
 # ---------------------------------------------------------------------------
+# The parent runs vsock-proxy which implements an HTTP CONNECT proxy.
+# socat bridges localhost:4444 → vsock:5300, so from the VTA's perspective
+# localhost:4444 is an HTTP CONNECT proxy to the internet.
+# We set HTTPS_PROXY so that reqwest/hyper (used by the DID resolver and
+# WebVH client) route all HTTPS traffic through this proxy.
 echo "Starting HTTPS proxy: localhost:${LOCAL_HTTPS_PORT} → vsock:${PARENT_CID}:${VSOCK_HTTPS_PORT}"
 socat TCP-LISTEN:${LOCAL_HTTPS_PORT},reuseaddr,fork,bind=127.0.0.1 \
     VSOCK-CONNECT:${PARENT_CID}:${VSOCK_HTTPS_PORT} &
 HTTPS_PID=$!
 
+# Set proxy environment variables so HTTP clients route through the proxy.
+# This enables DID resolution (did:web, did:webvh) and WebVH server access
+# from inside the enclave.
+export HTTPS_PROXY="http://127.0.0.1:${LOCAL_HTTPS_PORT}"
+export HTTP_PROXY="http://127.0.0.1:${LOCAL_HTTPS_PORT}"
+# Don't proxy local traffic (VTA REST API, mediator proxy)
+export NO_PROXY="127.0.0.1,localhost"
+
 echo ""
 echo "Proxy PIDs: inbound=${INBOUND_PID} mediator=${MEDIATOR_PID} https=${HTTPS_PID}"
+echo "HTTPS_PROXY=http://127.0.0.1:${LOCAL_HTTPS_PORT}"
 
 # ---------------------------------------------------------------------------
 # Cleanup on exit
