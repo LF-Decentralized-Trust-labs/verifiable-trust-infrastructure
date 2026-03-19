@@ -1,0 +1,24 @@
+{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Sid": "AllowKMSKeyManagement",
+            "Effect": "Allow",
+            "Action": [
+                "kms:CreateKey",
+                "kms:CreateAlias",
+                "kms:PutKeyPolicy",
+                "kms:DescribeKey",
+                "kms:ListAliases",
+                "kms:TagResource"
+            ],
+            "Resource": "*"
+        },
+        {
+            "Sid": "AllowCheckCallerIdentity",
+            "Effect": "Allow",
+            "Action": "sts:GetCallerIdentity",
+            "Resource": "*"
+        }
+    ]
+}
