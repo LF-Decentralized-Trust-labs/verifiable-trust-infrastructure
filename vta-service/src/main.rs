@@ -16,6 +16,7 @@ mod messaging;
 mod operations;
 #[cfg(feature = "rest")]
 mod routes;
+mod seal;
 mod server;
 #[cfg(feature = "setup")]
 mod setup;
@@ -66,7 +67,30 @@ struct Cli {
 enum Commands {
     /// Run the interactive setup wizard
     Setup,
-    /// Export admin DID and credential
+    /// Bootstrap the first admin and seal the VTA against offline CLI modifications.
+    ///
+    /// This is a ONE-TIME operation. After sealing, all CLI commands that modify
+    /// state (ACL, keys, import, export) are disabled. Management is only possible
+    /// via the authenticated REST API or DIDComm.
+    BootstrapAdmin {
+        /// DID to grant super admin access (must be a DID you control)
+        #[arg(long)]
+        did: String,
+        /// Human-readable label for the admin ACL entry
+        #[arg(long)]
+        label: Option<String>,
+    },
+    /// Emergency unseal — re-enables offline CLI commands.
+    ///
+    /// This is a DANGEROUS operation that weakens the VTA's security posture.
+    /// Only use in disaster recovery scenarios. After unsealing, re-seal with
+    /// `bootstrap-admin` or via the REST API.
+    Unseal {
+        /// Required confirmation flag
+        #[arg(long)]
+        confirm_dangerous: bool,
+    },
+    /// Export admin DID and credential (blocked when sealed)
     ExportAdmin,
     /// Show VTA status and statistics
     Status,
@@ -287,7 +311,30 @@ async fn main() {
                 std::process::exit(1);
             }
         }
+        Some(Commands::BootstrapAdmin { did, label }) => {
+            if let Err(e) = run_bootstrap_admin(cli.config, did, label).await {
+                eprintln!("Error: {e}");
+                std::process::exit(1);
+            }
+        }
+        Some(Commands::Unseal { confirm_dangerous }) => {
+            if !confirm_dangerous {
+                eprintln!("ERROR: --confirm-dangerous flag is required");
+                eprintln!();
+                eprintln!("Unsealing re-enables offline CLI commands that can modify the VTA.");
+                eprintln!("This weakens security. Only use for disaster recovery.");
+                eprintln!();
+                eprintln!("  vta unseal --confirm-dangerous");
+                std::process::exit(1);
+            }
+            if let Err(e) = run_unseal(cli.config).await {
+                eprintln!("Error: {e}");
+                std::process::exit(1);
+            }
+        }
         Some(Commands::ExportAdmin) => {
+            // SEALED CHECK: export-admin leaks private keys
+            check_seal(&cli.config).await;
             if let Err(e) = export_admin(cli.config).await {
                 eprintln!("Error: {e}");
                 std::process::exit(1);
@@ -307,6 +354,8 @@ async fn main() {
             admin,
             label,
         }) => {
+            // SEALED CHECK: creates keys and optionally admin ACL entries
+            check_seal(&cli.config).await;
             let args = did_key::CreateDidKeyArgs {
                 config_path: cli.config,
                 context,
@@ -319,6 +368,8 @@ async fn main() {
             }
         }
         Some(Commands::CreateDidWebvh { context, label }) => {
+            // SEALED CHECK: creates keys and DIDs
+            check_seal(&cli.config).await;
             #[cfg(feature = "setup")]
             {
                 let args = did_webvh::CreateDidWebvhArgs {
@@ -344,6 +395,8 @@ async fn main() {
             label,
             context,
         }) => {
+            // SEALED CHECK: imports DIDs with arbitrary roles
+            check_seal(&cli.config).await;
             let args = import_did::ImportDidArgs {
                 config_path: cli.config,
                 did,
@@ -357,6 +410,13 @@ async fn main() {
             }
         }
         Some(Commands::Keys { command }) => {
+            // SEALED CHECK: secrets export and seed rotation
+            match &command {
+                KeyCliCommands::List { .. } | KeyCliCommands::Seeds => {}
+                KeyCliCommands::Secrets { .. } | KeyCliCommands::RotateSeed { .. } => {
+                    check_seal(&cli.config).await;
+                }
+            }
             let result = match command {
                 KeyCliCommands::List { context, status } => {
                     keys_cli::run_keys_list(cli.config, context, status).await
@@ -375,6 +435,13 @@ async fn main() {
             }
         }
         Some(Commands::Acl { command }) => {
+            // SEALED CHECK: update and delete modify ACL
+            match &command {
+                AclCommands::List { .. } | AclCommands::Get { .. } => {}
+                AclCommands::Update { .. } | AclCommands::Delete { .. } => {
+                    check_seal(&cli.config).await;
+                }
+            }
             let result = match command {
                 AclCommands::List { context, role } => {
                     acl_cli::run_acl_list(cli.config, context, role).await
@@ -397,6 +464,11 @@ async fn main() {
         }
         #[cfg(feature = "webvh")]
         Some(Commands::Webvh { command }) => {
+            // SEALED CHECK: webvh commands modify servers and DIDs
+            match &command {
+                WebvhCommands::ListServers | WebvhCommands::ListDids { .. } => {}
+                _ => check_seal(&cli.config).await,
+            }
             let result = match command {
                 WebvhCommands::AddServer { id, did, label } => {
                     webvh_cli::run_add_server(cli.config, id, did, label).await
@@ -571,6 +643,130 @@ fn print_banner() {
 "#,
         version = env!("CARGO_PKG_VERSION"),
     );
+}
+
+/// Check if the VTA is sealed; exit with an error if so.
+/// Called before any CLI command that modifies state.
+async fn check_seal(config_path: &Option<PathBuf>) {
+    let config = match AppConfig::load(config_path.clone()) {
+        Ok(c) => c,
+        Err(_) => return, // Config not loadable — let the actual command handle it
+    };
+    let store = match store::Store::open(&config.store) {
+        Ok(s) => s,
+        Err(_) => return, // Store not openable — let the actual command handle it
+    };
+    if let Err(e) = seal::require_unsealed(&store).await {
+        eprintln!("Error: {e}");
+        std::process::exit(1);
+    }
+}
+
+/// Bootstrap the first super admin and seal the VTA.
+async fn run_bootstrap_admin(
+    config_path: Option<PathBuf>,
+    did: String,
+    label: Option<String>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let config = AppConfig::load(config_path)?;
+    let store = store::Store::open(&config.store)?;
+    let acl_ks = store.keyspace("acl")?;
+
+    // Check if already sealed
+    if let Some(existing) = seal::get_seal(&acl_ks).await? {
+        eprintln!(
+            "VTA is already sealed (by {} on {}).",
+            existing.sealed_by,
+            existing.sealed_at.format("%Y-%m-%d %H:%M:%S UTC")
+        );
+        eprintln!("Cannot bootstrap again. Manage admins via the REST API or DIDComm.");
+        std::process::exit(1);
+    }
+
+    // Check no existing super admins
+    let entries = acl::list_acl_entries(&acl_ks).await?;
+    let existing_super_admins: Vec<_> = entries
+        .iter()
+        .filter(|e| e.role == acl::Role::Admin && e.allowed_contexts.is_empty())
+        .collect();
+
+    if !existing_super_admins.is_empty() {
+        eprintln!("WARNING: {} existing super admin(s) found:", existing_super_admins.len());
+        for admin in &existing_super_admins {
+            eprintln!("  - {} ({})", admin.did, admin.label.as_deref().unwrap_or("no label"));
+        }
+        eprintln!();
+        eprintln!("Proceeding will add another super admin and seal the VTA.");
+        eprintln!("Press Ctrl+C to cancel, or Enter to continue...");
+        let mut buf = String::new();
+        std::io::stdin().read_line(&mut buf)?;
+    }
+
+    // Create the super admin ACL entry
+    let entry = acl::AclEntry {
+        did: did.clone(),
+        role: acl::Role::Admin,
+        label,
+        allowed_contexts: vec![], // Empty = super admin
+        created_at: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs(),
+        created_by: "cli:bootstrap-admin".into(),
+    };
+    acl::store_acl_entry(&acl_ks, &entry).await?;
+
+    // Seal the VTA
+    let seal_record = seal::seal(&acl_ks, &did).await?;
+
+    store.persist().await?;
+
+    eprintln!();
+    eprintln!("=== VTA Bootstrapped and Sealed ===");
+    eprintln!();
+    eprintln!("  Admin DID: {}", did);
+    eprintln!("  Sealed at: {}", seal_record.sealed_at.format("%Y-%m-%d %H:%M:%S UTC"));
+    eprintln!();
+    eprintln!("  The VTA is now sealed. Offline CLI commands that modify state are disabled.");
+    eprintln!("  All management must go through the authenticated REST API or DIDComm.");
+    eprintln!();
+    eprintln!("  To start the VTA server:");
+    eprintln!("    vta --config config.toml");
+    eprintln!();
+
+    Ok(())
+}
+
+/// Emergency unseal — re-enables offline CLI commands.
+async fn run_unseal(config_path: Option<PathBuf>) -> Result<(), Box<dyn std::error::Error>> {
+    let config = AppConfig::load(config_path)?;
+    let store = store::Store::open(&config.store)?;
+    let acl_ks = store.keyspace("acl")?;
+
+    let existing = seal::get_seal(&acl_ks).await?;
+    if existing.is_none() {
+        eprintln!("VTA is not sealed.");
+        return Ok(());
+    }
+
+    let existing = existing.unwrap();
+    eprintln!("WARNING: Unsealing the VTA re-enables offline CLI commands.");
+    eprintln!("This weakens security — anyone with filesystem access can modify the VTA.");
+    eprintln!();
+    eprintln!("  Sealed by: {}", existing.sealed_by);
+    eprintln!("  Sealed at: {}", existing.sealed_at.format("%Y-%m-%d %H:%M:%S UTC"));
+    eprintln!();
+    eprintln!("Press Enter to unseal, or Ctrl+C to cancel...");
+    let mut buf = String::new();
+    std::io::stdin().read_line(&mut buf)?;
+
+    seal::unseal(&acl_ks).await?;
+    store.persist().await?;
+
+    eprintln!("VTA unsealed. Offline CLI commands are re-enabled.");
+    eprintln!("Re-seal with: vta bootstrap-admin --did <admin_did>");
+
+    Ok(())
 }
 
 fn init_tracing(config: &AppConfig) {
