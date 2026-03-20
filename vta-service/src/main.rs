@@ -1,5 +1,6 @@
 mod acl;
 mod acl_cli;
+mod audit;
 mod auth;
 mod config;
 mod contexts;

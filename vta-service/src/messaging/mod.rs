@@ -17,8 +17,8 @@ use vta_sdk::protocols::attestation_management;
 #[cfg(feature = "webvh")]
 use vta_sdk::protocols::did_management;
 use vta_sdk::protocols::{
-    self, acl_management, context_management, credential_management, key_management,
-    seed_management, vta_management,
+    self, acl_management, audit_management, context_management, credential_management,
+    key_management, seed_management, vta_management,
 };
 
 use affinidi_did_resolver_cache_sdk::DIDCacheClient;
@@ -33,6 +33,7 @@ pub struct DidcommState {
     pub keys_ks: KeyspaceHandle,
     pub acl_ks: KeyspaceHandle,
     pub contexts_ks: KeyspaceHandle,
+    pub audit_ks: KeyspaceHandle,
     #[cfg(feature = "webvh")]
     pub webvh_ks: KeyspaceHandle,
     pub seed_store: Arc<dyn SeedStore>,
@@ -202,6 +203,11 @@ async fn dispatch_message(
         acl_management::LIST_ACL => handlers::acl::handle_list_acl(state, &ctx, msg).await,
         acl_management::UPDATE_ACL => handlers::acl::handle_update_acl(state, &ctx, msg).await,
         acl_management::DELETE_ACL => handlers::acl::handle_delete_acl(state, &ctx, msg).await,
+
+        // Audit management
+        audit_management::LIST_LOGS => handlers::audit::handle_list_logs(state, &ctx, msg).await,
+        audit_management::GET_RETENTION => handlers::audit::handle_get_retention(state, &ctx, msg).await,
+        audit_management::UPDATE_RETENTION => handlers::audit::handle_update_retention(state, &ctx, msg).await,
 
         // VTA management
         vta_management::GET_CONFIG => handlers::config::handle_get_config(state, &ctx, msg).await,

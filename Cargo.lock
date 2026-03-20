@@ -7546,6 +7546,7 @@ checksum = "5c3082ca00d5a5ef149bb8b555a72ae84c9c59f7250f013ac822ac2e49b19c64"
 name = "vta-cli-common"
 version = "0.1.1"
 dependencies = [
+ "chrono",
  "ed25519-dalek",
  "ratatui",
  "serde_json",
@@ -7613,12 +7614,14 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "toml",
+ "tower 0.5.3",
  "tower-http",
  "tracing",
  "tracing-subscriber",
  "url",
  "uuid",
  "vta-sdk",
+ "vti-common",
  "x25519-dalek",
  "zeroize",
 ]
@@ -7663,7 +7666,30 @@ dependencies = [
  "url",
  "uuid",
  "vta-sdk",
+ "vti-common",
  "x25519-dalek",
+]
+
+[[package]]
+name = "vti-common"
+version = "0.1.1"
+dependencies = [
+ "aes-gcm",
+ "affinidi-tdk",
+ "axum",
+ "axum-extra",
+ "base64 0.22.1",
+ "ed25519-dalek",
+ "fjall",
+ "jsonwebtoken",
+ "rand 0.10.0",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "zeroize",
 ]
 
 [[package]]

@@ -43,7 +43,7 @@ impl SeedStore for KmsTeeSeedStore {
     fn get(&self) -> BoxFuture<'_, Result<Option<Vec<u8>>, AppError>> {
         Box::pin(async {
             let guard = self.seed.lock().map_err(|e| {
-                AppError::SeedStore(format!("seed lock poisoned: {e}"))
+                AppError::SecretStore(format!("seed lock poisoned: {e}"))
             })?;
             Ok(guard.clone())
         })
@@ -66,19 +66,19 @@ impl SeedStore for KmsTeeSeedStore {
                 .plaintext(aws_sdk_kms::primitives::Blob::new(seed.clone()))
                 .send()
                 .await
-                .map_err(|e| AppError::SeedStore(format!("KMS Encrypt failed: {e}")))?;
+                .map_err(|e| AppError::SecretStore(format!("KMS Encrypt failed: {e}")))?;
 
             let ciphertext = resp
                 .ciphertext_blob()
-                .ok_or_else(|| AppError::SeedStore("KMS Encrypt returned no ciphertext".into()))?;
+                .ok_or_else(|| AppError::SecretStore("KMS Encrypt returned no ciphertext".into()))?;
 
             std::fs::write(&self.ciphertext_path, ciphertext.as_ref()).map_err(|e| {
-                AppError::SeedStore(format!("failed to write seed ciphertext: {e}"))
+                AppError::SecretStore(format!("failed to write seed ciphertext: {e}"))
             })?;
 
             // Update in-memory seed
             let mut guard = self.seed.lock().map_err(|e| {
-                AppError::SeedStore(format!("seed lock poisoned: {e}"))
+                AppError::SecretStore(format!("seed lock poisoned: {e}"))
             })?;
             *guard = Some(seed);
 

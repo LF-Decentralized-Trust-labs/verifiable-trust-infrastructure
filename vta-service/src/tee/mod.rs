@@ -16,7 +16,7 @@ use tracing::{error, info, warn};
 
 use crate::config::TeeConfig;
 use crate::config::TeeMode;
-use crate::error::AppError;
+use crate::error::{AppError, tee_attestation_error};
 
 use self::detect::detect_tee;
 use self::nitro::NitroProvider;
@@ -74,11 +74,10 @@ pub fn init_tee(config: &TeeConfig) -> Result<Option<TeeState>, AppError> {
                 None => {
                     if config.mode == TeeMode::Required {
                         error!("TEE mode is 'required' but no TEE hardware detected — refusing to start");
-                        Err(AppError::TeeAttestation(
+                        Err(tee_attestation_error(
                             "TEE mode is 'required' but no TEE hardware was detected. \
                              Set tee.mode = 'optional' or 'disabled' to run without TEE, \
-                             or deploy on TEE-capable hardware (AMD SEV-SNP, AWS Nitro)."
-                                .into(),
+                             or deploy on TEE-capable hardware (AMD SEV-SNP, AWS Nitro).",
                         ))
                     } else {
                         warn!("TEE mode is 'optional' but no TEE hardware detected — attestation will not be available");

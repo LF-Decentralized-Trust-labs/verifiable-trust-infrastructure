@@ -6,6 +6,7 @@ use serde::Deserialize;
 use vta_sdk::protocols::acl_management::{create::CreateAclResultBody, list::ListAclResultBody};
 
 use crate::acl::Role;
+use crate::audit::audit;
 use crate::auth::ManageAuth;
 use crate::error::AppError;
 use crate::operations;
@@ -50,6 +51,7 @@ pub async fn create_acl(
         "rest",
     )
     .await?;
+    audit!("acl.create", actor = &auth.0.did, resource =&req.did, outcome = "success");
     Ok((StatusCode::CREATED, Json(result)))
 }
 
@@ -87,6 +89,7 @@ pub async fn update_acl(
         "rest",
     )
     .await?;
+    audit!("acl.update", actor = &auth.0.did, resource =&did, outcome = "success");
     Ok(Json(result))
 }
 
@@ -96,5 +99,6 @@ pub async fn delete_acl(
     Path(did): Path<String>,
 ) -> Result<StatusCode, AppError> {
     operations::acl::delete_acl(&state.acl_ks, &auth.0, &did, "rest").await?;
+    audit!("acl.delete", actor = &auth.0.did, resource =&did, outcome = "success");
     Ok(StatusCode::NO_CONTENT)
 }

@@ -3,9 +3,14 @@
 use std::sync::Arc;
 
 use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::Semaphore;
 use tokio_rustls::TlsConnector;
 use tokio_vsock::{VsockAddr, VsockListener, VsockStream, VMADDR_CID_ANY};
 use tracing::{debug, error, info, warn};
+
+/// Maximum concurrent connections per proxy channel.
+/// Prevents resource exhaustion from connection flooding.
+const MAX_CONCURRENT_CONNECTIONS: usize = 256;
 
 use crate::bridge::bridge;
 
@@ -23,6 +28,8 @@ pub async fn run_inbound(listen_port: u16, enclave_cid: u32, vsock_port: u32) {
     };
     info!("[inbound] listening on TCP:{listen_port} → vsock CID {enclave_cid}:{vsock_port}");
 
+    let semaphore = Arc::new(Semaphore::new(MAX_CONCURRENT_CONNECTIONS));
+
     loop {
         let (tcp_stream, peer) = match listener.accept().await {
             Ok(s) => s,
@@ -31,9 +38,19 @@ pub async fn run_inbound(listen_port: u16, enclave_cid: u32, vsock_port: u32) {
                 continue;
             }
         };
+
+        let permit = match semaphore.clone().try_acquire_owned() {
+            Ok(p) => p,
+            Err(_) => {
+                warn!("[inbound] connection limit reached ({MAX_CONCURRENT_CONNECTIONS}), rejecting {peer}");
+                drop(tcp_stream);
+                continue;
+            }
+        };
         debug!("[inbound] connection from {peer}");
 
         tokio::spawn(async move {
+            let _permit = permit; // held until task completes
             match VsockStream::connect(VsockAddr::new(enclave_cid, vsock_port)).await {
                 Ok(vsock_stream) => {
                     if let Err(e) = bridge(tcp_stream, vsock_stream).await {
@@ -133,6 +150,7 @@ pub async fn run_https_proxy(
     allowlist: Vec<(String, u16)>,
 ) {
     let allowlist = Arc::new(allowlist);
+    let semaphore = Arc::new(Semaphore::new(MAX_CONCURRENT_CONNECTIONS));
 
     let mut listener = match VsockListener::bind(VsockAddr::new(VMADDR_CID_ANY, vsock_port)) {
         Ok(l) => l,
@@ -154,10 +172,20 @@ pub async fn run_https_proxy(
                 continue;
             }
         };
+
+        let permit = match semaphore.clone().try_acquire_owned() {
+            Ok(p) => p,
+            Err(_) => {
+                warn!("[https] connection limit reached ({MAX_CONCURRENT_CONNECTIONS}), rejecting vsock peer {peer:?}");
+                drop(vsock_stream);
+                continue;
+            }
+        };
         debug!("[https] connection from vsock peer {peer:?}");
 
         let allowlist = Arc::clone(&allowlist);
         tokio::spawn(async move {
+            let _permit = permit;
             if let Err(e) = handle_connect_request(vsock_stream, &allowlist).await {
                 debug!("[https] CONNECT handler error: {e}");
             }
@@ -179,17 +207,16 @@ async fn handle_connect_request(
     // Parse: CONNECT host:port HTTP/1.1
     let parts: Vec<&str> = request_line.trim().split_whitespace().collect();
     if parts.len() < 2 || parts[0] != "CONNECT" {
-        // Not a CONNECT request — could be a plain HTTP request.
-        // Forward as-is to the first allowlisted host (for simple proxy use).
-        let target = &allowlist[0];
-        debug!("[https] non-CONNECT request, forwarding to {}:{}", target.0, target.1);
-        let tcp = TcpStream::connect(format!("{}:{}", target.0, target.1)).await?;
-        // Write back the original request line
-        use tokio::io::AsyncWriteExt as _;
-        let mut tcp = tcp;
-        tcp.write_all(request_line.as_bytes()).await?;
+        // SECURITY: Only CONNECT requests are allowed. Reject anything else
+        // to prevent request smuggling through the proxy.
+        warn!(
+            "[https] rejected non-CONNECT request: {}",
+            parts.first().unwrap_or(&"<empty>")
+        );
         drop(buf_reader);
-        bridge(stream, tcp).await?;
+        stream
+            .write_all(b"HTTP/1.1 405 Method Not Allowed\r\n\r\n")
+            .await?;
         return Ok(());
     }
 
@@ -216,7 +243,6 @@ async fn handle_connect_request(
 
     if !allowed {
         warn!("[https] CONNECT to {host}:{port} BLOCKED (not in allowlist)");
-        use tokio::io::AsyncWriteExt as _;
         drop(buf_reader);
         stream
             .write_all(b"HTTP/1.1 403 Forbidden\r\n\r\n")
@@ -231,7 +257,6 @@ async fn handle_connect_request(
 
     // Send 200 OK to the enclave
     drop(buf_reader);
-    use tokio::io::AsyncWriteExt as _;
     stream
         .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
         .await?;
@@ -255,4 +280,47 @@ fn build_tls_connector() -> Result<TlsConnector, Box<dyn std::error::Error>> {
         .with_no_client_auth();
 
     Ok(TlsConnector::from(Arc::new(config)))
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn parse_connect_target() {
+        // Verify host:port parsing logic used in handle_connect_request
+        let target = "kms.us-east-1.amazonaws.com:443";
+        let (host, port) = if let Some((h, p)) = target.rsplit_once(':') {
+            (h.to_string(), p.parse::<u16>().unwrap_or(443))
+        } else {
+            (target.to_string(), 443)
+        };
+        assert_eq!(host, "kms.us-east-1.amazonaws.com");
+        assert_eq!(port, 443);
+    }
+
+    #[test]
+    fn parse_connect_target_no_port() {
+        let target = "example.com";
+        let (host, port) = if let Some((h, p)) = target.rsplit_once(':') {
+            (h.to_string(), p.parse::<u16>().unwrap_or(443))
+        } else {
+            (target.to_string(), 443)
+        };
+        assert_eq!(host, "example.com");
+        assert_eq!(port, 443);
+    }
+
+    #[test]
+    fn allowlist_check() {
+        let allowlist: Vec<(String, u16)> = vec![
+            ("kms.us-east-1.amazonaws.com".into(), 443),
+            ("mediator.example.com".into(), 443),
+        ];
+
+        // Allowed
+        assert!(allowlist.iter().any(|(h, p)| h == "kms.us-east-1.amazonaws.com" && *p == 443));
+        // Not allowed
+        assert!(!allowlist.iter().any(|(h, p)| h == "evil.com" && *p == 443));
+        // Wrong port
+        assert!(!allowlist.iter().any(|(h, p)| h == "kms.us-east-1.amazonaws.com" && *p == 8080));
+    }
 }

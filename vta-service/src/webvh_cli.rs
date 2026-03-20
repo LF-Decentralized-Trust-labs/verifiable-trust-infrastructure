@@ -4,7 +4,7 @@ use std::sync::{Arc, OnceLock};
 use affinidi_did_resolver_cache_sdk::{DIDCacheClient, config::DIDCacheConfigBuilder};
 
 use crate::acl::Role;
-use crate::auth::extractor::AuthClaims;
+use crate::auth::AuthClaims;
 use crate::config::AppConfig;
 use crate::didcomm_bridge::DIDCommBridge;
 use crate::keys::seed_store::create_seed_store;

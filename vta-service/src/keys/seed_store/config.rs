@@ -22,7 +22,7 @@ impl super::SeedStore for ConfigSeedStore {
     fn get(&self) -> Pin<Box<dyn Future<Output = Result<Option<Vec<u8>>, AppError>> + Send + '_>> {
         Box::pin(async {
             let bytes = hex::decode(&self.hex_seed).map_err(|e| {
-                AppError::SeedStore(format!("failed to decode hex seed from config: {e}"))
+                AppError::SecretStore(format!("failed to decode hex seed from config: {e}"))
             })?;
             debug!("seed loaded from config");
             Ok(Some(bytes))
@@ -31,7 +31,7 @@ impl super::SeedStore for ConfigSeedStore {
 
     fn set(&self, _seed: &[u8]) -> Pin<Box<dyn Future<Output = Result<(), AppError>> + Send + '_>> {
         Box::pin(async {
-            Err(AppError::SeedStore(
+            Err(AppError::SecretStore(
                 "config-seed backend is read-only at runtime; update [secrets] seed in config.toml"
                     .into(),
             ))

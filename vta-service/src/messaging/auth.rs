@@ -1,7 +1,7 @@
 use affinidi_tdk::didcomm::Message;
 
 use crate::acl::get_acl_entry;
-use crate::auth::extractor::AuthClaims;
+use crate::auth::AuthClaims;
 use crate::error::AppError;
 use crate::store::KeyspaceHandle;
 

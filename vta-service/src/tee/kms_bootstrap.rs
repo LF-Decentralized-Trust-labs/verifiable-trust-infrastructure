@@ -21,7 +21,7 @@ use tracing::{debug, error, info, warn};
 use zeroize::Zeroize;
 
 use crate::config::TeeKmsConfig;
-use crate::error::AppError;
+use crate::error::{AppError, tee_attestation_error};
 
 /// Secrets bootstrapped from KMS, held only in TEE memory.
 ///
@@ -72,14 +72,14 @@ pub async fn bootstrap_secrets(
         info!("found existing secret ciphertexts — decrypting via KMS");
 
         let seed_ciphertext = std::fs::read(seed_ct_path)
-            .map_err(|e| AppError::TeeAttestation(format!("failed to read seed ciphertext: {e}")))?;
+            .map_err(|e| tee_attestation_error(format!("failed to read seed ciphertext: {e}")))?;
         let jwt_ciphertext = std::fs::read(jwt_ct_path)
-            .map_err(|e| AppError::TeeAttestation(format!("failed to read JWT ciphertext: {e}")))?;
+            .map_err(|e| tee_attestation_error(format!("failed to read JWT ciphertext: {e}")))?;
 
         seed = kms_decrypt(kms_config, &seed_ciphertext).await?;
         let jwt_bytes = kms_decrypt(kms_config, &jwt_ciphertext).await?;
         jwt_key = jwt_bytes.try_into().map_err(|_| {
-            AppError::TeeAttestation("JWT key must be exactly 32 bytes".into())
+            tee_attestation_error("JWT key must be exactly 32 bytes")
         })?;
 
         // Verify JWT key fingerprint (tamper detection)
@@ -94,7 +94,7 @@ pub async fn bootstrap_secrets(
         let mut entropy = [0u8; 32];
         rand::fill(&mut entropy);
         let mnemonic = bip39::Mnemonic::from_entropy(&entropy)
-            .map_err(|e| AppError::TeeAttestation(format!("failed to generate mnemonic: {e}")))?;
+            .map_err(|e| tee_attestation_error(format!("failed to generate mnemonic: {e}")))?;
 
         info!("first boot — master seed generated inside TEE (mnemonic NOT displayed)");
         info!("to export the mnemonic, restart with VTA_MNEMONIC_EXPORT_WINDOW=<seconds>");
@@ -115,15 +115,15 @@ pub async fn bootstrap_secrets(
         // Create parent directories
         if let Some(parent) = seed_ct_path.parent() {
             std::fs::create_dir_all(parent).map_err(|e| {
-                AppError::TeeAttestation(format!("failed to create secrets directory: {e}"))
+                tee_attestation_error(format!("failed to create secrets directory: {e}"))
             })?;
         }
 
         std::fs::write(seed_ct_path, &seed_ciphertext).map_err(|e| {
-            AppError::TeeAttestation(format!("failed to write seed ciphertext: {e}"))
+            tee_attestation_error(format!("failed to write seed ciphertext: {e}"))
         })?;
         std::fs::write(jwt_ct_path, &jwt_ciphertext).map_err(|e| {
-            AppError::TeeAttestation(format!("failed to write JWT ciphertext: {e}"))
+            tee_attestation_error(format!("failed to write JWT ciphertext: {e}"))
         })?;
 
         // Store JWT key fingerprint for tamper detection on subsequent boots
@@ -166,7 +166,7 @@ fn store_jwt_fingerprint(config: &TeeKmsConfig, key: &[u8; 32]) -> Result<(), Ap
     let fingerprint = jwt_fingerprint(key);
     let path = fingerprint_path(config);
     std::fs::write(&path, fingerprint.as_bytes()).map_err(|e| {
-        AppError::TeeAttestation(format!("failed to write JWT fingerprint: {e}"))
+        tee_attestation_error(format!("failed to write JWT fingerprint: {e}"))
     })?;
     debug!(fingerprint = %fingerprint, "JWT key fingerprint stored");
     Ok(())
@@ -183,7 +183,7 @@ fn verify_jwt_fingerprint(config: &TeeKmsConfig, key: &[u8; 32]) -> Result<(), A
     }
 
     let stored = std::fs::read_to_string(&path).map_err(|e| {
-        AppError::TeeAttestation(format!("failed to read JWT fingerprint: {e}"))
+        tee_attestation_error(format!("failed to read JWT fingerprint: {e}"))
     })?;
     let computed = jwt_fingerprint(key);
 
@@ -193,12 +193,11 @@ fn verify_jwt_fingerprint(config: &TeeKmsConfig, key: &[u8; 32]) -> Result<(), A
             computed = %computed,
             "JWT key fingerprint MISMATCH — possible key tampering or KMS key rotation"
         );
-        return Err(AppError::TeeAttestation(
+        return Err(tee_attestation_error(
             "JWT key fingerprint mismatch — the decrypted JWT key does not match the key \
              used on first boot. This could indicate tampering with the ciphertext files \
              or a KMS key change. If this is intentional (e.g., disaster recovery), \
-             delete the jwt.fingerprint file and restart."
-                .into(),
+             delete the jwt.fingerprint file and restart.",
         ));
     }
 
@@ -299,7 +298,7 @@ async fn kms_decrypt_direct(
 
     resp.plaintext()
         .map(|b| b.as_ref().to_vec())
-        .ok_or_else(|| AppError::TeeAttestation("KMS Decrypt returned no plaintext".into()))
+        .ok_or_else(|| tee_attestation_error("KMS Decrypt returned no plaintext"))
 }
 
 /// Encrypt plaintext with KMS (for first-boot secret storage).
@@ -324,7 +323,7 @@ async fn kms_encrypt(
 
     resp.ciphertext_blob()
         .map(|b| b.as_ref().to_vec())
-        .ok_or_else(|| AppError::TeeAttestation("KMS Encrypt returned no ciphertext".into()))
+        .ok_or_else(|| tee_attestation_error("KMS Encrypt returned no ciphertext"))
 }
 
 /// Classify KMS errors for operator diagnostics.
@@ -354,7 +353,7 @@ fn classify_kms_error<E: std::error::Error>(operation: &str, err: E) -> AppError
     }
 
     error!(operation, classification, "KMS error");
-    AppError::TeeAttestation(msg)
+    tee_attestation_error(msg)
 }
 
 #[cfg(test)]

@@ -8,6 +8,7 @@ use ed25519_dalek_bip32::ExtendedSigningKey;
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD as BASE64;
 
+use crate::auth::AuthState;
 use crate::auth::jwt::JwtKeys;
 use crate::auth::session::cleanup_expired_sessions;
 use crate::config::{AppConfig, AuthConfig};
@@ -35,6 +36,7 @@ pub struct AppState {
     pub sessions_ks: KeyspaceHandle,
     pub acl_ks: KeyspaceHandle,
     pub contexts_ks: KeyspaceHandle,
+    pub audit_ks: KeyspaceHandle,
     #[cfg(feature = "webvh")]
     pub webvh_ks: KeyspaceHandle,
     pub config: Arc<RwLock<AppConfig>>,
@@ -48,6 +50,15 @@ pub struct AppState {
     pub tee_state: Option<crate::tee::TeeState>,
     #[cfg(feature = "tee")]
     pub mnemonic_guard: Option<Arc<crate::tee::mnemonic_guard::MnemonicExportGuard>>,
+}
+
+impl AuthState for AppState {
+    fn jwt_keys(&self) -> Option<&Arc<JwtKeys>> {
+        self.jwt_keys.as_ref()
+    }
+    fn sessions_ks(&self) -> &KeyspaceHandle {
+        &self.sessions_ks
+    }
 }
 
 pub async fn run(
@@ -85,12 +96,26 @@ pub async fn run(
     let sessions_ks = apply_encryption(store.keyspace("sessions")?);
     let acl_ks = apply_encryption(store.keyspace("acl")?);
     let contexts_ks = apply_encryption(store.keyspace("contexts")?);
+    let audit_ks = apply_encryption(store.keyspace("audit")?);
     #[cfg(feature = "webvh")]
     let webvh_ks = apply_encryption(store.keyspace("webvh")?);
 
     // Initialize auth infrastructure
     let (did_resolver, secrets_resolver, jwt_keys) =
         init_auth(&config, &*seed_store, &keys_ks).await;
+
+    // In TEE required mode, authentication must be fully initialized.
+    // A VTA without working auth in a TEE would serve unauthenticated
+    // endpoints (health) while unable to authenticate any requests.
+    #[cfg(feature = "tee")]
+    if config.tee.mode == crate::config::TeeMode::Required && jwt_keys.is_none() {
+        return Err(AppError::Config(
+            "TEE mode is 'required' but authentication failed to initialize. \
+             Ensure VTA setup is complete (vta_did, jwt_signing_key, seed store) \
+             before deploying in TEE required mode."
+                .into(),
+        ));
+    }
 
     // Initialize TEE attestation subsystem
     #[cfg(feature = "tee")]
@@ -122,6 +147,8 @@ pub async fn run(
 
     // Gather storage thread inputs
     let storage_sessions_ks = sessions_ks.clone();
+    let storage_audit_ks = audit_ks.clone();
+    let storage_audit_config = config.audit.clone();
     let storage_auth_config = config.auth.clone();
     let has_auth = jwt_keys.is_some();
 
@@ -136,6 +163,7 @@ pub async fn run(
             keys_ks: keys_ks.clone(),
             acl_ks: acl_ks.clone(),
             contexts_ks: contexts_ks.clone(),
+            audit_ks: audit_ks.clone(),
             #[cfg(feature = "webvh")]
             webvh_ks: webvh_ks.clone(),
             seed_store: seed_store.clone(),
@@ -158,6 +186,7 @@ pub async fn run(
             sessions_ks,
             acl_ks,
             contexts_ks,
+            audit_ks,
             #[cfg(feature = "webvh")]
             webvh_ks,
             config: Arc::new(RwLock::new(config.clone())),
@@ -220,6 +249,8 @@ pub async fn run(
             run_storage_thread(
                 store,
                 storage_sessions_ks,
+                storage_audit_ks,
+                storage_audit_config,
                 storage_auth_config,
                 has_auth,
                 &mut storage_shutdown_rx,
@@ -283,6 +314,8 @@ pub async fn run(
 fn run_storage_thread(
     store: Store,
     sessions_ks: KeyspaceHandle,
+    audit_ks: KeyspaceHandle,
+    audit_config: crate::config::AuditConfig,
     auth_config: AuthConfig,
     has_auth: bool,
     shutdown_rx: &mut watch::Receiver<bool>,
@@ -306,6 +339,11 @@ fn run_storage_thread(
                     _ = timer.tick() => {
                         if let Err(e) = cleanup_expired_sessions(&sessions_ks, auth_config.challenge_ttl).await {
                             warn!("session cleanup error: {e}");
+                        }
+                        // Also clean up expired audit logs
+                        let audit_retention = audit_config.retention_days;
+                        if let Err(e) = crate::audit::cleanup_expired_logs(&audit_ks, audit_retention).await {
+                            warn!("audit cleanup error: {e}");
                         }
                     }
                     _ = shutdown_rx.changed() => {
@@ -563,7 +601,7 @@ fn decode_jwt_key(b64: &str) -> Result<JwtKeys, AppError> {
     let key_bytes: [u8; 32] = bytes
         .try_into()
         .map_err(|_| AppError::Config("jwt_signing_key must be exactly 32 bytes".into()))?;
-    let keys = JwtKeys::from_ed25519_bytes(&key_bytes)?;
+    let keys = JwtKeys::from_ed25519_bytes(&key_bytes, "VTA")?;
     debug!("JWT signing key decoded successfully");
     Ok(keys)
 }

@@ -3,7 +3,7 @@ use base64::engine::general_purpose::STANDARD as BASE64;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::{debug, info};
 
-use crate::error::AppError;
+use crate::error::{AppError, tee_attestation_error};
 
 use super::provider::TeeProvider;
 use super::types::{AttestationReport, TeeStatus, TeeType};
@@ -91,7 +91,7 @@ impl TeeProvider for NitroProvider {
 
         let evidence = BASE64
             .decode(&report.evidence)
-            .map_err(|e| AppError::TeeAttestation(format!("invalid evidence encoding: {e}")))?;
+            .map_err(|e| tee_attestation_error(format!("invalid evidence encoding: {e}")))?;
 
         if evidence.is_empty() {
             return Ok(false);
@@ -176,7 +176,7 @@ fn open_nsm_device() -> Result<NsmFd, AppError> {
     let fd = unsafe { libc::open(path.as_ptr(), libc::O_RDWR) };
     if fd < 0 {
         let err = std::io::Error::last_os_error();
-        return Err(AppError::TeeAttestation(format!(
+        return Err(tee_attestation_error(format!(
             "failed to open /dev/nsm: {err}"
         )));
     }
@@ -225,15 +225,15 @@ fn nsm_ioctl(fd: std::os::unix::io::RawFd, request: &[u8]) -> Result<Vec<u8>, Ap
 
     if ret != 0 {
         let err = std::io::Error::last_os_error();
-        return Err(AppError::TeeAttestation(format!(
+        return Err(tee_attestation_error(format!(
             "NSM ioctl failed: {err}"
         )));
     }
 
     let actual_len = msg.response.len as usize;
     if actual_len == 0 {
-        return Err(AppError::TeeAttestation(
-            "empty response from NSM device".into(),
+        return Err(tee_attestation_error(
+            "empty response from NSM device",
         ));
     }
 
@@ -290,16 +290,16 @@ fn extract_attestation_document(response: &[u8]) -> Result<Vec<u8>, AppError> {
         .windows(marker.len())
         .position(|w| w == marker)
         .ok_or_else(|| {
-            AppError::TeeAttestation(
-                "NSM response does not contain 'document' field".into(),
+            tee_attestation_error(
+                "NSM response does not contain 'document' field",
             )
         })?;
 
     // The byte string follows immediately after the "document" text
     let after_key = pos + marker.len();
     if after_key >= response.len() {
-        return Err(AppError::TeeAttestation(
-            "NSM response truncated after 'document' key".into(),
+        return Err(tee_attestation_error(
+            "NSM response truncated after 'document' key",
         ));
     }
 
@@ -340,12 +340,12 @@ fn encode_cbor_bytes(buf: &mut Vec<u8>, data: &[u8]) {
 /// Decode a CBOR byte string at the start of the given slice.
 fn decode_cbor_bytes(data: &[u8]) -> Result<Vec<u8>, AppError> {
     if data.is_empty() {
-        return Err(AppError::TeeAttestation("unexpected end of CBOR data".into()));
+        return Err(tee_attestation_error("unexpected end of CBOR data"));
     }
 
     let major = data[0] >> 5;
     if major != 2 {
-        return Err(AppError::TeeAttestation(format!(
+        return Err(tee_attestation_error(format!(
             "expected CBOR byte string (major type 2), got major type {major}"
         )));
     }
@@ -355,17 +355,17 @@ fn decode_cbor_bytes(data: &[u8]) -> Result<Vec<u8>, AppError> {
         (additional as usize, 1)
     } else if additional == 24 {
         if data.len() < 2 {
-            return Err(AppError::TeeAttestation("truncated CBOR length".into()));
+            return Err(tee_attestation_error("truncated CBOR length"));
         }
         (data[1] as usize, 2)
     } else if additional == 25 {
         if data.len() < 3 {
-            return Err(AppError::TeeAttestation("truncated CBOR length".into()));
+            return Err(tee_attestation_error("truncated CBOR length"));
         }
         (((data[1] as usize) << 8) | data[2] as usize, 3)
     } else if additional == 26 {
         if data.len() < 5 {
-            return Err(AppError::TeeAttestation("truncated CBOR length".into()));
+            return Err(tee_attestation_error("truncated CBOR length"));
         }
         (
             ((data[1] as usize) << 24)
@@ -375,13 +375,13 @@ fn decode_cbor_bytes(data: &[u8]) -> Result<Vec<u8>, AppError> {
             5,
         )
     } else {
-        return Err(AppError::TeeAttestation(format!(
+        return Err(tee_attestation_error(format!(
             "unsupported CBOR additional info: {additional}"
         )));
     };
 
     if data.len() < offset + len {
-        return Err(AppError::TeeAttestation(format!(
+        return Err(tee_attestation_error(format!(
             "CBOR byte string length {len} exceeds available data"
         )));
     }

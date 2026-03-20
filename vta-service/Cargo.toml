@@ -30,7 +30,6 @@ tee = [
   "dep:hmac",
   "dep:aws-sdk-kms",
   "dep:aws-config",
-  "dep:zeroize",
 ]
 
 [[bin]]
@@ -38,6 +37,7 @@ name = "vta"
 path = "src/main.rs"
 
 [dependencies]
+vti-common = { path = "../vti-common", features = ["encryption"] }
 vta-sdk = { path = "../vta-sdk", features = ["didcomm"] }
 affinidi-tdk = { workspace = true }
 affinidi-did-resolver-cache-sdk = "0.8"
@@ -47,7 +47,7 @@ axum-extra = { workspace = true }
 jsonwebtoken = { workspace = true }
 fjall = { workspace = true }
 toml = "1.0"
-tower-http = { version = "0.6", features = ["trace"] }
+tower-http = { version = "0.6", features = ["trace", "limit"] }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -81,7 +81,8 @@ url = { workspace = true, optional = true }
 reqwest = { workspace = true, optional = true }
 tempfile = { version = "3", optional = true }
 libc = { version = "0.2", optional = true }
-zeroize = { version = "1", features = ["derive"], optional = true }
+zeroize = { version = "1", features = ["derive"] }
+tower = { version = "0.5", features = ["limit"] }
 aes-gcm = "0.10"
 hmac = { version = "0.12", optional = true }
 aws-sdk-kms = { version = "1", optional = true }

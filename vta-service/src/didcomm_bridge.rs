@@ -6,7 +6,7 @@ use affinidi_tdk::messaging::ATM;
 use affinidi_tdk::messaging::profiles::ATMProfile;
 use vta_sdk::didcomm_transport::{PendingMap, send_and_wait_raw};
 
-use crate::error::AppError;
+use crate::error::{AppError, bad_gateway_error};
 
 /// Bridge between REST/DIDComm handlers and the main ATM connection.
 ///
@@ -64,6 +64,6 @@ impl DIDCommBridge {
             timeout_secs,
         )
         .await
-        .map_err(AppError::BadGateway)
+        .map_err(bad_gateway_error)
     }
 }

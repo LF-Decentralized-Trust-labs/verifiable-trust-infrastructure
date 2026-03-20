@@ -2,23 +2,30 @@ use crate::error::AppError;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+// Re-export shared config types
+pub use vti_common::config::{
+    AuditConfig, AuthConfig, LogConfig, LogFormat, MessagingConfig, StoreConfig,
+};
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct AppConfig {
     pub vta_did: Option<String>,
     #[serde(alias = "community_name")]
     pub vta_name: Option<String>,
     pub public_url: Option<String>,
-    #[serde(default)]
+    #[serde(default = "default_server_config")]
     pub server: ServerConfig,
     #[serde(default)]
     pub log: LogConfig,
-    #[serde(default)]
+    #[serde(default = "default_store_config")]
     pub store: StoreConfig,
     pub messaging: Option<MessagingConfig>,
     #[serde(default)]
     pub services: ServicesConfig,
     #[serde(default)]
     pub auth: AuthConfig,
+    #[serde(default)]
+    pub audit: AuditConfig,
     #[serde(default)]
     pub secrets: SecretsConfig,
     #[cfg(feature = "tee")]
@@ -91,81 +98,11 @@ impl Default for ServicesConfig {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct MessagingConfig {
-    pub mediator_url: String,
-    pub mediator_did: String,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ServerConfig {
     #[serde(default = "default_host")]
     pub host: String,
     #[serde(default = "default_port")]
     pub port: u16,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct LogConfig {
-    #[serde(default = "default_log_level")]
-    pub level: String,
-    #[serde(default)]
-    pub format: LogFormat,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct StoreConfig {
-    #[serde(default = "default_data_dir")]
-    pub data_dir: PathBuf,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct AuthConfig {
-    #[serde(default = "default_access_token_expiry")]
-    pub access_token_expiry: u64,
-    #[serde(default = "default_refresh_token_expiry")]
-    pub refresh_token_expiry: u64,
-    #[serde(default = "default_challenge_ttl")]
-    pub challenge_ttl: u64,
-    #[serde(default = "default_session_cleanup_interval")]
-    pub session_cleanup_interval: u64,
-    /// Base64url-no-pad encoded 32-byte Ed25519 private key for JWT signing.
-    pub jwt_signing_key: Option<String>,
-}
-
-fn default_access_token_expiry() -> u64 {
-    900
-}
-
-fn default_refresh_token_expiry() -> u64 {
-    86400
-}
-
-fn default_challenge_ttl() -> u64 {
-    300
-}
-
-fn default_session_cleanup_interval() -> u64 {
-    600
-}
-
-impl Default for AuthConfig {
-    fn default() -> Self {
-        Self {
-            access_token_expiry: default_access_token_expiry(),
-            refresh_token_expiry: default_refresh_token_expiry(),
-            challenge_ttl: default_challenge_ttl(),
-            session_cleanup_interval: default_session_cleanup_interval(),
-            jwt_signing_key: None,
-        }
-    }
-}
-
-#[derive(Debug, Default, Deserialize, Serialize, Clone, PartialEq)]
-#[serde(rename_all = "lowercase")]
-pub enum LogFormat {
-    #[default]
-    Text,
-    Json,
 }
 
 fn default_host() -> String {
@@ -176,12 +113,14 @@ fn default_port() -> u16 {
     8100
 }
 
-fn default_log_level() -> String {
-    "info".to_string()
+fn default_server_config() -> ServerConfig {
+    ServerConfig::default()
 }
 
-fn default_data_dir() -> PathBuf {
-    PathBuf::from("data/vta")
+fn default_store_config() -> StoreConfig {
+    StoreConfig {
+        data_dir: PathBuf::from("data/vta"),
+    }
 }
 
 impl Default for ServerConfig {
@@ -189,23 +128,6 @@ impl Default for ServerConfig {
         Self {
             host: default_host(),
             port: default_port(),
-        }
-    }
-}
-
-impl Default for LogConfig {
-    fn default() -> Self {
-        Self {
-            level: default_log_level(),
-            format: LogFormat::default(),
-        }
-    }
-}
-
-impl Default for StoreConfig {
-    fn default() -> Self {
-        Self {
-            data_dir: default_data_dir(),
         }
     }
 }
@@ -500,6 +422,13 @@ impl AppConfig {
         }
         if let Ok(key) = std::env::var("VTA_AUTH_JWT_SIGNING_KEY") {
             config.auth.jwt_signing_key = Some(key);
+        }
+
+        // Audit
+        if let Ok(val) = std::env::var("VTA_AUDIT_RETENTION_DAYS") {
+            if let Ok(days) = val.parse::<u32>() {
+                config.audit.retention_days = days;
+            }
         }
 
         // TEE (non-KMS mode — all overrides allowed)

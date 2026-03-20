@@ -9,6 +9,7 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD as BASE64;
 
 use crate::auth::jwt::JwtKeys;
 use crate::auth::session::cleanup_expired_sessions;
+use crate::auth::AuthState;
 use crate::config::{AppConfig, AuthConfig};
 use crate::error::AppError;
 use crate::keys::seed_store::SecretStore;
@@ -28,6 +29,15 @@ pub struct AppState {
     pub did_resolver: Option<DIDCacheClient>,
     pub secrets_resolver: Option<Arc<ThreadedSecretsResolver>>,
     pub jwt_keys: Option<Arc<JwtKeys>>,
+}
+
+impl AuthState for AppState {
+    fn jwt_keys(&self) -> Option<&Arc<JwtKeys>> {
+        self.jwt_keys.as_ref()
+    }
+    fn sessions_ks(&self) -> &KeyspaceHandle {
+        &self.sessions_ks
+    }
 }
 
 pub async fn run(
@@ -400,7 +410,7 @@ fn decode_jwt_key(b64: &str) -> Result<JwtKeys, AppError> {
     let key_bytes: [u8; 32] = bytes
         .try_into()
         .map_err(|_| AppError::Config("jwt_signing_key must be exactly 32 bytes".into()))?;
-    let keys = JwtKeys::from_ed25519_bytes(&key_bytes)?;
+    let keys = JwtKeys::from_ed25519_bytes(&key_bytes, "VTC")?;
     debug!("JWT signing key decoded successfully");
     Ok(keys)
 }

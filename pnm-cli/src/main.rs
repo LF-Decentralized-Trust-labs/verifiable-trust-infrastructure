@@ -5,7 +5,7 @@ mod setup;
 use clap::{Parser, Subcommand};
 use vta_sdk::client::VtaClient;
 
-use vta_cli_common::commands::{acl, config as config_cmd, contexts, credentials, keys, webvh};
+use vta_cli_common::commands::{acl, audit, config as config_cmd, contexts, credentials, keys, webvh};
 use vta_cli_common::render::{CYAN, DIM, GREEN, RED, RESET};
 
 #[derive(Parser)]
@@ -78,6 +78,12 @@ enum Commands {
     Webvh {
         #[command(subcommand)]
         command: WebvhCommands,
+    },
+
+    /// Audit log management
+    Audit {
+        #[command(subcommand)]
+        command: AuditCommands,
     },
 }
 
@@ -365,6 +371,54 @@ enum AuthCredentialCommands {
         /// Comma-separated context IDs (empty = unrestricted)
         #[arg(long, value_delimiter = ',')]
         contexts: Vec<String>,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum AuditCommands {
+    /// List audit log entries with optional filtering
+    List {
+        /// Start time (unix epoch seconds)
+        #[arg(long)]
+        from: Option<u64>,
+        /// End time (unix epoch seconds)
+        #[arg(long)]
+        to: Option<u64>,
+        /// Filter by action (e.g. "auth.challenge", "key.create")
+        #[arg(long)]
+        action: Option<String>,
+        /// Filter by actor DID
+        #[arg(long)]
+        actor: Option<String>,
+        /// Filter by outcome (e.g. "success", "denied")
+        #[arg(long)]
+        outcome: Option<String>,
+        /// Filter by context ID
+        #[arg(long)]
+        context_id: Option<String>,
+        /// Page number (default 1)
+        #[arg(long, default_value_t = 1)]
+        page: u64,
+        /// Page size (default 50, max 500)
+        #[arg(long, default_value_t = 50)]
+        page_size: u64,
+    },
+    /// Manage audit log retention
+    Retention {
+        #[command(subcommand)]
+        command: RetentionCommands,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum RetentionCommands {
+    /// Get the current retention period
+    Get,
+    /// Set the retention period (super-admin only)
+    Set {
+        /// Number of days to retain audit logs (1-365)
+        #[arg(long)]
+        days: u32,
     },
 }
 
@@ -711,6 +765,36 @@ async fn main() {
             }
             WebvhCommands::GetDid { did } => webvh::cmd_webvh_did_get(&client, &did).await,
             WebvhCommands::DeleteDid { did } => webvh::cmd_webvh_did_delete(&client, &did).await,
+        },
+        Commands::Audit { command } => match command {
+            AuditCommands::List {
+                from,
+                to,
+                action,
+                actor,
+                outcome,
+                context_id,
+                page,
+                page_size,
+            } => {
+                let params = vta_sdk::protocols::audit_management::list::ListAuditLogsBody {
+                    from,
+                    to,
+                    action,
+                    actor,
+                    outcome,
+                    context_id,
+                    page,
+                    page_size,
+                };
+                audit::cmd_list_audit_logs(&client, &params).await
+            }
+            AuditCommands::Retention { command } => match command {
+                RetentionCommands::Get => audit::cmd_get_retention(&client).await,
+                RetentionCommands::Set { days } => {
+                    audit::cmd_update_retention(&client, days).await
+                }
+            },
         },
         Commands::Keys { command } => match command {
             KeyCommands::Create {

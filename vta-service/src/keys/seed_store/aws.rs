@@ -12,7 +12,7 @@ fn format_aws_error<E: std::error::Error>(context: &str, err: E) -> AppError {
         msg.push_str(&format!("\n  caused by: {cause}"));
         source = cause.source();
     }
-    AppError::SeedStore(msg)
+    AppError::SecretStore(msg)
 }
 
 /// Seed store backed by AWS Secrets Manager.
@@ -56,10 +56,10 @@ impl super::SeedStore for AwsSeedStore {
             match result {
                 Ok(output) => {
                     let hex_seed = output.secret_string().ok_or_else(|| {
-                        AppError::SeedStore("AWS secret exists but has no string value".into())
+                        AppError::SecretStore("AWS secret exists but has no string value".into())
                     })?;
                     let bytes = hex::decode(hex_seed).map_err(|e| {
-                        AppError::SeedStore(format!("failed to decode hex seed from AWS: {e}"))
+                        AppError::SecretStore(format!("failed to decode hex seed from AWS: {e}"))
                     })?;
                     debug!(secret_name = %self.secret_name, "seed loaded from AWS Secrets Manager");
                     Ok(Some(bytes))

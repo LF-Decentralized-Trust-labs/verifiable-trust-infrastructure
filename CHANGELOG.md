@@ -1,5 +1,80 @@
 # Changelog
 
+## 2026-03-21
+
+### vti-common `0.1.1` (new crate)
+
+- **Shared foundation crate** — Extracts common code
+  from `vta-service` and `vtc-service` into a shared
+  library: auth (JWT, sessions, extractors), ACL, error
+  types, config types, and the fjall key-value store.
+- **Key-only prefix scan** — New `prefix_keys()` method
+  on `KeyspaceHandle` for efficient iteration when only
+  keys are needed (no value decryption overhead).
+
+### vta-service `0.1.3`
+
+- **Audit logging system** — New structured audit log
+  with persistence to fjall keyspace. Includes REST
+  endpoints (`GET /audit/logs`, `GET /audit/retention`,
+  `PATCH /audit/retention`) and DIDComm protocol
+  support. Audit events emitted via tracing at the
+  `audit` target and persisted for API retrieval.
+- **Connection rate limiting** — Enclave proxy now
+  enforces a configurable maximum concurrent connection
+  limit (default 256) per proxy channel to prevent
+  resource exhaustion.
+- **Refactored to use vti-common** — Auth, ACL, store,
+  error, and config modules now delegate to the shared
+  `vti-common` crate, reducing duplication with
+  `vtc-service`.
+- **Code quality cleanup** — Eliminated unnecessary
+  `KeyspaceHandle::clone()` calls in auth routes,
+  combined redundant config lock acquisitions, removed
+  duplicate `AuditLogQuery` struct in favor of SDK's
+  `ListAuditLogsBody`, and optimized audit cleanup to
+  use key-only iteration.
+
+### vtc-service `0.1.2`
+
+- **Refactored to use vti-common** — Auth, ACL, store,
+  error, and config modules now delegate to the shared
+  `vti-common` crate.
+
+### vta-sdk `0.1.2`
+
+- **Audit management protocol** — New
+  `audit_management` module with types and client
+  methods for listing audit logs
+  (`list_audit_logs`), querying retention
+  (`get_audit_retention`), and updating retention
+  (`update_audit_retention`).
+
+### vta-cli-common `0.1.2`
+
+- **Audit commands** — New `cmd_list_audit_logs` (with
+  colored table output), `cmd_get_retention`, and
+  `cmd_update_retention` commands.
+- **Simplified `cmd_list_audit_logs` API** — Accepts
+  `&ListAuditLogsBody` directly instead of 8 individual
+  parameters.
+
+### pnm-cli `0.1.2`
+
+- **`pnm audit list`** — List audit logs with filtering
+  by time range, action, actor, outcome, and context.
+- **`pnm audit retention get/set`** — View and update
+  audit log retention period.
+
+### Security Documentation
+
+- **Security architecture** (`docs/security-architecture.md`)
+  — Comprehensive security architecture document.
+- **Threat model** (`docs/threat-model.md`) — Detailed
+  threat model analysis.
+
+---
+
 ## 2026-03-16
 
 ### vta-sdk `0.1.1`
