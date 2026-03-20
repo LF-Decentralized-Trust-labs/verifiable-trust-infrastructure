@@ -7620,6 +7620,7 @@ dependencies = [
  "uuid",
  "vta-sdk",
  "x25519-dalek",
+ "zeroize",
 ]
 
 [[package]]

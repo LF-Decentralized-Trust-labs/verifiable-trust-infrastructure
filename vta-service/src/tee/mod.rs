@@ -38,10 +38,6 @@ pub struct TeeState {
 /// or `Err` when `mode = required` but no TEE hardware is found.
 pub fn init_tee(config: &TeeConfig) -> Result<Option<TeeState>, AppError> {
     match config.mode {
-        TeeMode::Disabled => {
-            info!("TEE attestation disabled");
-            Ok(None)
-        }
         TeeMode::Simulated => {
             warn!("TEE attestation running in SIMULATED mode — not suitable for production");
             let provider = SimulatedProvider;

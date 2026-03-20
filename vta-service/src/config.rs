@@ -227,8 +227,14 @@ pub struct TeeConfig {
     #[serde(default)]
     pub kms: Option<TeeKmsConfig>,
     /// Storage encryption salt (change to invalidate all stored data).
+    /// WARNING: Changing this value invalidates all encrypted storage.
     #[serde(default = "default_storage_key_salt")]
     pub storage_key_salt: String,
+    /// Restrict which DID methods are accepted for ACL entries and authentication.
+    /// When set, only DIDs matching these prefixes are allowed (e.g., `["did:key", "did:webvh"]`).
+    /// When `None`, all DID methods are accepted (less secure with parent-side resolver).
+    #[serde(default)]
+    pub allowed_did_methods: Option<Vec<String>>,
 }
 
 /// KMS configuration for TEE secret bootstrap.
@@ -277,6 +283,7 @@ impl Default for TeeConfig {
             attestation_cache_ttl: default_attestation_cache_ttl(),
             kms: None,
             storage_key_salt: default_storage_key_salt(),
+            allowed_did_methods: None,
         }
     }
 }
@@ -286,10 +293,12 @@ impl Default for TeeConfig {
 #[derive(Debug, Default, Clone, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub enum TeeMode {
+    /// TEE hardware required — VTA refuses to start without it.
     Required,
-    Optional,
+    /// TEE used if available, continues without it.
     #[default]
-    Disabled,
+    Optional,
+    /// Simulated TEE for development/testing (NOT for production).
     Simulated,
 }
 
@@ -500,11 +509,14 @@ impl AppConfig {
                 config.tee.mode = match mode.to_lowercase().as_str() {
                     "required" => TeeMode::Required,
                     "optional" => TeeMode::Optional,
-                    "disabled" => TeeMode::Disabled,
                     "simulated" => TeeMode::Simulated,
+                    "disabled" => {
+                        tracing::warn!("VTA_TEE_MODE=disabled is deprecated — use 'optional' instead");
+                        TeeMode::Optional
+                    }
                     other => {
                         return Err(AppError::Config(format!(
-                            "invalid VTA_TEE_MODE '{other}', expected 'required', 'optional', 'disabled', or 'simulated'"
+                            "invalid VTA_TEE_MODE '{other}', expected 'required', 'optional', or 'simulated'"
                         )));
                     }
                 };

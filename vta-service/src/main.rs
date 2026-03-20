@@ -530,16 +530,12 @@ async fn main() {
             // In TEE mode with KMS config: bootstrap secrets from KMS
             // (generates on first boot, decrypts on subsequent boots)
             #[cfg(feature = "tee")]
-            let tee_bootstrap = if config.tee.mode != config::TeeMode::Disabled {
-                if let Some(ref kms_config) = config.tee.kms {
-                    Some(
-                        tee::kms_bootstrap::bootstrap_secrets(kms_config, &config.tee.storage_key_salt)
-                            .await
-                            .expect("TEE KMS bootstrap failed"),
-                    )
-                } else {
-                    None
-                }
+            let tee_bootstrap = if let Some(ref kms_config) = config.tee.kms {
+                Some(
+                    tee::kms_bootstrap::bootstrap_secrets(kms_config, &config.tee.storage_key_salt)
+                        .await
+                        .expect("TEE KMS bootstrap failed"),
+                )
             } else {
                 None
             };

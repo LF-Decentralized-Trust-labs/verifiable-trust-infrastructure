@@ -1,3 +1,4 @@
+use base64::Engine;
 use crate::error::AppError;
 use jsonwebtoken::{Algorithm, DecodingKey, EncodingKey, Header, Validation};
 use serde::{Deserialize, Serialize};
@@ -109,5 +110,65 @@ impl JwtKeys {
             exp,
             tee_attested,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_keys() -> JwtKeys {
+        JwtKeys::from_ed25519_bytes(&[0x42u8; 32]).unwrap()
+    }
+
+    #[test]
+    fn test_jwt_roundtrip() {
+        let keys = test_keys();
+        let claims = JwtKeys::new_claims(
+            "did:key:z6Mk".into(), "sess-1".into(),
+            "admin".into(), vec!["vta".into()], 900, false,
+        );
+        let token = keys.encode(&claims).unwrap();
+        let decoded = keys.decode(&token).unwrap();
+        assert_eq!(decoded.sub, "did:key:z6Mk");
+        assert_eq!(decoded.role, "admin");
+        assert!(!decoded.tee_attested);
+    }
+
+    #[test]
+    fn test_jwt_tee_attested_true() {
+        let keys = test_keys();
+        let claims = JwtKeys::new_claims(
+            "did:key:z6Mk".into(), "sess-2".into(),
+            "admin".into(), vec![], 900, true,
+        );
+        let token = keys.encode(&claims).unwrap();
+
+        // Verify the raw JSON contains tee_attested
+        let parts: Vec<&str> = token.split('.').collect();
+        let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(parts[1]).unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&payload).unwrap();
+        assert_eq!(json["tee_attested"], true);
+
+        let decoded = keys.decode(&token).unwrap();
+        assert!(decoded.tee_attested);
+    }
+
+    #[test]
+    fn test_jwt_tee_attested_false_omitted() {
+        let keys = test_keys();
+        let claims = JwtKeys::new_claims(
+            "did:key:z6Mk".into(), "sess-3".into(),
+            "admin".into(), vec![], 900, false,
+        );
+        let token = keys.encode(&claims).unwrap();
+
+        // Verify tee_attested is NOT in the JSON (skip_serializing_if)
+        let parts: Vec<&str> = token.split('.').collect();
+        let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(parts[1]).unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&payload).unwrap();
+        assert!(json.get("tee_attested").is_none());
     }
 }

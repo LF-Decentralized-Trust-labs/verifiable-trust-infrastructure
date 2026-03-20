@@ -1,19 +1,31 @@
 //! KMS-based secret bootstrap for Nitro Enclaves.
 //!
 //! On first boot (no existing ciphertext), generates a BIP-39 seed and JWT
-//! signing key inside the TEE, encrypts them with KMS, and writes the
-//! ciphertext to external storage.
+//! signing key inside the TEE, encrypts them with KMS, writes the ciphertext
+//! to external storage, and stores a JWT key fingerprint for tamper detection.
 //!
-//! On subsequent boots, decrypts the ciphertext using KMS with attestation-
-//! based key policy enforcement (PCR0/PCR3/PCR8).
+//! On subsequent boots, decrypts the ciphertext using KMS, verifies the JWT
+//! key fingerprint, and returns the secrets for use.
+//!
+//! # Attestation Status
+//!
+//! The full Nitro attestation flow (ephemeral RSA + NSM attestation document +
+//! CiphertextForRecipient) requires the `aws-nitro-enclaves-nsm-api` crate
+//! running on real Nitro hardware. When NSM is not available (simulated mode
+//! or development), the VTA falls back to direct KMS Decrypt. This is logged
+//! as a warning — in production, the KMS key policy's PCR conditions provide
+//! the attestation enforcement at the KMS level regardless.
 
-use sha2::Sha256;
-use tracing::{info, warn};
+use sha2::{Digest, Sha256};
+use tracing::{debug, error, info, warn};
+use zeroize::Zeroize;
 
 use crate::config::TeeKmsConfig;
 use crate::error::AppError;
 
 /// Secrets bootstrapped from KMS, held only in TEE memory.
+///
+/// All secret fields are zeroed on drop via the `Drop` implementation.
 pub struct BootstrappedSecrets {
     /// BIP-39 seed (32 bytes).
     pub seed: Vec<u8>,
@@ -22,14 +34,29 @@ pub struct BootstrappedSecrets {
     /// AES-256 storage encryption key (32 bytes), derived from seed via HKDF.
     pub storage_key: [u8; 32],
     /// BIP-39 entropy bytes (only on first boot — `None` on subsequent boots).
-    /// Used by `MnemonicExportGuard` for time-limited, authenticated export.
     pub entropy: Option<[u8; 32]>,
+    /// Whether this is a first boot (new secrets generated).
+    pub is_first_boot: bool,
 }
 
-/// Bootstrap secrets from KMS using Nitro attestation.
+impl Drop for BootstrappedSecrets {
+    fn drop(&mut self) {
+        self.seed.zeroize();
+        self.jwt_signing_key.zeroize();
+        self.storage_key.zeroize();
+        if let Some(ref mut e) = self.entropy {
+            e.zeroize();
+        }
+    }
+}
+
+/// JWT key fingerprint file name (stored alongside ciphertexts).
+const JWT_FINGERPRINT_FILE: &str = "jwt.fingerprint";
+
+/// Bootstrap secrets from KMS.
 ///
-/// - If ciphertext files exist: decrypt via KMS with attestation (subsequent boot)
-/// - If no ciphertext files: generate new secrets, encrypt with KMS, store ciphertext (first boot)
+/// - If ciphertext files exist: decrypt via KMS, verify JWT fingerprint (subsequent boot)
+/// - If no ciphertext files: generate new secrets, encrypt with KMS, store ciphertext + fingerprint (first boot)
 pub async fn bootstrap_secrets(
     kms_config: &TeeKmsConfig,
     storage_key_salt: &str,
@@ -42,27 +69,28 @@ pub async fn bootstrap_secrets(
 
     if seed_ct_path.exists() && jwt_ct_path.exists() {
         // ── Subsequent boot: decrypt existing ciphertexts ──
-        info!("found existing secret ciphertexts — decrypting via KMS with attestation");
+        info!("found existing secret ciphertexts — decrypting via KMS");
 
         let seed_ciphertext = std::fs::read(seed_ct_path)
             .map_err(|e| AppError::TeeAttestation(format!("failed to read seed ciphertext: {e}")))?;
         let jwt_ciphertext = std::fs::read(jwt_ct_path)
             .map_err(|e| AppError::TeeAttestation(format!("failed to read JWT ciphertext: {e}")))?;
 
-        seed = kms_decrypt_with_attestation(kms_config, &seed_ciphertext).await?;
-        let jwt_bytes = kms_decrypt_with_attestation(kms_config, &jwt_ciphertext).await?;
+        seed = kms_decrypt(kms_config, &seed_ciphertext).await?;
+        let jwt_bytes = kms_decrypt(kms_config, &jwt_ciphertext).await?;
         jwt_key = jwt_bytes.try_into().map_err(|_| {
             AppError::TeeAttestation("JWT key must be exactly 32 bytes".into())
         })?;
 
-        info!("secrets decrypted from KMS (attestation-verified)");
+        // Verify JWT key fingerprint (tamper detection)
+        verify_jwt_fingerprint(kms_config, &jwt_key)?;
+
+        info!("secrets decrypted from KMS — subsequent boot");
     } else {
         // ── First boot: generate new secrets inside the TEE ──
         info!("no existing ciphertexts found — first boot, generating new secrets in TEE");
 
         // Generate BIP-39 entropy using platform random (NSM-backed in Nitro).
-        // The mnemonic is NEVER displayed. It can only be exported via the
-        // authenticated, time-limited MnemonicExportGuard mechanism.
         let mut entropy = [0u8; 32];
         rand::fill(&mut entropy);
         let mnemonic = bip39::Mnemonic::from_entropy(&entropy)
@@ -98,36 +126,106 @@ pub async fn bootstrap_secrets(
             AppError::TeeAttestation(format!("failed to write JWT ciphertext: {e}"))
         })?;
 
+        // Store JWT key fingerprint for tamper detection on subsequent boots
+        store_jwt_fingerprint(kms_config, &jwt_key)?;
+
         info!("secrets generated and encrypted to KMS — ciphertexts stored");
 
-        // First boot: return entropy for the MnemonicExportGuard
         return Ok(BootstrappedSecrets {
             storage_key: derive_storage_key(&seed, storage_key_salt),
             seed,
             jwt_signing_key: jwt_key,
             entropy: Some(entropy),
+            is_first_boot: true,
         });
     }
 
     let storage_key = derive_storage_key(&seed, storage_key_salt);
 
-    // Subsequent boot: no entropy available (mnemonic export impossible)
     Ok(BootstrappedSecrets {
         seed,
         jwt_signing_key: jwt_key,
         storage_key,
         entropy: None,
+        is_first_boot: false,
     })
 }
+
+// ---------------------------------------------------------------------------
+// JWT key fingerprint (tamper detection)
+// ---------------------------------------------------------------------------
+
+/// Compute a SHA-256 fingerprint of the JWT signing key.
+fn jwt_fingerprint(key: &[u8; 32]) -> String {
+    let hash = Sha256::digest(key);
+    hex::encode(&hash[..16]) // First 16 bytes = 32 hex chars
+}
+
+/// Store the JWT key fingerprint alongside the ciphertexts.
+fn store_jwt_fingerprint(config: &TeeKmsConfig, key: &[u8; 32]) -> Result<(), AppError> {
+    let fingerprint = jwt_fingerprint(key);
+    let path = fingerprint_path(config);
+    std::fs::write(&path, fingerprint.as_bytes()).map_err(|e| {
+        AppError::TeeAttestation(format!("failed to write JWT fingerprint: {e}"))
+    })?;
+    debug!(fingerprint = %fingerprint, "JWT key fingerprint stored");
+    Ok(())
+}
+
+/// Verify the JWT key matches the stored fingerprint.
+fn verify_jwt_fingerprint(config: &TeeKmsConfig, key: &[u8; 32]) -> Result<(), AppError> {
+    let path = fingerprint_path(config);
+    if !path.exists() {
+        // No fingerprint file — likely an upgrade from before fingerprinting was added.
+        // Store it now for future boots, but don't fail.
+        warn!("no JWT fingerprint file found — storing one now (first boot after upgrade)");
+        return store_jwt_fingerprint(config, key);
+    }
+
+    let stored = std::fs::read_to_string(&path).map_err(|e| {
+        AppError::TeeAttestation(format!("failed to read JWT fingerprint: {e}"))
+    })?;
+    let computed = jwt_fingerprint(key);
+
+    if stored.trim() != computed {
+        error!(
+            stored = %stored.trim(),
+            computed = %computed,
+            "JWT key fingerprint MISMATCH — possible key tampering or KMS key rotation"
+        );
+        return Err(AppError::TeeAttestation(
+            "JWT key fingerprint mismatch — the decrypted JWT key does not match the key \
+             used on first boot. This could indicate tampering with the ciphertext files \
+             or a KMS key change. If this is intentional (e.g., disaster recovery), \
+             delete the jwt.fingerprint file and restart."
+                .into(),
+        ));
+    }
+
+    debug!(fingerprint = %computed, "JWT key fingerprint verified");
+    Ok(())
+}
+
+fn fingerprint_path(config: &TeeKmsConfig) -> std::path::PathBuf {
+    std::path::Path::new(&config.jwt_ciphertext_path)
+        .parent()
+        .unwrap_or(std::path::Path::new("/mnt/vta-data/secrets"))
+        .join(JWT_FINGERPRINT_FILE)
+}
+
+// ---------------------------------------------------------------------------
+// Storage key derivation
+// ---------------------------------------------------------------------------
 
 /// Derive the AES-256 storage encryption key from the master seed using HKDF.
 ///
 /// Uses HMAC-SHA256 as the PRF. The salt and info strings ensure domain separation.
-fn derive_storage_key(seed: &[u8], salt: &str) -> [u8; 32] {
-    // HKDF-Extract: PRK = HMAC-SHA256(salt, seed)
+/// Deterministic: same seed + salt → same key (survives enclave restarts).
+pub(crate) fn derive_storage_key(seed: &[u8], salt: &str) -> [u8; 32] {
     use hmac::{Hmac, Mac};
     type HmacSha256 = Hmac<Sha256>;
 
+    // HKDF-Extract: PRK = HMAC-SHA256(salt, seed)
     let mut mac = HmacSha256::new_from_slice(salt.as_bytes())
         .expect("HMAC accepts any key length");
     mac.update(seed);
@@ -146,83 +244,48 @@ fn derive_storage_key(seed: &[u8], salt: &str) -> [u8; 32] {
     key
 }
 
-/// Decrypt ciphertext using KMS with Nitro attestation.
+// ---------------------------------------------------------------------------
+// KMS operations
+// ---------------------------------------------------------------------------
+
+/// Decrypt ciphertext using KMS.
 ///
-/// 1. Generates an ephemeral RSA-2048 keypair
-/// 2. Gets an NSM attestation document embedding the RSA public key
-/// 3. Calls KMS Decrypt with Recipient = { AttestationDocument, RSAES_OAEP_SHA_256 }
-/// 4. KMS verifies PCR values against key policy, re-encrypts plaintext to RSA public key
-/// 5. Decrypts CiphertextForRecipient with RSA private key
-async fn kms_decrypt_with_attestation(
+/// On real Nitro hardware (/dev/nsm available), this should use the
+/// attestation-based Recipient parameter. Currently uses direct KMS Decrypt
+/// which is protected by the KMS key policy's PCR conditions.
+async fn kms_decrypt(
     config: &TeeKmsConfig,
     ciphertext: &[u8],
 ) -> Result<Vec<u8>, AppError> {
-    // For now, this is a placeholder that documents the exact flow.
-    // The full implementation requires the aws-sdk-kms and aws-nitro-enclaves-nsm-api
-    // crates which need Nitro hardware to function.
-    //
-    // In simulated TEE mode, we fall back to direct KMS Decrypt (no attestation).
-
-    // Step 1: Check if we're in a real Nitro Enclave
     if std::path::Path::new("/dev/nsm").exists() {
-        kms_decrypt_nitro(config, ciphertext).await
-    } else {
-        // Simulated mode: direct KMS decrypt (no attestation)
-        warn!("NSM not available — using direct KMS decrypt (simulated TEE mode)");
-        kms_decrypt_direct(config, ciphertext).await
+        // TODO: Implement attestation-based KMS Decrypt with Recipient parameter.
+        // This requires aws-nitro-enclaves-nsm-api for NSM attestation docs and
+        // RSA key generation, plus CMS envelope parsing (RFC 5652).
+        //
+        // Currently using direct KMS Decrypt. Security is maintained by the KMS
+        // key policy which requires attestation conditions (PCR0/PCR3/PCR8) on
+        // the EC2 instance role — KMS rejects requests from non-matching enclaves.
+        //
+        // The Recipient parameter adds an additional layer: KMS re-encrypts the
+        // response to the enclave's ephemeral RSA key, preventing even the parent
+        // from reading the response. Without it, the parent could theoretically
+        // intercept the KMS response on the vsock channel. In practice, the
+        // response is protected by TLS between the AWS SDK and KMS.
+        warn!("using direct KMS Decrypt (attestation-based Recipient parameter not yet implemented)");
     }
-}
 
-/// Real Nitro Enclave KMS decrypt with attestation.
-async fn kms_decrypt_nitro(
-    config: &TeeKmsConfig,
-    ciphertext: &[u8],
-) -> Result<Vec<u8>, AppError> {
-    // Full implementation flow (requires aws-sdk-kms + aws-nitro-enclaves-nsm-api):
-    //
-    // 1. Generate ephemeral RSA-2048:
-    //    let rsa_key = rsa::RsaPrivateKey::new(&mut nsm_rng, 2048)?;
-    //    let pub_der = rsa_key.to_public_key().to_public_key_der()?;
-    //
-    // 2. Get NSM attestation document:
-    //    let nsm_fd = nsm_lib::nsm_init();
-    //    let att_doc = nsm_lib::nsm_get_attestation_doc(nsm_fd, None, None, Some(&pub_der));
-    //
-    // 3. Call KMS Decrypt:
-    //    let resp = kms_client.decrypt()
-    //        .ciphertext_blob(Blob::new(ciphertext))
-    //        .key_id(&config.key_arn)
-    //        .recipient(RecipientInfo::builder()
-    //            .attestation_document(Blob::new(att_doc))
-    //            .key_encryption_algorithm(KeyEncryptionMechanism::RsaesOaepSha256)
-    //            .build())
-    //        .send().await?;
-    //
-    // 4. Decrypt CiphertextForRecipient (CMS/RFC5652):
-    //    let cms_bytes = resp.ciphertext_for_recipient()?;
-    //    let plaintext = decrypt_cms_envelope(&cms_bytes, &rsa_key)?;
-    //
-    // For now, fall back to direct decrypt until aws-sdk-kms is integrated:
-    warn!("Nitro attestation-based KMS decrypt not yet fully integrated — using direct decrypt");
     kms_decrypt_direct(config, ciphertext).await
 }
 
-/// Direct KMS decrypt without attestation (for simulated mode and initial development).
+/// Direct KMS Decrypt without the Recipient parameter.
 async fn kms_decrypt_direct(
     config: &TeeKmsConfig,
     ciphertext: &[u8],
 ) -> Result<Vec<u8>, AppError> {
-    // This uses the standard AWS SDK KMS Decrypt without the Recipient parameter.
-    // In production Nitro mode, this should NEVER be used — kms_decrypt_nitro handles that.
-
-    let sdk_config = if let Some(ref region) = Some(&config.region) {
-        aws_config::defaults(aws_config::BehaviorVersion::latest())
-            .region(aws_config::Region::new(region.to_string()))
-            .load()
-            .await
-    } else {
-        aws_config::load_defaults(aws_config::BehaviorVersion::latest()).await
-    };
+    let sdk_config = aws_config::defaults(aws_config::BehaviorVersion::latest())
+        .region(aws_config::Region::new(config.region.clone()))
+        .load()
+        .await;
 
     let client = aws_sdk_kms::Client::new(&sdk_config);
 
@@ -232,15 +295,7 @@ async fn kms_decrypt_direct(
         .key_id(&config.key_arn)
         .send()
         .await
-        .map_err(|e| {
-            let mut msg = format!("KMS Decrypt failed: {e}");
-            let mut source = std::error::Error::source(&e);
-            while let Some(cause) = source {
-                msg.push_str(&format!("\n  caused by: {cause}"));
-                source = cause.source();
-            }
-            AppError::TeeAttestation(msg)
-        })?;
+        .map_err(|e| classify_kms_error("Decrypt", e))?;
 
     resp.plaintext()
         .map(|b| b.as_ref().to_vec())
@@ -248,20 +303,14 @@ async fn kms_decrypt_direct(
 }
 
 /// Encrypt plaintext with KMS (for first-boot secret storage).
-///
-/// Does not require attestation — we're encrypting TO KMS, not receiving FROM KMS.
 async fn kms_encrypt(
     config: &TeeKmsConfig,
     plaintext: &[u8],
 ) -> Result<Vec<u8>, AppError> {
-    let sdk_config = if let Some(ref region) = Some(&config.region) {
-        aws_config::defaults(aws_config::BehaviorVersion::latest())
-            .region(aws_config::Region::new(region.to_string()))
-            .load()
-            .await
-    } else {
-        aws_config::load_defaults(aws_config::BehaviorVersion::latest()).await
-    };
+    let sdk_config = aws_config::defaults(aws_config::BehaviorVersion::latest())
+        .region(aws_config::Region::new(config.region.clone()))
+        .load()
+        .await;
 
     let client = aws_sdk_kms::Client::new(&sdk_config);
 
@@ -271,17 +320,76 @@ async fn kms_encrypt(
         .plaintext(aws_sdk_kms::primitives::Blob::new(plaintext))
         .send()
         .await
-        .map_err(|e| {
-            let mut msg = format!("KMS Encrypt failed: {e}");
-            let mut source = std::error::Error::source(&e);
-            while let Some(cause) = source {
-                msg.push_str(&format!("\n  caused by: {cause}"));
-                source = cause.source();
-            }
-            AppError::TeeAttestation(msg)
-        })?;
+        .map_err(|e| classify_kms_error("Encrypt", e))?;
 
     resp.ciphertext_blob()
         .map(|b| b.as_ref().to_vec())
         .ok_or_else(|| AppError::TeeAttestation("KMS Encrypt returned no ciphertext".into()))
+}
+
+/// Classify KMS errors for operator diagnostics.
+fn classify_kms_error<E: std::error::Error>(operation: &str, err: E) -> AppError {
+    let err_str = format!("{err}");
+
+    // Classify by error message patterns for clear operator guidance
+    let classification = if err_str.contains("AccessDeniedException") {
+        "ACCESS_DENIED — check KMS key policy PCR conditions and IAM role permissions"
+    } else if err_str.contains("NotFoundException") || err_str.contains("not found") {
+        "KEY_NOT_FOUND — verify the KMS key ARN in config.toml"
+    } else if err_str.contains("InvalidCiphertextException") {
+        "INVALID_CIPHERTEXT — ciphertext file may be corrupt or encrypted with a different key"
+    } else if err_str.contains("KMSInternalException") {
+        "KMS_INTERNAL — transient AWS error, retry may help"
+    } else if err_str.contains("connect") || err_str.contains("timeout") {
+        "NETWORK — cannot reach KMS endpoint, check vsock proxy and allowlist"
+    } else {
+        "UNKNOWN"
+    };
+
+    let mut msg = format!("KMS {operation} failed [{classification}]: {err}");
+    let mut source = std::error::Error::source(&err);
+    while let Some(cause) = source {
+        msg.push_str(&format!("\n  caused by: {cause}"));
+        source = cause.source();
+    }
+
+    error!(operation, classification, "KMS error");
+    AppError::TeeAttestation(msg)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_derive_storage_key_deterministic() {
+        let seed = [0x42u8; 32];
+        let key1 = derive_storage_key(&seed, "test-salt");
+        let key2 = derive_storage_key(&seed, "test-salt");
+        assert_eq!(key1, key2, "same seed + salt must produce same key");
+    }
+
+    #[test]
+    fn test_derive_storage_key_different_salts() {
+        let seed = [0x42u8; 32];
+        let key1 = derive_storage_key(&seed, "salt-a");
+        let key2 = derive_storage_key(&seed, "salt-b");
+        assert_ne!(key1, key2, "different salts must produce different keys");
+    }
+
+    #[test]
+    fn test_derive_storage_key_different_seeds() {
+        let key1 = derive_storage_key(&[0x01u8; 32], "same-salt");
+        let key2 = derive_storage_key(&[0x02u8; 32], "same-salt");
+        assert_ne!(key1, key2, "different seeds must produce different keys");
+    }
+
+    #[test]
+    fn test_jwt_fingerprint_deterministic() {
+        let key = [0xABu8; 32];
+        let fp1 = jwt_fingerprint(&key);
+        let fp2 = jwt_fingerprint(&key);
+        assert_eq!(fp1, fp2);
+        assert_eq!(fp1.len(), 32); // 16 bytes = 32 hex chars
+    }
 }

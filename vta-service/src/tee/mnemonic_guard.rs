@@ -1,4 +1,4 @@
-//! Time-limited mnemonic export guard.
+//! Time-limited mnemonic export guard with secure memory wiping.
 //!
 //! On first boot, the VTA generates entropy for the BIP-39 mnemonic inside
 //! the TEE. The mnemonic is NEVER displayed. Instead, the entropy is held
@@ -8,8 +8,9 @@
 //! 2. The current time is within the window since boot
 //! 3. The requester is a super admin (authenticated via JWT)
 //!
-//! After the window expires, the entropy is zeroed and the mnemonic can
-//! never be reconstructed — only the derived seed remains in TEE memory.
+//! After the window expires, the entropy is cryptographically zeroed using
+//! the `zeroize` crate (prevents compiler optimization of the wipe) and the
+//! mnemonic can never be reconstructed.
 //!
 //! On subsequent boots (not first boot), no entropy exists to export.
 
@@ -18,6 +19,7 @@ use std::time::Instant;
 
 use serde::Serialize;
 use tracing::{info, warn};
+use zeroize::Zeroize;
 
 use crate::error::AppError;
 
@@ -28,7 +30,7 @@ pub struct MnemonicExportGuard {
 
 struct GuardState {
     /// The 32-byte entropy used to generate the BIP-39 mnemonic.
-    /// Zeroed after the export window expires or after first successful export.
+    /// Cryptographically zeroed after export or window expiry.
     entropy: Option<[u8; 32]>,
     /// When the guard was created (boot time).
     created_at: Instant,
@@ -36,6 +38,22 @@ struct GuardState {
     window_secs: u64,
     /// Whether the mnemonic has been exported (one-time use).
     exported: bool,
+}
+
+impl Drop for GuardState {
+    fn drop(&mut self) {
+        self.wipe_entropy();
+    }
+}
+
+impl GuardState {
+    /// Cryptographically zero the entropy bytes.
+    fn wipe_entropy(&mut self) {
+        if let Some(ref mut e) = self.entropy {
+            e.zeroize();
+        }
+        self.entropy = None;
+    }
 }
 
 /// Response from a mnemonic export request.
@@ -116,7 +134,7 @@ impl MnemonicExportGuard {
     /// Export the mnemonic if the window is still open.
     ///
     /// This is a one-time operation: after a successful export, the entropy
-    /// is zeroed and no further exports are possible.
+    /// is cryptographically zeroed and no further exports are possible.
     ///
     /// Returns `Err` if:
     /// - The export window has expired
@@ -145,9 +163,8 @@ impl MnemonicExportGuard {
         // Check window
         let elapsed = guard.created_at.elapsed().as_secs();
         if elapsed >= guard.window_secs {
-            // Window expired — zero the entropy
-            guard.entropy = Some([0u8; 32]);
-            guard.entropy = None;
+            // Window expired — securely zero the entropy
+            guard.wipe_entropy();
             warn!("mnemonic export attempted after window expired — entropy zeroed");
             return Err(AppError::TeeAttestation(format!(
                 "mnemonic export window expired ({elapsed}s elapsed, window was {}s)",
@@ -161,18 +178,23 @@ impl MnemonicExportGuard {
 
         let remaining = guard.window_secs.saturating_sub(elapsed);
 
-        // Mark as exported and zero the entropy
+        // Mark as exported and securely zero the entropy
         guard.exported = true;
-        guard.entropy = None;
+        guard.wipe_entropy();
 
         info!(
             remaining_secs = remaining,
             "mnemonic exported to authenticated super admin — entropy zeroed"
         );
 
-        Ok(MnemonicExportResponse {
-            mnemonic: mnemonic.to_string(),
+        let mut mnemonic_str = mnemonic.to_string();
+        let response = MnemonicExportResponse {
+            mnemonic: mnemonic_str.clone(),
             window_remaining_secs: remaining,
-        })
+        };
+        // Zeroize the local copy of the mnemonic string
+        mnemonic_str.zeroize();
+
+        Ok(response)
     }
 }
