@@ -30,6 +30,7 @@ tee = [
   "dep:hmac",
   "dep:aws-sdk-kms",
   "dep:aws-config",
+  "dep:zeroize",
 ]
 
 [[bin]]
@@ -80,6 +81,7 @@ url = { workspace = true, optional = true }
 reqwest = { workspace = true, optional = true }
 tempfile = { version = "3", optional = true }
 libc = { version = "0.2", optional = true }
+zeroize = { version = "1", features = ["derive"], optional = true }
 aes-gcm = "0.10"
 hmac = { version = "0.12", optional = true }
 aws-sdk-kms = { version = "1", optional = true }

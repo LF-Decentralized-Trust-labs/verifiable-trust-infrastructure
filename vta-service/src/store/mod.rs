@@ -1,9 +1,36 @@
+use std::time::Duration;
+
 use crate::config::StoreConfig;
 use crate::error::AppError;
 use fjall::{KeyspaceCreateOptions, PersistMode};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use tracing::info;
+
+/// Timeout for blocking fjall operations. Prevents indefinite hangs if the
+/// store deadlocks or I/O stalls.
+const STORE_OP_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Run a blocking operation with timeout.
+async fn blocking_with_timeout<F, T>(f: F) -> Result<T, AppError>
+where
+    F: FnOnce() -> Result<T, AppError> + Send + 'static,
+    T: Send + 'static,
+{
+    match tokio::time::timeout(
+        STORE_OP_TIMEOUT,
+        tokio::task::spawn_blocking(f),
+    )
+    .await
+    {
+        Ok(Ok(result)) => result,
+        Ok(Err(e)) => Err(AppError::Internal(format!("blocking task panicked: {e}"))),
+        Err(_) => Err(AppError::Internal(format!(
+            "store operation timed out after {}s",
+            STORE_OP_TIMEOUT.as_secs()
+        ))),
+    }
+}
 
 /// A key-value pair of raw bytes from a prefix scan.
 pub type RawKvPair = (Vec<u8>, Vec<u8>);
@@ -84,10 +111,7 @@ impl KeyspaceHandle {
         let bytes = serde_json::to_vec(value)?;
         let bytes = self.maybe_encrypt(bytes)?;
         let ks = self.keyspace.clone();
-        tokio::task::spawn_blocking(move || ks.insert(key, bytes))
-            .await
-            .map_err(|e| AppError::Internal(format!("blocking task panicked: {e}")))??;
-        Ok(())
+        blocking_with_timeout(move || Ok(ks.insert(key, bytes)?)).await
     }
 
     pub async fn get<V: DeserializeOwned + Send + 'static>(
@@ -97,7 +121,7 @@ impl KeyspaceHandle {
         let key = key.into();
         let ks = self.keyspace.clone();
         let enc_key = self.encryption_key;
-        tokio::task::spawn_blocking(move || -> Result<Option<V>, AppError> {
+        blocking_with_timeout(move || {
             match ks.get(key)? {
                 Some(bytes) => {
                     let bytes = maybe_decrypt_bytes(enc_key.as_ref(), &bytes)?;
@@ -107,16 +131,12 @@ impl KeyspaceHandle {
             }
         })
         .await
-        .map_err(|e| AppError::Internal(format!("blocking task panicked: {e}")))?
     }
 
     pub async fn remove(&self, key: impl Into<Vec<u8>>) -> Result<(), AppError> {
         let key = key.into();
         let ks = self.keyspace.clone();
-        tokio::task::spawn_blocking(move || ks.remove(key))
-            .await
-            .map_err(|e| AppError::Internal(format!("blocking task panicked: {e}")))??;
-        Ok(())
+        blocking_with_timeout(move || Ok(ks.remove(key)?)).await
     }
 
     pub async fn insert_raw(
@@ -127,25 +147,20 @@ impl KeyspaceHandle {
         let key = key.into();
         let value = self.maybe_encrypt(value.into())?;
         let ks = self.keyspace.clone();
-        tokio::task::spawn_blocking(move || ks.insert(key, value))
-            .await
-            .map_err(|e| AppError::Internal(format!("blocking task panicked: {e}")))??;
-        Ok(())
+        blocking_with_timeout(move || Ok(ks.insert(key, value)?)).await
     }
 
     pub async fn get_raw(&self, key: impl Into<Vec<u8>>) -> Result<Option<Vec<u8>>, AppError> {
         let key = key.into();
         let ks = self.keyspace.clone();
         let enc_key = self.encryption_key;
-        let result = tokio::task::spawn_blocking(move || -> Result<Option<Vec<u8>>, AppError> {
+        blocking_with_timeout(move || {
             match ks.get(key)? {
                 Some(bytes) => Ok(Some(maybe_decrypt_bytes(enc_key.as_ref(), &bytes)?)),
                 None => Ok(None),
             }
         })
         .await
-        .map_err(|e| AppError::Internal(format!("blocking task panicked: {e}")))?;
-        result
     }
 
     /// Iterate all key-value pairs whose key starts with `prefix`.
@@ -156,7 +171,7 @@ impl KeyspaceHandle {
         let prefix = prefix.into();
         let ks = self.keyspace.clone();
         let enc_key = self.encryption_key;
-        tokio::task::spawn_blocking(move || -> Result<Vec<RawKvPair>, AppError> {
+        blocking_with_timeout(move || {
             let mut results = Vec::new();
             for guard in ks.prefix(&prefix) {
                 let (key, value) = guard.into_inner()?;
@@ -166,15 +181,12 @@ impl KeyspaceHandle {
             Ok(results)
         })
         .await
-        .map_err(|e| AppError::Internal(format!("blocking task panicked: {e}")))?
     }
 
     /// Returns the approximate number of items in the keyspace.
     pub async fn approximate_len(&self) -> Result<usize, AppError> {
         let ks = self.keyspace.clone();
-        tokio::task::spawn_blocking(move || ks.approximate_len())
-            .await
-            .map_err(|e| AppError::Internal(format!("blocking task panicked: {e}")))
+        blocking_with_timeout(move || Ok(ks.approximate_len())).await
     }
 
     /// Atomically check that `new_key` doesn't exist, insert `value` at `new_key`,
@@ -190,7 +202,7 @@ impl KeyspaceHandle {
         let bytes = serde_json::to_vec(value)?;
         let bytes = self.maybe_encrypt(bytes)?;
         let ks = self.keyspace.clone();
-        tokio::task::spawn_blocking(move || -> Result<bool, AppError> {
+        blocking_with_timeout(move || {
             if ks.contains_key(&new_key)? {
                 return Ok(false);
             }
@@ -199,7 +211,6 @@ impl KeyspaceHandle {
             Ok(true)
         })
         .await
-        .map_err(|e| AppError::Internal(format!("blocking task panicked: {e}")))?
     }
 
     /// Encrypt bytes if encryption is enabled, otherwise return unchanged.

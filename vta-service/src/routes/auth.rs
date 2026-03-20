@@ -22,7 +22,7 @@ use crate::auth::session::{
 use crate::error::AppError;
 use crate::operations;
 use crate::server::AppState;
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 
 // ---------- POST /auth/challenge ----------
 
@@ -30,6 +30,23 @@ pub async fn challenge(
     State(state): State<AppState>,
     Json(req): Json<ChallengeRequest>,
 ) -> Result<Json<ChallengeResponse>, AppError> {
+    // DID method whitelist enforcement (TEE mode)
+    #[cfg(feature = "tee")]
+    {
+        let config = state.config.read().await;
+        if let Some(ref allowed) = config.tee.allowed_did_methods {
+            let did_ok = allowed.iter().any(|prefix| req.did.starts_with(prefix));
+            if !did_ok {
+                warn!(did = %req.did, "auth rejected: DID method not in allowed_did_methods");
+                return Err(AppError::Forbidden(format!(
+                    "DID method not allowed — accepted methods: {}",
+                    allowed.join(", ")
+                )));
+            }
+        }
+        drop(config);
+    }
+
     // ACL enforcement: DID must be in the ACL to request a challenge
     let acl = state.acl_ks.clone();
     check_acl(&acl, &req.did).await?;
@@ -39,7 +56,22 @@ pub async fn challenge(
     // Generate 32-byte random challenge as hex
     let mut challenge_bytes = [0u8; 32];
     rand::fill(&mut challenge_bytes);
-    let challenge = hex::encode(challenge_bytes);
+    let mut challenge = hex::encode(challenge_bytes);
+
+    // Nonce replay prevention: store the challenge hash to detect reuse.
+    // Challenges are random 32 bytes so collision is negligible, but this
+    // provides defense in depth against replay attacks.
+    let nonce_key = format!("nonce:{challenge}");
+    let sessions_ks = state.sessions_ks.clone();
+    if sessions_ks.get_raw(nonce_key.clone()).await?.is_some() {
+        warn!(challenge = %challenge, "challenge nonce collision detected — regenerating");
+        // Extremely unlikely (2^-256) but handle gracefully
+        rand::fill(&mut challenge_bytes);
+        challenge = hex::encode(challenge_bytes);
+    }
+    sessions_ks
+        .insert_raw(format!("nonce:{challenge}"), session_id.as_bytes().to_vec())
+        .await?;
 
     let session = Session {
         session_id: session_id.clone(),
@@ -51,8 +83,7 @@ pub async fn challenge(
         refresh_expires_at: None,
     };
 
-    let sessions = state.sessions_ks.clone();
-    store_session(&sessions, &session).await?;
+    store_session(&sessions_ks, &session).await?;
 
     // Optionally bind a TEE attestation report to the challenge nonce.
     // This proves the challenge was generated inside a trusted execution environment.
@@ -71,7 +102,16 @@ pub async fn challenge(
                 Some(serde_json::to_value(&report).unwrap_or_default())
             }
             Err(e) => {
-                warn!("failed to generate TEE attestation for challenge: {e}");
+                // In TEE required mode, attestation failure is a hard error.
+                // A broken TEE must not silently serve unattested challenges.
+                let tee_mode = &state.config.read().await.tee.mode;
+                if *tee_mode == crate::config::TeeMode::Required {
+                    error!("TEE attestation failed in required mode — refusing challenge: {e}");
+                    return Err(AppError::TeeAttestation(format!(
+                        "TEE attestation failed (mode=required): {e}"
+                    )));
+                }
+                warn!("TEE attestation failed (mode=optional) — challenge served without attestation: {e}");
                 None
             }
         }
