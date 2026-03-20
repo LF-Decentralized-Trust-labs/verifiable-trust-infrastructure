@@ -8,9 +8,9 @@ use vta_sdk::protocols::key_management::{
     revoke::RevokeKeyResultBody, secret::GetKeySecretResultBody,
 };
 
-use crate::auth::extractor::AuthClaims;
+use crate::auth::AuthClaims;
 use crate::contexts::get_context;
-use crate::error::AppError;
+use crate::error::{AppError, key_derivation_error};
 use crate::keys::derivation::Bip32Extension;
 use crate::keys::paths::allocate_path;
 use crate::keys::seed_store::SeedStore;
@@ -85,7 +85,7 @@ pub async fn create_key(
         .await
         .map_err(|e| AppError::Internal(format!("{e}")))?;
     let bip32 = ed25519_dalek_bip32::ExtendedSigningKey::from_seed(&seed)
-        .map_err(|e| AppError::KeyDerivation(format!("failed to create BIP-32 root key: {e}")))?;
+        .map_err(|e| key_derivation_error(format!("failed to create BIP-32 root key: {e}")))?;
 
     let secret = match params.key_type {
         KeyType::Ed25519 => bip32.derive_ed25519(&derivation_path)?,
@@ -302,7 +302,7 @@ pub async fn get_key_secret(
         .await
         .map_err(|e| AppError::Internal(format!("{e}")))?;
     let bip32 = ed25519_dalek_bip32::ExtendedSigningKey::from_seed(&seed)
-        .map_err(|e| AppError::KeyDerivation(format!("failed to create BIP-32 root key: {e}")))?;
+        .map_err(|e| key_derivation_error(format!("failed to create BIP-32 root key: {e}")))?;
 
     let secret = match record.key_type {
         KeyType::Ed25519 => bip32.derive_ed25519(&record.derivation_path)?,

@@ -358,7 +358,7 @@ pub async fn run_setup_wizard(
             public_url: None,
             server: ServerConfig::default(),
             log: LogConfig::default(),
-            store: StoreConfig::default(),
+            store: StoreConfig { data_dir: PathBuf::from("data/vtc") },
             messaging: None,
             auth: AuthConfig::default(),
             secrets: secrets_config.clone(),

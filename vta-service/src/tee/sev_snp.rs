@@ -3,7 +3,7 @@ use base64::engine::general_purpose::STANDARD as BASE64;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::{debug, info};
 
-use crate::error::AppError;
+use crate::error::{AppError, tee_attestation_error};
 
 use super::provider::TeeProvider;
 use super::types::{AttestationReport, TeeStatus, TeeType};
@@ -103,7 +103,7 @@ impl TeeProvider for SevSnpProvider {
 
         let evidence = BASE64
             .decode(&report.evidence)
-            .map_err(|e| AppError::TeeAttestation(format!("invalid evidence encoding: {e}")))?;
+            .map_err(|e| tee_attestation_error(format!("invalid evidence encoding: {e}")))?;
 
         // Structural validation
         if evidence.len() != SNP_REPORT_SIZE {
@@ -258,7 +258,7 @@ fn request_snp_report(report_data: &[u8; 64]) -> Result<Vec<u8>, AppError> {
         .read(true)
         .write(true)
         .open("/dev/sev-guest")
-        .map_err(|e| AppError::TeeAttestation(format!("failed to open /dev/sev-guest: {e}")))?;
+        .map_err(|e| tee_attestation_error(format!("failed to open /dev/sev-guest: {e}")))?;
 
     // struct snp_report_req (linux/include/uapi/linux/sev-guest.h)
     #[repr(C)]
@@ -325,14 +325,14 @@ fn request_snp_report(report_data: &[u8; 64]) -> Result<Vec<u8>, AppError> {
 
     if ret != 0 {
         let errno = std::io::Error::last_os_error();
-        return Err(AppError::TeeAttestation(format!(
+        return Err(tee_attestation_error(format!(
             "SNP_GET_REPORT ioctl failed: {errno} (fw_err={:#x})",
             guest_req.fw_err
         )));
     }
 
     if resp.status != 0 {
-        return Err(AppError::TeeAttestation(format!(
+        return Err(tee_attestation_error(format!(
             "SNP_GET_REPORT firmware error: status={}, fw_err={:#x}",
             resp.status, guest_req.fw_err
         )));

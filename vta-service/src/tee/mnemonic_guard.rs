@@ -21,7 +21,7 @@ use serde::Serialize;
 use tracing::{info, warn};
 use zeroize::Zeroize;
 
-use crate::error::AppError;
+use crate::error::{AppError, tee_attestation_error};
 
 /// Holds the BIP-39 entropy bytes during the export window.
 pub struct MnemonicExportGuard {
@@ -147,16 +147,16 @@ impl MnemonicExportGuard {
         let entropy = match guard.entropy {
             Some(e) => e,
             None => {
-                return Err(AppError::TeeAttestation(
-                    "no mnemonic available — entropy only exists on first boot".into(),
+                return Err(tee_attestation_error(
+                    "no mnemonic available — entropy only exists on first boot",
                 ));
             }
         };
 
         // Check if already exported
         if guard.exported {
-            return Err(AppError::TeeAttestation(
-                "mnemonic already exported — one-time operation".into(),
+            return Err(tee_attestation_error(
+                "mnemonic already exported — one-time operation",
             ));
         }
 
@@ -166,7 +166,7 @@ impl MnemonicExportGuard {
             // Window expired — securely zero the entropy
             guard.wipe_entropy();
             warn!("mnemonic export attempted after window expired — entropy zeroed");
-            return Err(AppError::TeeAttestation(format!(
+            return Err(tee_attestation_error(format!(
                 "mnemonic export window expired ({elapsed}s elapsed, window was {}s)",
                 guard.window_secs
             )));
@@ -174,7 +174,7 @@ impl MnemonicExportGuard {
 
         // Generate mnemonic from entropy
         let mnemonic = bip39::Mnemonic::from_entropy(&entropy)
-            .map_err(|e| AppError::TeeAttestation(format!("failed to derive mnemonic: {e}")))?;
+            .map_err(|e| tee_attestation_error(format!("failed to derive mnemonic: {e}")))?;
 
         let remaining = guard.window_secs.saturating_sub(elapsed);
 

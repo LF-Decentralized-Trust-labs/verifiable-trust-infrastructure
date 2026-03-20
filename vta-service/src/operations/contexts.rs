@@ -7,7 +7,7 @@ use vta_sdk::protocols::context_management::{
     list::ListContextsResultBody,
 };
 
-use crate::auth::extractor::AuthClaims;
+use crate::auth::AuthClaims;
 use crate::contexts::{
     ContextRecord, allocate_context_index, delete_context as delete_context_store, get_context,
     list_contexts as list_contexts_store, store_context,

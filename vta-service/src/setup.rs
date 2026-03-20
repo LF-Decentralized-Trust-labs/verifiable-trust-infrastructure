@@ -548,10 +548,11 @@ pub async fn run_setup_wizard(
             public_url: None,
             server: ServerConfig::default(),
             log: LogConfig::default(),
-            store: StoreConfig::default(),
+            store: StoreConfig { data_dir: PathBuf::from("data/vta") },
             services: ServicesConfig::default(),
             messaging: None,
             auth: AuthConfig::default(),
+            audit: Default::default(),
             secrets: secrets_config.clone(),
             #[cfg(feature = "tee")]
             tee: Default::default(),
@@ -650,6 +651,7 @@ pub async fn run_setup_wizard(
             jwt_signing_key: Some(jwt_signing_key),
             ..AuthConfig::default()
         },
+        audit: Default::default(),
         secrets: secrets_config,
         #[cfg(feature = "tee")]
         tee: Default::default(),

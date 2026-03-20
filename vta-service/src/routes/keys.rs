@@ -11,6 +11,7 @@ use vta_sdk::protocols::seed_management::{
     list::ListSeedsResultBody, rotate::RotateSeedResultBody,
 };
 
+use crate::audit::audit;
 use crate::auth::{AdminAuth, AuthClaims};
 use crate::error::AppError;
 use crate::keys::KeyRecord;
@@ -50,6 +51,7 @@ pub async fn create_key(
         "rest",
     )
     .await?;
+    audit!("key.create", actor = &auth.0.did, resource =&result.key_id, outcome = "success");
     Ok((StatusCode::CREATED, Json(result)))
 }
 
@@ -66,6 +68,7 @@ pub async fn get_key_secret(
         "rest",
     )
     .await?;
+    audit!("key.secret_export", actor = &auth.0.did, resource =&key_id, outcome = "success");
     Ok(Json(result))
 }
 
@@ -84,6 +87,7 @@ pub async fn invalidate_key(
     Path(key_id): Path<String>,
 ) -> Result<Json<RevokeKeyResultBody>, AppError> {
     let result = operations::keys::revoke_key(&state.keys_ks, &auth.0, &key_id, "rest").await?;
+    audit!("key.revoke", actor = &auth.0.did, resource =&key_id, outcome = "success");
     Ok(Json(result))
 }
 
@@ -158,5 +162,6 @@ pub async fn rotate_seed(
         "rest",
     )
     .await?;
+    audit!("seed.rotate", actor = &_auth.0.did, resource ="seed", outcome = "success");
     Ok(Json(result))
 }

@@ -13,16 +13,20 @@ use vta_sdk::protocols::auth::{
 use vta_sdk::protocols::credential_management::generate::GenerateCredentialsResultBody;
 
 use crate::acl::{Role, check_acl, check_acl_full};
-use crate::auth::extractor::{AdminAuth, AuthClaims, ManageAuth};
-use crate::auth::jwt::JwtKeys;
+use crate::audit::audit;
+use crate::auth::{AdminAuth, AuthClaims, ManageAuth};
 use crate::auth::session::{
     Session, SessionState, delete_session, get_session, get_session_by_refresh, list_sessions,
     now_epoch, store_refresh_index, store_session, update_session,
 };
+#[cfg(feature = "tee")]
+use crate::error::tee_attestation_error;
 use crate::error::AppError;
 use crate::operations;
 use crate::server::AppState;
-use tracing::{error, info, warn};
+#[cfg(feature = "tee")]
+use tracing::error;
+use tracing::{info, warn};
 
 // ---------- POST /auth/challenge ----------
 
@@ -48,8 +52,7 @@ pub async fn challenge(
     }
 
     // ACL enforcement: DID must be in the ACL to request a challenge
-    let acl = state.acl_ks.clone();
-    check_acl(&acl, &req.did).await?;
+    check_acl(&state.acl_ks, &req.did).await?;
 
     let session_id = Uuid::new_v4().to_string();
 
@@ -62,14 +65,13 @@ pub async fn challenge(
     // Challenges are random 32 bytes so collision is negligible, but this
     // provides defense in depth against replay attacks.
     let nonce_key = format!("nonce:{challenge}");
-    let sessions_ks = state.sessions_ks.clone();
-    if sessions_ks.get_raw(nonce_key.clone()).await?.is_some() {
+    if state.sessions_ks.get_raw(nonce_key.clone()).await?.is_some() {
         warn!(challenge = %challenge, "challenge nonce collision detected — regenerating");
         // Extremely unlikely (2^-256) but handle gracefully
         rand::fill(&mut challenge_bytes);
         challenge = hex::encode(challenge_bytes);
     }
-    sessions_ks
+    state.sessions_ks
         .insert_raw(format!("nonce:{challenge}"), session_id.as_bytes().to_vec())
         .await?;
 
@@ -83,7 +85,7 @@ pub async fn challenge(
         refresh_expires_at: None,
     };
 
-    store_session(&sessions_ks, &session).await?;
+    store_session(&state.sessions_ks, &session).await?;
 
     // Optionally bind a TEE attestation report to the challenge nonce.
     // This proves the challenge was generated inside a trusted execution environment.
@@ -99,7 +101,9 @@ pub async fn challenge(
         match tee_state.provider.attest(user_data, nonce_bytes) {
             Ok(mut report) => {
                 report.vta_did = vta_did;
-                Some(serde_json::to_value(&report).unwrap_or_default())
+                Some(serde_json::to_value(&report).map_err(|e| {
+                    AppError::Internal(format!("failed to serialize attestation report: {e}"))
+                })?)
             }
             Err(e) => {
                 // In TEE required mode, attestation failure is a hard error.
@@ -107,7 +111,7 @@ pub async fn challenge(
                 let tee_mode = &state.config.read().await.tee.mode;
                 if *tee_mode == crate::config::TeeMode::Required {
                     error!("TEE attestation failed in required mode — refusing challenge: {e}");
-                    return Err(AppError::TeeAttestation(format!(
+                    return Err(tee_attestation_error(format!(
                         "TEE attestation failed (mode=required): {e}"
                     )));
                 }
@@ -122,6 +126,7 @@ pub async fn challenge(
     let tee_attestation = None;
 
     info!(did = %session.did, session_id = %session.session_id, "auth challenge issued");
+    audit!("auth.challenge", actor = &session.did, resource =&session.session_id, outcome = "success");
 
     Ok(Json(ChallengeResponse {
         session_id,
@@ -184,48 +189,45 @@ pub async fn authenticate(
         .ok_or_else(|| AppError::Authentication("message has no sender (from)".into()))?;
 
     // Look up session and validate
-    let sessions = state.sessions_ks.clone();
-    let mut session = get_session(&sessions, session_id)
+    let mut session = get_session(&state.sessions_ks, session_id)
         .await?
         .ok_or_else(|| AppError::Authentication("session not found".into()))?;
 
     if session.state != SessionState::ChallengeSent {
         warn!(session_id, "authentication rejected: session replay");
+        audit!("auth.authenticate", actor = sender_did.split('#').next().unwrap_or(sender_did), resource =session_id, outcome = "denied:replay");
         return Err(AppError::Authentication(
             "session already authenticated (replay)".into(),
         ));
     }
     if session.challenge != challenge {
         warn!(session_id, "authentication rejected: challenge mismatch");
+        audit!("auth.authenticate", actor = sender_did.split('#').next().unwrap_or(sender_did), resource =session_id, outcome = "denied:challenge_mismatch");
         return Err(AppError::Authentication("challenge mismatch".into()));
     }
     // Match the DID (compare base DID, ignoring any fragment)
     let sender_base = sender_did.split('#').next().unwrap_or(sender_did);
     if session.did != sender_base {
         warn!(session_id, sender = %sender_base, expected = %session.did, "authentication rejected: DID mismatch");
+        audit!("auth.authenticate", actor = sender_base, resource =session_id, outcome = "denied:did_mismatch");
         return Err(AppError::Authentication("DID mismatch".into()));
     }
 
-    // Check challenge TTL
-    {
+    // Read all auth config values in a single lock acquisition
+    let (challenge_ttl, access_expiry, refresh_expiry) = {
         let config = state.config.read().await;
-        let challenge_ttl = config.auth.challenge_ttl;
-        drop(config);
-        if now_epoch().saturating_sub(session.created_at) > challenge_ttl {
-            warn!(session_id, "authentication rejected: challenge expired");
-            return Err(AppError::Authentication("challenge expired".into()));
-        }
+        (config.auth.challenge_ttl, config.auth.access_token_expiry, config.auth.refresh_token_expiry)
+    };
+
+    // Check challenge TTL
+    if now_epoch().saturating_sub(session.created_at) > challenge_ttl {
+        warn!(session_id, "authentication rejected: challenge expired");
+        audit!("auth.authenticate", actor = sender_base, resource =session_id, outcome = "denied:expired");
+        return Err(AppError::Authentication("challenge expired".into()));
     }
 
     // Look up ACL entry to get role and allowed contexts for the token
-    let acl = state.acl_ks.clone();
-    let (role, allowed_contexts) = check_acl_full(&acl, &session.did).await?;
-
-    // Generate tokens
-    let config = state.config.read().await;
-    let access_expiry = config.auth.access_token_expiry;
-    let refresh_expiry = config.auth.refresh_token_expiry;
-    drop(config);
+    let (role, allowed_contexts) = check_acl_full(&state.acl_ks, &session.did).await?;
 
     // Check if VTA is running in a TEE
     #[cfg(feature = "tee")]
@@ -233,7 +235,7 @@ pub async fn authenticate(
     #[cfg(not(feature = "tee"))]
     let tee_attested = false;
 
-    let claims = JwtKeys::new_claims(
+    let claims = jwt_keys.new_claims(
         session.did.clone(),
         session.session_id.clone(),
         role.to_string(),
@@ -251,12 +253,13 @@ pub async fn authenticate(
     session.state = SessionState::Authenticated;
     session.refresh_token = Some(refresh_token.clone());
     session.refresh_expires_at = Some(refresh_expires_at);
-    update_session(&sessions, &session).await?;
+    update_session(&state.sessions_ks, &session).await?;
 
     // Store reverse refresh index
-    store_refresh_index(&sessions, &refresh_token, &session.session_id).await?;
+    store_refresh_index(&state.sessions_ks, &refresh_token, &session.session_id).await?;
 
     info!(did = %session.did, session_id = %session.session_id, "authentication successful");
+    audit!("auth.authenticate", actor = &session.did, resource =&session.session_id, outcome = "success");
 
     Ok(Json(AuthenticateResponse {
         session_id: Some(session.session_id),
@@ -326,12 +329,11 @@ pub async fn refresh(
         .ok_or_else(|| AppError::Authentication("missing refresh_token in message body".into()))?;
 
     // Look up session by refresh token
-    let sessions = state.sessions_ks.clone();
-    let session_id = get_session_by_refresh(&sessions, refresh_token)
+    let session_id = get_session_by_refresh(&state.sessions_ks, refresh_token)
         .await?
         .ok_or_else(|| AppError::Authentication("refresh token not found".into()))?;
 
-    let session = get_session(&sessions, &session_id)
+    let session = get_session(&state.sessions_ks, &session_id)
         .await?
         .ok_or_else(|| AppError::Authentication("session not found".into()))?;
 
@@ -347,8 +349,7 @@ pub async fn refresh(
     }
 
     // Look up current ACL role and contexts (propagates changes at refresh time)
-    let acl = state.acl_ks.clone();
-    let (role, allowed_contexts) = check_acl_full(&acl, &session.did).await?;
+    let (role, allowed_contexts) = check_acl_full(&state.acl_ks, &session.did).await?;
 
     // Generate new access token
     let config = state.config.read().await;
@@ -360,7 +361,7 @@ pub async fn refresh(
     #[cfg(not(feature = "tee"))]
     let tee_attested = false;
 
-    let claims = JwtKeys::new_claims(
+    let claims = jwt_keys.new_claims(
         session.did.clone(),
         session.session_id.clone(),
         role.to_string(),
@@ -372,6 +373,7 @@ pub async fn refresh(
     let access_token = jwt_keys.encode(&claims)?;
 
     info!(did = %session.did, session_id = %session.session_id, "token refreshed");
+    audit!("auth.refresh", actor = &session.did, resource =&session.session_id, outcome = "success");
 
     Ok(Json(RefreshResponse {
         session_id: session.session_id,
@@ -397,6 +399,7 @@ pub async fn generate_credentials(
     State(state): State<AppState>,
     Json(req): Json<GenerateCredentialsRequest>,
 ) -> Result<(StatusCode, Json<GenerateCredentialsResultBody>), AppError> {
+    let role_str = req.role.to_string();
     let result = operations::credentials::generate_credentials(
         &state.acl_ks,
         &state.config,
@@ -407,6 +410,7 @@ pub async fn generate_credentials(
         "rest",
     )
     .await?;
+    audit!("credentials.generate", actor = &auth.0.did, resource =&role_str, outcome = "success");
     Ok((StatusCode::CREATED, Json(result)))
 }
 
@@ -438,8 +442,7 @@ pub async fn session_list(
     _auth: ManageAuth,
     State(state): State<AppState>,
 ) -> Result<Json<Vec<SessionSummary>>, AppError> {
-    let sessions = state.sessions_ks.clone();
-    let all = list_sessions(&sessions).await?;
+    let all = list_sessions(&state.sessions_ks).await?;
     let summaries: Vec<SessionSummary> = all.into_iter().map(SessionSummary::from).collect();
     info!(caller = %_auth.0.did, count = summaries.len(), "sessions listed");
     Ok(Json(summaries))
@@ -452,8 +455,7 @@ pub async fn revoke_session(
     State(state): State<AppState>,
     Path(session_id): Path<String>,
 ) -> Result<impl IntoResponse, AppError> {
-    let sessions = state.sessions_ks.clone();
-    let session = get_session(&sessions, &session_id)
+    let session = get_session(&state.sessions_ks, &session_id)
         .await?
         .ok_or_else(|| AppError::NotFound(format!("session not found: {session_id}")))?;
 
@@ -464,8 +466,9 @@ pub async fn revoke_session(
         ));
     }
 
-    delete_session(&sessions, &session_id).await?;
+    delete_session(&state.sessions_ks, &session_id).await?;
     info!(caller = %auth.did, session_id = %session_id, "session revoked");
+    audit!("session.revoke", actor = &auth.did, resource =&session_id, outcome = "success");
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -486,17 +489,17 @@ pub async fn revoke_sessions_by_did(
     State(state): State<AppState>,
     Query(query): Query<RevokeByDidQuery>,
 ) -> Result<Json<RevokeByDidResponse>, AppError> {
-    let sessions = state.sessions_ks.clone();
-    let all = list_sessions(&sessions).await?;
+    let all = list_sessions(&state.sessions_ks).await?;
     let mut revoked = 0u64;
 
     for session in all {
         if session.did == query.did {
-            delete_session(&sessions, &session.session_id).await?;
+            delete_session(&state.sessions_ks, &session.session_id).await?;
             revoked += 1;
         }
     }
 
     info!(caller = %_auth.0.did, target_did = %query.did, revoked, "sessions revoked by DID");
+    audit!("session.revoke_by_did", actor = &_auth.0.did, resource =&query.did, outcome = "success");
     Ok(Json(RevokeByDidResponse { revoked }))
 }

@@ -1,8 +1,8 @@
 use axum::Json;
 use axum::extract::State;
 
-use crate::auth::extractor::SuperAdminAuth;
-use crate::error::AppError;
+use crate::auth::SuperAdminAuth;
+use crate::error::{AppError, tee_attestation_error};
 use crate::operations;
 use crate::server::AppState;
 use crate::tee::mnemonic_guard::{MnemonicExportResponse, MnemonicExportStatus};
@@ -11,7 +11,7 @@ use crate::tee::types::{AttestationRequest, AttestationResponse, TeeStatus};
 /// GET /attestation/status — TEE detection status (unauthenticated).
 pub async fn status(State(state): State<AppState>) -> Result<Json<TeeStatus>, AppError> {
     let tee_state = state.tee_state.as_ref().ok_or_else(|| {
-        AppError::TeeAttestation("TEE attestation is not enabled on this VTA".into())
+        tee_attestation_error("TEE attestation is not enabled on this VTA")
     })?;
 
     Ok(Json(operations::attestation::get_tee_status(tee_state)))
@@ -23,7 +23,7 @@ pub async fn generate_report(
     Json(body): Json<AttestationRequest>,
 ) -> Result<Json<AttestationResponse>, AppError> {
     let tee_state = state.tee_state.as_ref().ok_or_else(|| {
-        AppError::TeeAttestation("TEE attestation is not enabled on this VTA".into())
+        tee_attestation_error("TEE attestation is not enabled on this VTA")
     })?;
 
     let response =
@@ -38,7 +38,7 @@ pub async fn cached_report(
     State(state): State<AppState>,
 ) -> Result<Json<AttestationResponse>, AppError> {
     let tee_state = state.tee_state.as_ref().ok_or_else(|| {
-        AppError::TeeAttestation("TEE attestation is not enabled on this VTA".into())
+        tee_attestation_error("TEE attestation is not enabled on this VTA")
     })?;
 
     let response = operations::attestation::get_cached_report(tee_state, &state.config).await?;
@@ -52,7 +52,7 @@ pub async fn mnemonic_status(
     State(state): State<AppState>,
 ) -> Result<Json<MnemonicExportStatus>, AppError> {
     let guard = state.mnemonic_guard.as_ref().ok_or_else(|| {
-        AppError::TeeAttestation("mnemonic export not available (TEE mode not active or no KMS bootstrap)".into())
+        tee_attestation_error("mnemonic export not available (TEE mode not active or no KMS bootstrap)")
     })?;
 
     Ok(Json(guard.status()))
@@ -70,7 +70,7 @@ pub async fn mnemonic_export(
     State(state): State<AppState>,
 ) -> Result<Json<MnemonicExportResponse>, AppError> {
     let guard = state.mnemonic_guard.as_ref().ok_or_else(|| {
-        AppError::TeeAttestation("mnemonic export not available (TEE mode not active or no KMS bootstrap)".into())
+        tee_attestation_error("mnemonic export not available (TEE mode not active or no KMS bootstrap)")
     })?;
 
     let response = guard.export()?;

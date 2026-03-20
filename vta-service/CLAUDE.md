@@ -8,12 +8,16 @@ Rust workspace for **Verifiable Trust Communities (VTC) - Verifiable Trust Agent
 
 ## Workspace Structure
 
-This repo lives at `vtc-vta-rs/vta-service/` within a two-crate workspace:
+This repo lives at `vtc-vta-rs/vta-service/` within a multi-crate workspace:
 
-- **vta-sdk** (`../vta-sdk/`) — Library crate providing the SDK for Verifiable Trust Agents
-- **vta-service** (this crate) — Binary service application
+- **vti-common** (`../vti-common/`) — Shared library: auth, ACL, store, error types, config
+- **vta-sdk** (`../vta-sdk/`) — SDK for Verifiable Trust Agents (types, client, protocols)
+- **vta-service** (this crate) — VTA binary service (key management, audit logging)
+- **vtc-service** (`../vtc-service/`) — VTC binary service (community management)
+- **vta-cli-common** (`../vta-cli-common/`) — Shared CLI command implementations
+- **pnm-cli** (`../pnm-cli/`) — Personal Network Manager CLI
 
-Both crates share configuration via `workspace.package` in the root `Cargo.toml`.
+All crates share configuration via `workspace.package` in the root `Cargo.toml`.
 
 Key external dependency: `dtg-credentials` (Decentralized Trust Graph Credentials) — currently sourced from git (`https://github.com/FirstPersonNetwork/dtg-credentials-rs`), will move to crates.io when published.
 

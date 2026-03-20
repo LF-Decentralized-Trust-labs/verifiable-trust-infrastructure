@@ -1,6 +1,7 @@
 pub mod acl;
 #[cfg(feature = "tee")]
 pub mod attestation;
+pub mod audit;
 pub mod config;
 pub mod contexts;
 pub mod credentials;

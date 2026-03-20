@@ -25,7 +25,7 @@ use vta_sdk::protocols::did_management::{
 };
 use vta_sdk::webvh::{WebvhDidRecord, WebvhServerRecord};
 
-use crate::auth::extractor::AuthClaims;
+use crate::auth::AuthClaims;
 use crate::config::AppConfig;
 use crate::error::AppError;
 use crate::keys::paths::allocate_path;

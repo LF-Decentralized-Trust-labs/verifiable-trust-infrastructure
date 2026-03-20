@@ -1,4 +1,4 @@
-use crate::error::AppError;
+use crate::error::{AppError, key_derivation_error};
 use crate::keys::seed_store::SeedStore;
 use affinidi_tdk::{
     affinidi_crypto::ed25519::ed25519_private_to_x25519, secrets_resolver::secrets::Secret,
@@ -22,11 +22,11 @@ impl Bip32Extension for ExtendedSigningKey {
     fn derive_ed25519(&self, path: &str) -> Result<Secret, AppError> {
         let derivation_path: DerivationPath = path
             .parse()
-            .map_err(|e| AppError::KeyDerivation(format!("invalid derivation path: {e}")))?;
+            .map_err(|e| key_derivation_error(format!("invalid derivation path: {e}")))?;
 
         let derived = self
             .derive(&derivation_path)
-            .map_err(|e| AppError::KeyDerivation(format!("derivation failed: {e}")))?;
+            .map_err(|e| key_derivation_error(format!("derivation failed: {e}")))?;
 
         Ok(Secret::generate_ed25519(
             None,
@@ -37,11 +37,11 @@ impl Bip32Extension for ExtendedSigningKey {
     fn derive_x25519(&self, path: &str) -> Result<Secret, AppError> {
         let derivation_path: DerivationPath = path
             .parse()
-            .map_err(|e| AppError::KeyDerivation(format!("invalid derivation path: {e}")))?;
+            .map_err(|e| key_derivation_error(format!("invalid derivation path: {e}")))?;
 
         let derived = self
             .derive(&derivation_path)
-            .map_err(|e| AppError::KeyDerivation(format!("derivation failed: {e}")))?;
+            .map_err(|e| key_derivation_error(format!("derivation failed: {e}")))?;
 
         let x25519_seed = ed25519_private_to_x25519(derived.signing_key.as_bytes());
         Ok(Secret::generate_x25519(None, Some(&x25519_seed))?)
@@ -61,12 +61,12 @@ pub async fn load_or_generate_seed(
 ) -> Result<ExtendedSigningKey, AppError> {
     if let Some(phrase) = mnemonic {
         let m = bip39::Mnemonic::parse(phrase)
-            .map_err(|e| AppError::KeyDerivation(format!("invalid BIP-39 mnemonic: {e}")))?;
+            .map_err(|e| key_derivation_error(format!("invalid BIP-39 mnemonic: {e}")))?;
         let seed = m.to_seed("");
         seed_store.set(&seed).await?;
         info!("master seed derived from mnemonic and stored");
         return ExtendedSigningKey::from_seed(&seed).map_err(|e| {
-            AppError::KeyDerivation(format!(
+            key_derivation_error(format!(
                 "Couldn't create bip32 root signing key! Reason: {e}"
             ))
         });
@@ -75,7 +75,7 @@ pub async fn load_or_generate_seed(
     if let Some(existing) = seed_store.get().await? {
         debug!("master seed loaded from store");
         return ExtendedSigningKey::from_seed(&existing).map_err(|e| {
-            AppError::KeyDerivation(format!(
+            key_derivation_error(format!(
                 "Couldn't create bip32 root signing key! Reason: {e}"
             ))
         });
@@ -86,7 +86,7 @@ pub async fn load_or_generate_seed(
     seed_store.set(&seed).await?;
     info!("new random master seed generated and stored");
     ExtendedSigningKey::from_seed(&seed).map_err(|e| {
-        AppError::KeyDerivation(format!(
+        key_derivation_error(format!(
             "Couldn't create bip32 root signing key! Reason: {e}"
         ))
     })

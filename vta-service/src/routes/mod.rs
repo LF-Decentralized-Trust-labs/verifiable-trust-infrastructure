@@ -1,4 +1,5 @@
 mod acl;
+mod audit;
 #[cfg(feature = "tee")]
 mod attestation;
 mod auth;
@@ -10,11 +11,17 @@ mod health;
 pub mod keys;
 
 use axum::Router;
+use axum::extract::DefaultBodyLimit;
 use axum::routing::{delete, get, post};
 
 use crate::server::AppState;
 
+/// Maximum request body size (1 MB). Protects against memory exhaustion,
+/// especially critical in TEE deployments where enclave memory is limited.
+const MAX_BODY_SIZE: usize = 1024 * 1024;
+
 /// Health-check route — served without the request/response trace layer.
+/// Minimal response only; detailed info requires authentication.
 pub fn health_router() -> Router<AppState> {
     Router::new().route("/health", get(health::health))
 }
@@ -67,6 +74,12 @@ pub fn router() -> Router<AppState> {
             get(acl::get_acl)
                 .patch(acl::update_acl)
                 .delete(acl::delete_acl),
+        )
+        // Audit log routes
+        .route("/audit/logs", get(audit::list_audit_logs))
+        .route(
+            "/audit/retention",
+            get(audit::get_retention).patch(audit::update_retention),
         );
 
     // TEE attestation routes (feature-gated)
@@ -111,5 +124,9 @@ pub fn router() -> Router<AppState> {
             get(did_webvh::get_did_log_handler),
         );
 
-    router
+    // Authenticated health details endpoint
+    let router = router.route("/health/details", get(health::health_details));
+
+    // Apply global request body size limit to protect enclave memory
+    router.layer(DefaultBodyLimit::max(MAX_BODY_SIZE))
 }

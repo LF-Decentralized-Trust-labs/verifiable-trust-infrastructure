@@ -8,7 +8,7 @@ use crate::acl::{
     AclEntry, Role, delete_acl_entry, get_acl_entry, is_acl_entry_visible, list_acl_entries,
     store_acl_entry, validate_acl_modification,
 };
-use crate::auth::extractor::AuthClaims;
+use crate::auth::AuthClaims;
 use crate::auth::session::now_epoch;
 use crate::error::AppError;
 use crate::store::KeyspaceHandle;

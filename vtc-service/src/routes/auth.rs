@@ -16,8 +16,7 @@ use crate::acl::{
     AclEntry, Role, check_acl, check_acl_full, store_acl_entry, validate_acl_modification,
 };
 use crate::auth::credentials::generate_did_key;
-use crate::auth::extractor::{AdminAuth, AuthClaims, ManageAuth};
-use crate::auth::jwt::JwtKeys;
+use crate::auth::{AdminAuth, AuthClaims, ManageAuth};
 use crate::auth::session::{
     Session, SessionState, delete_session, get_session, get_session_by_refresh, list_sessions,
     now_epoch, store_refresh_index, store_session, update_session,
@@ -162,12 +161,13 @@ pub async fn authenticate(
     let refresh_expiry = config.auth.refresh_token_expiry;
     drop(config);
 
-    let claims = JwtKeys::new_claims(
+    let claims = jwt_keys.new_claims(
         session.did.clone(),
         session.session_id.clone(),
         role.to_string(),
         allowed_contexts,
         access_expiry,
+        false,
     );
     let access_expires_at = claims.exp;
     let access_token = jwt_keys.encode(&claims)?;
@@ -283,12 +283,13 @@ pub async fn refresh(
     let access_expiry = config.auth.access_token_expiry;
     drop(config);
 
-    let claims = JwtKeys::new_claims(
+    let claims = jwt_keys.new_claims(
         session.did.clone(),
         session.session_id.clone(),
         role.to_string(),
         allowed_contexts,
         access_expiry,
+        false,
     );
     let access_expires_at = claims.exp;
     let access_token = jwt_keys.encode(&claims)?;
