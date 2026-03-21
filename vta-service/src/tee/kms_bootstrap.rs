@@ -272,7 +272,7 @@ async fn verify_jwt_fingerprint(
 fn fingerprint_path(config: &TeeKmsConfig) -> String {
     let parent = std::path::Path::new(&config.jwt_ciphertext_path)
         .parent()
-        .unwrap_or(std::path::Path::new("/mnt/vta-data/secrets"));
+        .unwrap_or(std::path::Path::new("/mnt/vta-data/files"));
     parent.join(JWT_FINGERPRINT_FILE).to_string_lossy().into_owned()
 }
 

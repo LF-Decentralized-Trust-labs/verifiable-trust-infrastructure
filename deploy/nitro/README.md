@@ -100,7 +100,7 @@ both first and subsequent boots** — no rebuild cycle for identity creation.
 │     • Derive signing + key-agreement keys from seed                  │
 │     • Create DID (replace {SCID} with real value)                    │
 │     • Persist DID in encrypted store                                 │
-│     • Write did.jsonl to /mnt/vta-data/secrets/                      │
+│     • Write did.jsonl to /mnt/vta-data/files/                      │
 │  4. Start serving (auth fully functional)                            │
 │                                                                      │
 │  Operator: upload did.jsonl to WebVH server                          │
@@ -538,7 +538,7 @@ key_arn = "arn:aws:kms:us-east-1:123456789012:key/abc-def-456"
 ```toml
 [tee.kms]
 vta_did_template = "did:webvh:{SCID}:example.com:vta"
-did_log_path = "/mnt/vta-data/secrets/did.jsonl"
+did_log_path = "/mnt/vta-data/files/did.jsonl"
 ```
 
 Replace `example.com:vta` with the domain and path where your WebVH server
@@ -795,7 +795,7 @@ To avoid a manual DID creation / config update / EIF rebuild cycle, set
 ```toml
 [tee.kms]
 vta_did_template = "did:webvh:{SCID}:example.com:vta"
-did_log_path = "/mnt/vta-data/secrets/did.jsonl"
+did_log_path = "/mnt/vta-data/files/did.jsonl"
 ```
 
 On first boot, the VTA:
@@ -809,13 +809,13 @@ upload it to your WebVH server:
 
 ```bash
 # On the parent EC2 instance:
-cat /mnt/vta-data/secrets/did.jsonl
+cat /mnt/vta-data/files/did.jsonl
 
 # Upload to your WebVH server at the matching path:
 # e.g., https://example.com/vta/did.jsonl
 curl -X POST https://webvh-server.example.com/api/publish \
     -H 'Content-Type: application/json' \
-    -d @/mnt/vta-data/secrets/did.jsonl
+    -d @/mnt/vta-data/files/did.jsonl
 ```
 
 **No EIF rebuild is needed.** The template is stable across boots — the actual

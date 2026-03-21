@@ -194,17 +194,17 @@ pub struct TeeKmsConfig {
 
 #[cfg(feature = "tee")]
 fn default_did_log_path() -> String {
-    "/mnt/vta-data/secrets/did.jsonl".to_string()
+    "/mnt/vta-data/files/did.jsonl".to_string()
 }
 
 #[cfg(feature = "tee")]
 fn default_seed_ciphertext_path() -> String {
-    "/mnt/vta-data/secrets/seed.enc".to_string()
+    "/mnt/vta-data/files/seed.enc".to_string()
 }
 
 #[cfg(feature = "tee")]
 fn default_jwt_ciphertext_path() -> String {
-    "/mnt/vta-data/secrets/jwt.enc".to_string()
+    "/mnt/vta-data/files/jwt.enc".to_string()
 }
 
 #[cfg(feature = "tee")]

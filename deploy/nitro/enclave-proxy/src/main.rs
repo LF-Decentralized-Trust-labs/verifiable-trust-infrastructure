@@ -61,9 +61,9 @@ pub struct Cli {
     #[arg(long, default_value = "/mnt/vta-data/store")]
     storage_data_dir: PathBuf,
 
-    /// Directory for secrets files (ciphertexts, did.jsonl — on parent EBS)
-    #[arg(long, default_value = "/mnt/vta-data/secrets")]
-    storage_secrets_dir: PathBuf,
+    /// Directory for enclave files (KMS ciphertexts, did.jsonl — on parent EBS)
+    #[arg(long, default_value = "/mnt/vta-data/files")]
+    storage_files_dir: PathBuf,
 
     /// Additional hosts to allowlist for HTTPS proxy (host:port)
     #[arg(trailing_var_arg = true)]
@@ -146,7 +146,7 @@ async fn main() {
     }
     eprintln!("  [4] Outbound IMDS:     vsock:{} → 169.254.169.254:80", config.vsock_imds_port);
     eprintln!("  [5] Storage:           vsock:{} → {} (fjall)", config.vsock_storage_port, config.storage_data_dir.display());
-    eprintln!("       secrets: {}", config.storage_secrets_dir.display());
+    eprintln!("       files: {}", config.storage_files_dir.display());
     eprintln!();
     eprintln!("  Test:");
     eprintln!("    curl http://localhost:{}/health", config.listen_port);
@@ -188,7 +188,7 @@ async fn main() {
     let storage = tokio::spawn(storage::run_storage(
         config.vsock_storage_port,
         config.storage_data_dir.clone(),
-        config.storage_secrets_dir.clone(),
+        config.storage_files_dir.clone(),
     ));
 
     info!("all proxy channels started — press Ctrl+C to stop");
