@@ -556,6 +556,7 @@ pub async fn run_setup_wizard(
             secrets: secrets_config.clone(),
             #[cfg(feature = "tee")]
             tee: Default::default(),
+            resolver_url: None,
             config_path: config_path.clone(),
         })
         .map_err(|e| format!("{e}"))?;
@@ -655,6 +656,7 @@ pub async fn run_setup_wizard(
         secrets: secrets_config,
         #[cfg(feature = "tee")]
         tee: Default::default(),
+        resolver_url: None,
         config_path: config_path.clone(),
     };
     config.save()?;

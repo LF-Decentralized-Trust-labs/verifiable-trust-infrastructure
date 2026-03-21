@@ -57,7 +57,7 @@ storage, and signed enclave images.
 │  │           /dev/nsm for attestation reports                   │   │
 │  └──────────────────────────────────────────────────────────────┘   │
 │                                                                     │
-│  vsock proxies: inbound(:5100) mediator(:5200) HTTPS(:5300) IMDS(:5400) │
+│  vsock proxies: inbound(:5100) mediator(:5200) HTTPS(:5300) IMDS(:5400) resolver(:5600) │
 └────────────┬──────────────┬──────────────┬──────────────────────────┘
              │ vsock        │ vsock        │ vsock
 ┌────────────▼──────────────▼──────────────▼──────────────────────────┐
@@ -699,7 +699,8 @@ The proxy starts four channels:
 | Outbound DIDComm | `Enclave → vsock:5200 → TLS → mediator` | VTA DIDComm messaging |
 | Outbound HTTPS | `Enclave → vsock:5300 → allowlisted hosts` | KMS, WebVH, enclave HTTPS |
 | Outbound IMDS | `Enclave → vsock:5400 → 169.254.169.254:80` | AWS IAM credentials |
-| Storage | `Enclave → vsock:5500 → fjall on EBS` | Persistent K/V store + file I/O |
+| Storage | `Enclave → vsock:5500 → fjall on EBS` | Persistent K/V store |
+| DID Resolver | `Enclave → vsock:5600 → resolver sidecar` | DID resolution (WebSocket) |
 
 The HTTPS channel implements an **HTTP CONNECT proxy** with an allowlist.
 Inside the enclave, `HTTPS_PROXY=http://127.0.0.1:4444` routes all HTTPS
@@ -712,15 +713,31 @@ The allowlist is built automatically from:
 
 ### DID Resolution
 
-The parent proxy has the **Affinidi DID resolver embedded** — no separate
-resolver service is needed. The proxy resolves the mediator DID locally
-using `affinidi-did-resolver-cache-sdk` (supports `did:key`, `did:web`,
-`did:webvh`, and other methods).
+DID resolution uses two components:
 
-The VTA inside the enclave also uses `affinidi-did-resolver-cache-sdk` for
-its own DID resolution (authenticating clients, resolving DIDComm peers).
-This runs inside the enclave and routes HTTPS traffic through the vsock
-proxy to reach DID hosting endpoints.
+1. **Parent proxy** — embeds the Affinidi DID resolver for mediator DID
+   resolution at startup (local mode, no external service needed).
+
+2. **Resolver sidecar** — the `affinidi-did-resolver-cache-server` runs
+   on the parent EC2 instance as a sidecar. The VTA inside the enclave
+   connects to it via WebSocket (network mode) through vsock:5600.
+
+Install and start the resolver sidecar on the parent:
+
+```bash
+# Install (first time only)
+cargo install affinidi-did-resolver-cache-server
+
+# Run in background
+affinidi-did-resolver-cache-server &
+```
+
+The VTA's `config.toml` sets `resolver_url = "ws://127.0.0.1:4445/did/v1/ws"`
+which routes through socat inside the enclave → vsock:5600 → proxy →
+localhost:8080 (sidecar).
+
+**Start the sidecar before the enclave** — the VTA connects to it during
+boot for auth initialization.
 
 ### DID Resolution Security
 
@@ -1112,7 +1129,8 @@ jobs:
 | 5200 | Enclave → Parent | Outbound DIDComm (mediator WebSocket) |
 | 5300 | Enclave → Parent | Outbound HTTPS (DID resolution, KMS) |
 | 5400 | Enclave → Parent | Outbound IMDS (AWS IAM credentials) |
-| 5500 | Enclave → Parent | Persistent K/V storage + file I/O |
+| 5500 | Enclave → Parent | Persistent K/V storage |
+| 5600 | Enclave → Parent | DID resolver (WebSocket to sidecar) |
 
 ## Files
 

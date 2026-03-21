@@ -41,6 +41,11 @@
 # (Profile A) — the mediator handles routing and this URL is not used.
 # public_url = "https://vta.example.com"
 
+# DID resolver — in TEE mode, the VTA uses network mode to connect to the
+# affinidi-did-resolver-cache-server sidecar on the parent, bridged via vsock.
+# The URL points to the local socat proxy inside the enclave.
+resolver_url = "ws://127.0.0.1:4445/did/v1/ws"
+
 # ── Service toggles ─────────────────────────────────────────────────────────
 # Runtime overrides for compiled-in features. These can only DISABLE a service
 # that was compiled in, never enable one that wasn't. For example, if the

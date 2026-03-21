@@ -37,10 +37,12 @@ VSOCK_INBOUND_PORT="${VSOCK_INBOUND_PORT:-5100}"     # Inbound REST (vsock → V
 VSOCK_MEDIATOR_PORT="${VSOCK_MEDIATOR_PORT:-5200}"    # Outbound mediator (VTA → vsock)
 VSOCK_HTTPS_PORT="${VSOCK_HTTPS_PORT:-5300}"           # Outbound HTTPS (VTA → vsock)
 VSOCK_IMDS_PORT="${VSOCK_IMDS_PORT:-5400}"             # Outbound IMDS (AWS credentials)
+VSOCK_RESOLVER_PORT="${VSOCK_RESOLVER_PORT:-5600}"     # Outbound DID resolver (WebSocket)
 
 VTA_PORT="${VTA_PORT:-8100}"
 LOCAL_MEDIATOR_PORT="${LOCAL_MEDIATOR_PORT:-4443}"     # VTA connects here for mediator
 LOCAL_HTTPS_PORT="${LOCAL_HTTPS_PORT:-4444}"            # VTA connects here for HTTPS
+LOCAL_RESOLVER_PORT="${LOCAL_RESOLVER_PORT:-4445}"      # VTA connects here for DID resolver
 
 echo "=== VTA Nitro Enclave ==="
 echo "VTA version:  $(vta-enclave --version 2>/dev/null || echo unknown)"
@@ -108,16 +110,25 @@ socat TCP-LISTEN:80,reuseaddr,fork,bind=169.254.169.254 \
     VSOCK-CONNECT:${PARENT_CID}:${VSOCK_IMDS_PORT} &
 IMDS_PID=$!
 
-# Set HTTPS_PROXY so that reqwest/hyper route HTTPS traffic (KMS, DID
-# resolution, WebVH) through the CONNECT proxy.
-# Do NOT set HTTP_PROXY — plain HTTP traffic (especially IMDS at
-# 169.254.169.254:80 for AWS credentials) must go directly through the
-# dedicated socat bridges, not through the CONNECT proxy.
+# ---------------------------------------------------------------------------
+# Start DID resolver proxy: VTA WebSocket → parent (resolver sidecar)
+# ---------------------------------------------------------------------------
+# The VTA's DID resolver SDK connects via WebSocket to a remote resolver
+# server. The parent runs the affinidi-did-resolver-cache-server sidecar.
+echo "Starting DID resolver proxy: localhost:${LOCAL_RESOLVER_PORT} → vsock:${PARENT_CID}:${VSOCK_RESOLVER_PORT}"
+socat TCP-LISTEN:${LOCAL_RESOLVER_PORT},reuseaddr,fork,bind=127.0.0.1 \
+    VSOCK-CONNECT:${PARENT_CID}:${VSOCK_RESOLVER_PORT} &
+RESOLVER_PID=$!
+
+# Set HTTPS_PROXY so that reqwest/hyper route HTTPS traffic (KMS, WebVH)
+# through the CONNECT proxy.
+# Do NOT set HTTP_PROXY — plain HTTP traffic (IMDS, resolver WebSocket)
+# must go directly through the dedicated socat bridges.
 export HTTPS_PROXY="http://127.0.0.1:${LOCAL_HTTPS_PORT}"
 export NO_PROXY="127.0.0.1,localhost,169.254.169.254"
 
 echo ""
-echo "Proxy PIDs: inbound=${INBOUND_PID} mediator=${MEDIATOR_PID} https=${HTTPS_PID} imds=${IMDS_PID}"
+echo "Proxy PIDs: inbound=${INBOUND_PID} mediator=${MEDIATOR_PID} https=${HTTPS_PID} imds=${IMDS_PID} resolver=${RESOLVER_PID}"
 echo "HTTPS_PROXY=http://127.0.0.1:${LOCAL_HTTPS_PORT}"
 
 # ---------------------------------------------------------------------------
@@ -125,7 +136,7 @@ echo "HTTPS_PROXY=http://127.0.0.1:${LOCAL_HTTPS_PORT}"
 # ---------------------------------------------------------------------------
 cleanup() {
     echo "Shutting down proxies..."
-    kill $INBOUND_PID $MEDIATOR_PID $HTTPS_PID $IMDS_PID 2>/dev/null || true
+    kill $INBOUND_PID $MEDIATOR_PID $HTTPS_PID $IMDS_PID $RESOLVER_PID 2>/dev/null || true
     wait 2>/dev/null || true
 }
 trap cleanup EXIT

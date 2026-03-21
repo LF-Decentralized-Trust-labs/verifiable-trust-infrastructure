@@ -58,6 +58,14 @@ pub struct Cli {
     #[arg(long, default_value_t = 5500)]
     vsock_storage: u32,
 
+    /// Vsock port for DID resolver bridge (enclave → resolver sidecar)
+    #[arg(long, default_value_t = 5600)]
+    vsock_resolver: u32,
+
+    /// Local port where affinidi-did-resolver-cache-server sidecar listens
+    #[arg(long, default_value_t = 8080)]
+    resolver_port: u16,
+
     /// Directory for persistent key-value store (on parent EBS)
     #[arg(long, default_value = "/mnt/vta-data/store")]
     storage_data_dir: PathBuf,
@@ -143,6 +151,7 @@ async fn main() {
     }
     eprintln!("  [4] Outbound IMDS:     vsock:{} → 169.254.169.254:80", config.vsock_imds_port);
     eprintln!("  [5] Storage:           vsock:{} → {} (fjall)", config.vsock_storage_port, config.storage_data_dir.display());
+    eprintln!("  [6] DID Resolver:      vsock:{} → localhost:{} (sidecar)", cli.vsock_resolver, cli.resolver_port);
     eprintln!();
     eprintln!("  Test:");
     eprintln!("    curl http://localhost:{}/health", config.listen_port);
@@ -186,6 +195,11 @@ async fn main() {
         config.storage_data_dir.clone(),
     ));
 
+    let resolver_bridge = tokio::spawn(channels::run_resolver(
+        cli.vsock_resolver,
+        cli.resolver_port,
+    ));
+
     info!("all proxy channels started — press Ctrl+C to stop");
 
     // Wait for shutdown signal
@@ -200,4 +214,5 @@ async fn main() {
     https.abort();
     imds.abort();
     storage.abort();
+    resolver_bridge.abort();
 }
