@@ -102,6 +102,18 @@ pub async fn check_acl_full(
     }
 }
 
+/// Validate that the caller is allowed to assign the given role.
+///
+/// Only Admin-role callers can assign the Admin role.
+pub fn validate_role_assignment(caller: &AuthClaims, target_role: &Role) -> Result<(), AppError> {
+    if *target_role == Role::Admin && caller.role != Role::Admin {
+        return Err(AppError::Forbidden(
+            "only admins can assign the admin role".into(),
+        ));
+    }
+    Ok(())
+}
+
 /// Validate that the caller is allowed to create or modify an ACL entry
 /// with the given `target_contexts`.
 ///
