@@ -1,6 +1,6 @@
 //! Resolve a DID via a Universal Resolver and extract service endpoints.
 
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 /// Resolved mediator endpoint.
 #[derive(Debug, Clone)]
@@ -27,24 +27,26 @@ pub async fn resolve_mediator_endpoint(
         mediator_did
     );
 
-    debug!(did = mediator_did, resolver = resolver_url, "resolving mediator DID");
+    info!(did = mediator_did, url = %url, "resolving mediator DID via resolver");
 
     let resp = reqwest::get(&url)
         .await
-        .map_err(|e| format!("resolver request failed: {e}"))?;
+        .map_err(|e| format!("resolver request to {url} failed: {e}"))?;
 
-    if !resp.status().is_success() {
+    let status = resp.status();
+    if !status.is_success() {
+        let body = resp.text().await.unwrap_or_default();
         return Err(format!(
-            "resolver returned {}: {}",
-            resp.status(),
-            resp.text().await.unwrap_or_default()
+            "resolver returned HTTP {status} for {mediator_did}: {body}"
         ));
     }
+
+    info!(did = mediator_did, "resolver returned HTTP {status}");
 
     let body: serde_json::Value = resp
         .json()
         .await
-        .map_err(|e| format!("resolver response parse failed: {e}"))?;
+        .map_err(|e| format!("resolver response parse failed for {mediator_did}: {e}"))?;
 
     // The Universal Resolver returns { "didDocument": { ... } }
     // Some resolvers return the DID document directly at the top level.
@@ -56,30 +58,74 @@ pub async fn resolve_mediator_endpoint(
     let services = did_doc
         .get("service")
         .and_then(|s| s.as_array())
-        .ok_or("DID document has no services")?;
+        .ok_or_else(|| format!("DID document for {mediator_did} has no 'service' array"))?;
 
-    for svc in services {
+    info!(
+        did = mediator_did,
+        service_count = services.len(),
+        "scanning DID document services for DIDCommMessaging"
+    );
+
+    for (i, svc) in services.iter().enumerate() {
         let svc_types = match svc.get("type") {
             Some(serde_json::Value::String(t)) => vec![t.as_str()],
             Some(serde_json::Value::Array(arr)) => {
                 arr.iter().filter_map(|v| v.as_str()).collect()
             }
-            _ => continue,
+            _ => {
+                debug!(index = i, "skipping service with no/invalid type");
+                continue;
+            }
         };
 
+        let svc_id = svc.get("id").and_then(|v| v.as_str()).unwrap_or("(no id)");
+        debug!(index = i, id = svc_id, types = ?svc_types, "examining service");
+
         if !svc_types.iter().any(|t| *t == "DIDCommMessaging") {
+            debug!(index = i, id = svc_id, "not DIDCommMessaging — skipping");
             continue;
         }
 
         // Extract the endpoint URI — handles both string and array forms
-        if let Some(endpoint) = extract_endpoint_uri(svc) {
-            debug!(did = mediator_did, endpoint = %endpoint, "resolved mediator endpoint");
-            return parse_endpoint_url(&endpoint);
+        if let Some(endpoint_uri) = extract_endpoint_uri(svc) {
+            info!(
+                did = mediator_did,
+                service_id = svc_id,
+                endpoint = %endpoint_uri,
+                "found DIDCommMessaging endpoint"
+            );
+            let ep = parse_endpoint_url(&endpoint_uri)?;
+            info!(
+                host = %ep.host,
+                port = ep.port,
+                tls = ep.tls,
+                "parsed mediator endpoint"
+            );
+            return Ok(ep);
+        } else {
+            warn!(
+                index = i,
+                id = svc_id,
+                service_endpoint = ?svc.get("serviceEndpoint"),
+                "DIDCommMessaging service found but could not extract endpoint URI"
+            );
         }
     }
 
+    // Log all service types found to help diagnose
+    let all_types: Vec<&str> = services
+        .iter()
+        .filter_map(|s| s.get("type"))
+        .flat_map(|t| match t {
+            serde_json::Value::String(s) => vec![s.as_str()],
+            serde_json::Value::Array(arr) => arr.iter().filter_map(|v| v.as_str()).collect(),
+            _ => vec![],
+        })
+        .collect();
+
     Err(format!(
-        "no DIDCommMessaging service found in DID document for {mediator_did}"
+        "no DIDCommMessaging service found in DID document for {mediator_did}. \
+         Services present: {all_types:?}"
     ))
 }
 
