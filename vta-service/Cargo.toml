@@ -35,6 +35,10 @@ tee = [
 ]
 vsock-store = ["vti-common/vsock-store"]
 
+[lib]
+name = "vta_service"
+path = "src/lib.rs"
+
 [[bin]]
 name = "vta"
 path = "src/main.rs"

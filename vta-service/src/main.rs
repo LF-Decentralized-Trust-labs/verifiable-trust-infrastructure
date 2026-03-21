@@ -1,38 +1,17 @@
-mod acl;
+// CLI-only modules (not part of the library)
 mod acl_cli;
-mod audit;
-mod auth;
-mod config;
-mod contexts;
 mod did_key;
 #[cfg(feature = "setup")]
 mod did_webvh;
-pub(crate) mod didcomm_bridge;
-mod error;
 mod import_did;
-mod keys;
 mod keys_cli;
-#[cfg(feature = "didcomm")]
-mod messaging;
-mod operations;
-#[cfg(feature = "rest")]
-mod routes;
-mod seal;
-mod server;
 #[cfg(feature = "setup")]
 mod setup;
-mod status;
-mod store;
-#[cfg(feature = "tee")]
-mod tee;
 #[cfg(feature = "webvh")]
 mod webvh_cli;
-#[cfg(feature = "webvh")]
-mod webvh_client;
-#[cfg(feature = "webvh")]
-mod webvh_didcomm;
-#[cfg(feature = "webvh")]
-mod webvh_store;
+
+// Re-export library modules for use by CLI commands
+use vta_service::*;
 
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD as BASE64;
