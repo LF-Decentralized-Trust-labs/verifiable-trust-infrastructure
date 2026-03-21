@@ -1,5 +1,8 @@
 //! Wire protocol for the vsock key-value storage proxy.
 //!
+//! Some functions (request builders, response decoders) are defined here
+//! for protocol completeness but only used by the vsock client in vti-common.
+//!
 //! Simple length-prefixed binary messages. Each message:
 //!   [4 bytes: payload length (u32 big-endian)][payload bytes]
 //!
