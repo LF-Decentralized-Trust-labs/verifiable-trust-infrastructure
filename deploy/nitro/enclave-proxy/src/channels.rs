@@ -161,7 +161,7 @@ pub async fn run_mediator(
                 };
 
                 if let Err(e) = bridge(vsock_stream, tls_stream).await {
-                    debug!("[mediator] bridge error: {e}");
+                    info!("[mediator] connection to {host}:{port} ended: {e}");
                     return false;
                 }
             } else {
@@ -175,7 +175,7 @@ pub async fn run_mediator(
                 };
 
                 if let Err(e) = bridge(vsock_stream, tcp_stream).await {
-                    debug!("[mediator] bridge error: {e}");
+                    info!("[mediator] connection to {host}:{port} ended: {e}");
                     return false;
                 }
             }
@@ -185,25 +185,42 @@ pub async fn run_mediator(
         .unwrap_or(false);
 
         if success {
+            if consecutive_failures > 0 {
+                info!(
+                    "[mediator] connection to {}:{} succeeded (recovered after {} failures)",
+                    endpoint.host, endpoint.port, consecutive_failures
+                );
+            }
             consecutive_failures = 0;
         } else {
             consecutive_failures += 1;
+            warn!(
+                "[mediator] connection failure #{consecutive_failures} to {}:{}",
+                endpoint.host, endpoint.port
+            );
 
             // After 3 consecutive failures, re-resolve the mediator DID
             // in case the endpoint URL has changed
             if consecutive_failures >= 3 && mediator_config.did.is_some() {
                 info!(
-                    "[mediator] {} consecutive connection failures — re-resolving mediator DID",
-                    consecutive_failures
+                    "[mediator] {consecutive_failures} consecutive failures — re-resolving mediator DID"
                 );
                 if let Some(new_ep) = resolve_mediator(&mediator_config).await {
                     if new_ep.host != endpoint.host || new_ep.port != endpoint.port {
                         info!(
-                            "[mediator] mediator endpoint changed: {}:{} → {}:{}",
-                            endpoint.host, endpoint.port, new_ep.host, new_ep.port
+                            "[mediator] endpoint changed: {}:{} → {}:{} (tls={})",
+                            endpoint.host, endpoint.port,
+                            new_ep.host, new_ep.port, new_ep.tls
+                        );
+                    } else {
+                        info!(
+                            "[mediator] re-resolved same endpoint: {}:{} (tls={})",
+                            new_ep.host, new_ep.port, new_ep.tls
                         );
                     }
                     endpoint = new_ep;
+                } else {
+                    warn!("[mediator] re-resolution failed — keeping current endpoint {}:{}", endpoint.host, endpoint.port);
                 }
                 consecutive_failures = 0;
             }
