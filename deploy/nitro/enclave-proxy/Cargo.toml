@@ -7,9 +7,14 @@ rust-version = "1.91.0"
 license = "Apache-2.0"
 publish = false
 
-# This crate is NOT a workspace member. It compiles only on Linux (requires vsock).
+# This crate is NOT a workspace member (excluded in root Cargo.toml).
+# Reason: tokio-vsock requires Linux — can't compile on macOS/Windows.
 # Build on the EC2 parent instance:
 #   cd deploy/nitro/enclave-proxy && cargo build --release
+#
+# IMPORTANT: Keep dependency versions aligned with the workspace.
+# When updating workspace deps (tokio, serde, tracing, fjall, etc.),
+# update the versions here too to prevent version drift.
 
 [[bin]]
 name = "enclave-proxy"
