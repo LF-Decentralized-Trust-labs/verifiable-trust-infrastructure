@@ -55,17 +55,18 @@ RUN mkdir -p vta-sdk/src vta-service/src vta-cli-common/src vtc-service/src vti-
 # Override with: docker build --build-arg FEATURES="didcomm,tee" ...
 #
 # Profiles (vsock-store is always included for persistent enclave storage):
-#   Hardened (DIDComm only):  didcomm,tee,vsock-store
-#   Full API (REST+DIDComm):  rest,didcomm,tee,vsock-store
-#   REST only:                rest,tee,vsock-store
+#   Hardened (DIDComm only):  didcomm,vsock-store
+#   Full API (REST+DIDComm):  rest,didcomm,vsock-store
+#   REST only:                rest,vsock-store
 #
-# In TEE mode, KMS bootstrap handles seed and JWT key — no need for
-# config-seed, keyring, or aws-secrets features.
-ARG FEATURES="rest,didcomm,tee,vsock-store"
+# TEE support is built into vta-enclave by default (no need to specify tee).
+# KMS bootstrap handles seed and JWT key — no need for config-seed, keyring,
+# or aws-secrets features.
+ARG FEATURES="rest,didcomm,vsock-store"
 
 # Build dependencies only (cached unless Cargo.toml or features change)
-RUN cargo build --release --package vta-service \
-    --no-default-features --features rest,didcomm,tee,vsock-store \
+RUN cargo build --release --package vta-enclave \
+    --no-default-features --features rest,didcomm,vsock-store \
     2>/dev/null || true
 
 # Copy actual source code
@@ -80,8 +81,8 @@ COPY pnm-cli/ pnm-cli/
 # Touch source files to invalidate the dummy build cache
 RUN find vta-sdk/src vta-service/src vta-cli-common/src vti-common/src -name '*.rs' -exec touch {} +
 
-# Build the VTA with selected feature flags
-RUN cargo build --release --package vta-service \
+# Build the VTA enclave binary with selected feature flags
+RUN cargo build --release --package vta-enclave \
     --no-default-features --features ${FEATURES}
 
 # Build a tiny stub for __res_init — an obsolete glibc resolver function
