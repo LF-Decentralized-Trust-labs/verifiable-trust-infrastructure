@@ -34,7 +34,6 @@ struct VtaConfig {
 
 #[derive(Debug, Deserialize)]
 struct MessagingConfig {
-    #[allow(dead_code)]
     mediator_url: Option<String>,
     mediator_did: Option<String>,
 }
@@ -60,13 +59,21 @@ impl ProxyConfig {
             VtaConfig::default()
         };
 
-        // Extract mediator host from config or env
+        // Extract mediator host from env, DID, or URL (in priority order)
         let mediator_host = std::env::var("MEDIATOR_HOST").ok().or_else(|| {
-            vta_config
-                .messaging
+            let messaging = vta_config.messaging.as_ref()?;
+            // Try extracting host from the mediator DID
+            messaging
+                .mediator_did
                 .as_ref()
-                .and_then(|m| m.mediator_did.as_ref())
                 .and_then(|did| extract_host_from_did(did))
+                // Fall back to extracting host from the mediator URL
+                .or_else(|| {
+                    messaging
+                        .mediator_url
+                        .as_ref()
+                        .and_then(|url| extract_host_from_url(url))
+                })
         });
 
         let kms_region = std::env::var("AWS_REGION").ok().unwrap_or_else(|| {
@@ -144,20 +151,36 @@ impl ProxyConfig {
     }
 }
 
-/// Extract hostname from a did:web DID.
-/// `did:web:example.com` → `example.com`
-/// `did:web:example.com%3A8080` → `example.com`
+/// Extract hostname from a DID.
+///
+/// Supports:
+/// - `did:web:example.com` → `example.com`
+/// - `did:web:example.com%3A8080` → `example.com`
+/// - `did:webvh:SCID:example.com:path` → `example.com`
+/// - `did:webvh:SCID:example.com%3A8080:path` → `example.com`
 fn extract_host_from_did(did: &str) -> Option<String> {
-    did.strip_prefix("did:web:")
-        .map(|rest| {
-            rest.split('%')
-                .next()
-                .unwrap_or(rest)
-                .split(':')
-                .next()
-                .unwrap_or(rest)
-                .to_string()
-        })
+    if let Some(rest) = did.strip_prefix("did:web:") {
+        // did:web:host or did:web:host%3Aport
+        Some(extract_host_part(rest))
+    } else if let Some(rest) = did.strip_prefix("did:webvh:") {
+        // did:webvh:SCID:host:path — skip the SCID (first segment)
+        let after_scid = rest.split(':').nth(1)?;
+        Some(extract_host_part(after_scid))
+    } else {
+        None
+    }
+}
+
+/// Extract the hostname from a DID path segment, stripping port (%3A) encoding.
+fn extract_host_part(segment: &str) -> String {
+    segment
+        .split('%')
+        .next()
+        .unwrap_or(segment)
+        .split(':')
+        .next()
+        .unwrap_or(segment)
+        .to_string()
 }
 
 fn extract_host_from_url(url: &str) -> Option<String> {
