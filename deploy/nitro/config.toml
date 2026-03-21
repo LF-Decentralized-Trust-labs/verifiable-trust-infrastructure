@@ -62,12 +62,19 @@ format = "json"
 data_dir = "/var/lib/vta/data"
 
 # ── DIDComm mediator ────────────────────────────────────────────────────────
-# Required for Profiles A (Hardened) and B (Full API). The URL points to the
-# local vsock proxy inside the enclave — the parent proxy forwards it to the
-# actual mediator endpoint.
+# Required for Profiles A (Hardened) and B (Full API).
+#
+# mediator_url:  Always ws://127.0.0.1:4443 inside the enclave (vsock-proxied).
+# mediator_did:  The DID of your mediator service.
+# mediator_host: The real external hostname of the mediator (e.g.,
+#                "mediator.example.com"). The parent proxy uses this to
+#                establish the TLS connection. Supports both HTTPS and WSS
+#                mediators — the proxy bridges raw bytes over TLS.
+#
 # [messaging]
 # mediator_url = "ws://127.0.0.1:4443"
 # mediator_did = "did:web:mediator.example.com"
+# mediator_host = "mediator.example.com"
 
 # ── TEE attestation ─────────────────────────────────────────────────────────
 [tee]

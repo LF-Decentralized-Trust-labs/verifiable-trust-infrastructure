@@ -375,12 +375,14 @@ impl AppConfig {
                 config.messaging = Some(MessagingConfig {
                     mediator_url: url,
                     mediator_did: did,
+                    mediator_host: None,
                 });
             }
             (Ok(url), Err(_)) => {
                 let messaging = config.messaging.get_or_insert(MessagingConfig {
                     mediator_url: String::new(),
                     mediator_did: String::new(),
+                    mediator_host: None,
                 });
                 messaging.mediator_url = url;
             }
@@ -388,6 +390,7 @@ impl AppConfig {
                 let messaging = config.messaging.get_or_insert(MessagingConfig {
                     mediator_url: String::new(),
                     mediator_did: String::new(),
+                    mediator_host: None,
                 });
                 messaging.mediator_did = did;
             }
