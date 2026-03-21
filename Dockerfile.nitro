@@ -84,6 +84,12 @@ RUN find vta-sdk/src vta-service/src vta-cli-common/src vti-common/src -name '*.
 RUN cargo build --release --package vta-service \
     --no-default-features --features ${FEATURES}
 
+# Build a tiny stub for __res_init — an obsolete glibc resolver function
+# that musl/Alpine don't provide. Returning 0 (success) is safe; modern
+# DNS resolution uses different code paths.
+RUN echo 'int __res_init(void) { return 0; }' > /tmp/res_stub.c && \
+    gcc -shared -nostartfiles -o /tmp/libresolv_compat.so /tmp/res_stub.c
+
 # ---------------------------------------------------------------------------
 # Stage 2: Minimal runtime image for the Nitro Enclave
 # ---------------------------------------------------------------------------
@@ -100,8 +106,10 @@ RUN apk add --no-cache \
         libc6-compat \
     && rm -rf /var/cache/apk/*
 
-# Copy the VTA binary
+# Copy the VTA binary and glibc compat stub
 COPY --from=builder /build/target/release/vta /usr/local/bin/vta
+COPY --from=builder /tmp/libresolv_compat.so /usr/lib/libresolv_compat.so
+ENV LD_PRELOAD=/usr/lib/libresolv_compat.so
 
 # Copy the entrypoint script and config
 COPY deploy/nitro/enclave-entrypoint.sh /usr/local/bin/enclave-entrypoint.sh
