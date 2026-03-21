@@ -37,15 +37,17 @@ COPY vta-sdk/Cargo.toml vta-sdk/Cargo.toml
 COPY vta-service/Cargo.toml vta-service/Cargo.toml
 COPY vta-cli-common/Cargo.toml vta-cli-common/Cargo.toml
 COPY vtc-service/Cargo.toml vtc-service/Cargo.toml
+COPY vti-common/Cargo.toml vti-common/Cargo.toml
 COPY cnm-cli/Cargo.toml cnm-cli/Cargo.toml
 COPY pnm-cli/Cargo.toml pnm-cli/Cargo.toml
 
 # Create dummy source files so cargo can resolve the workspace
-RUN mkdir -p vta-sdk/src vta-service/src vta-cli-common/src vtc-service/src cnm-cli/src pnm-cli/src && \
+RUN mkdir -p vta-sdk/src vta-service/src vta-cli-common/src vtc-service/src vti-common/src cnm-cli/src pnm-cli/src && \
     echo "pub fn dummy() {}" > vta-sdk/src/lib.rs && \
     echo "fn main() {}" > vta-service/src/main.rs && \
     echo "pub fn dummy() {}" > vta-cli-common/src/lib.rs && \
     echo "fn main() {}" > vtc-service/src/main.rs && \
+    echo "pub fn dummy() {}" > vti-common/src/lib.rs && \
     echo "fn main() {}" > cnm-cli/src/main.rs && \
     echo "fn main() {}" > pnm-cli/src/main.rs
 
@@ -71,11 +73,12 @@ COPY vta-sdk/ vta-sdk/
 COPY vta-service/ vta-service/
 COPY vta-cli-common/ vta-cli-common/
 COPY vtc-service/ vtc-service/
+COPY vti-common/ vti-common/
 COPY cnm-cli/ cnm-cli/
 COPY pnm-cli/ pnm-cli/
 
 # Touch source files to invalidate the dummy build cache
-RUN find vta-sdk/src vta-service/src vta-cli-common/src -name '*.rs' -exec touch {} +
+RUN find vta-sdk/src vta-service/src vta-cli-common/src vti-common/src -name '*.rs' -exec touch {} +
 
 # Build the VTA with selected feature flags
 RUN cargo build --release --package vta-service \
