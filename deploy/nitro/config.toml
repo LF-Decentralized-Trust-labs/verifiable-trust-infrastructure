@@ -21,6 +21,12 @@
 # vta_name = "My VTA"
 # public_url = "https://vta.example.com"
 
+# Service toggles — runtime overrides for compiled-in features.
+# These can only DISABLE a service that was compiled in, never enable one
+# that wasn't. For example, if the binary was built with FEATURES="didcomm,tee"
+# (Profile A), setting rest = true here has no effect — the REST code isn't
+# in the binary. You can set didcomm = false here to disable DIDComm at
+# runtime without rebuilding.
 [services]
 rest = true
 didcomm = true
