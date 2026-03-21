@@ -6,7 +6,7 @@ mod detect;
 use std::path::PathBuf;
 
 use clap::Parser;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
 
 use config::ProxyConfig;
@@ -24,7 +24,7 @@ pub struct Cli {
     #[arg(short, long, default_value = "deploy/nitro/config.toml")]
     config: PathBuf,
 
-    /// Enclave CID (auto-detected from nitro-cli if 0)
+    /// Enclave CID (auto-detected from nitro-cli, or 16 if no enclave running yet)
     #[arg(long, default_value_t = 0)]
     enclave_cid: u32,
 
@@ -68,14 +68,20 @@ async fn main() {
 
     let mut cli = Cli::parse();
 
-    // Auto-detect enclave CID if not provided
+    // Auto-detect enclave CID if not provided.
+    // Default to CID 16 if no enclave is running yet — the proxy must start
+    // before the enclave so the vsock listeners are ready for boot-time
+    // connections (KMS, IMDS).
+    const DEFAULT_ENCLAVE_CID: u32 = 16;
     if cli.enclave_cid == 0 {
         cli.enclave_cid = match detect::detect_enclave_cid() {
             Some(cid) => cid,
             None => {
-                error!("no running enclave found — start one first:");
-                error!("  nitro-cli run-enclave --eif-path vta.eif --cpu-count 1 --memory 512");
-                std::process::exit(1);
+                warn!(
+                    "no running enclave found — using default CID {DEFAULT_ENCLAVE_CID}. \
+                     Start the enclave with: nitro-cli run-enclave --enclave-cid {DEFAULT_ENCLAVE_CID} ..."
+                );
+                DEFAULT_ENCLAVE_CID
             }
         };
     }
