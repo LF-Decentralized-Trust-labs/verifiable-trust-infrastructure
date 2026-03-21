@@ -64,6 +64,11 @@ region = "us-east-1"
 key_arn = "REPLACE_WITH_KMS_KEY_ARN"
 seed_ciphertext_path = "/mnt/vta-data/secrets/seed.enc"
 jwt_ciphertext_path = "/mnt/vta-data/secrets/jwt.enc"
+# Auto-generate a did:webvh identity on first boot. The VTA derives keys
+# from the bootstrapped seed, creates the DID, and writes did.jsonl to
+# did_log_path for you to upload to your WebVH server.
+# vta_did_template = "did:webvh:{SCID}:example.com:vta"
+# did_log_path = "/mnt/vta-data/secrets/did.jsonl"
 
 [auth]
 access_token_expiry = 900

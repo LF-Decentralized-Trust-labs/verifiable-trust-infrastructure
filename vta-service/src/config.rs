@@ -174,6 +174,27 @@ pub struct TeeKmsConfig {
     /// Path to the encrypted JWT key ciphertext file.
     #[serde(default = "default_jwt_ciphertext_path")]
     pub jwt_ciphertext_path: String,
+    /// Template for auto-generating a did:webvh identity on first boot.
+    ///
+    /// Use `{SCID}` as a placeholder for the self-certifying identifier:
+    ///   `did:webvh:{SCID}:example.com:vta`
+    ///
+    /// On first boot, the VTA derives keys from the bootstrapped seed,
+    /// creates the DID, writes the did.jsonl log entry to `did_log_path`,
+    /// and persists the DID in the encrypted store.
+    ///
+    /// Ignored if `vta_did` is already set in config or the store.
+    #[serde(default)]
+    pub vta_did_template: Option<String>,
+    /// Path to write the did.jsonl log entry on first boot.
+    /// The operator uploads this file to their WebVH server.
+    #[serde(default = "default_did_log_path")]
+    pub did_log_path: String,
+}
+
+#[cfg(feature = "tee")]
+fn default_did_log_path() -> String {
+    "/mnt/vta-data/secrets/did.jsonl".to_string()
 }
 
 #[cfg(feature = "tee")]

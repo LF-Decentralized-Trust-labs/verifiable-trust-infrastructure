@@ -562,7 +562,7 @@ async fn main() {
 
             // In TEE mode with KMS: override JWT signing key and extract storage key
             #[cfg(feature = "tee")]
-            let (config, storage_encryption_key) = if let Some(ref bootstrap) = tee_bootstrap {
+            let (mut config, storage_encryption_key) = if let Some(ref bootstrap) = tee_bootstrap {
                 let mut config = config;
                 let jwt_b64 = BASE64.encode(&bootstrap.jwt_signing_key);
                 config.auth.jwt_signing_key = Some(jwt_b64);
@@ -598,6 +598,23 @@ async fn main() {
                     None
                 }
             };
+
+            // Auto-generate VTA did:webvh identity on first boot if template
+            // is configured. On subsequent boots, restores the DID from the store.
+            #[cfg(feature = "tee")]
+            {
+                if let Err(e) = tee::did_autogen::maybe_generate_vta_did(
+                    &mut config,
+                    &*seed_store,
+                    &store,
+                    storage_encryption_key,
+                )
+                .await
+                {
+                    tracing::warn!("VTA DID auto-generation failed: {e}");
+                    // Non-fatal: server starts without DID (auth endpoints return 401)
+                }
+            }
 
             if let Err(e) = server::run(
                 config,
