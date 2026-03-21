@@ -66,6 +66,30 @@ storage, and signed enclave images.
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
+## Quick Start
+
+For an interactive end-to-end deployment, use the deployment script:
+
+```bash
+./deploy/nitro/deploy-vta.sh
+```
+
+This walks through all the steps below — prerequisite checks, build profile
+selection, signing key generation, IAM and KMS setup, Docker/EIF builds,
+enclave launch, and parent proxy startup.
+
+For CI/CD, use non-interactive mode with environment variables:
+
+```bash
+VTA_PROFILE=hardened \
+VTA_REGION=us-east-1 \
+VTA_ROLE_NAME=vta-enclave-role \
+VTA_MEDIATOR_DID="did:web:mediator.example.com" \
+./deploy/nitro/deploy-vta.sh --non-interactive
+```
+
+The rest of this guide documents each step in detail.
+
 ## Prerequisites
 
 ### EC2 Instance
@@ -193,6 +217,14 @@ The `FEATURES` build arg maps directly to Cargo feature flags. Available feature
 | `aws-secrets` | AWS Secrets Manager seed storage | **Do not use** (KMS bootstrap provides the seed) |
 | `webvh` | did:webvh DID management | Optional |
 | `setup` | Interactive setup wizard (requires TTY) | **Do not use** (no TTY in enclaves) |
+
+**You do NOT need to edit `[services]` in `config.toml` when switching profiles.**
+The `FEATURES` build arg controls which services are compiled into the binary.
+The `[services]` section in config is a runtime toggle that can only *disable*
+a compiled-in service, never *enable* one that wasn't compiled. For example,
+building with `FEATURES="didcomm,tee"` (Profile A) means REST code is not in
+the binary at all — `services.rest = true` in config has no effect. You can
+use `services.didcomm = false` to disable DIDComm at runtime without rebuilding.
 
 **In TEE mode with KMS bootstrap**, the `tee` feature handles all secret management:
 - The seed is generated inside the TEE on first boot and encrypted to KMS
@@ -728,6 +760,7 @@ jobs:
 | File | Where | Purpose |
 |------|-------|---------|
 | `Dockerfile.nitro` | Build host | Multi-stage build → Docker image |
+| `deploy-vta.sh` | Build host / EC2 | End-to-end interactive deployment script |
 | `generate-signing-key.sh` | Build host / CI | Generate EC P-384 signing key + certificate |
 | `setup-kms-policy.sh` | Admin workstation | Create/update KMS key with PCR-pinned policy |
 | `iam-kms-admin-policy.json` | Admin workstation | IAM policy for the user running setup-kms-policy.sh |
