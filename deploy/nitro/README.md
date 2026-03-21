@@ -66,6 +66,76 @@ storage, and signed enclave images.
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
+## Bootstrapping Architecture
+
+The VTA's TEE bootstrap is designed so that **a single EIF build works for
+both first and subsequent boots** — no rebuild cycle for identity creation.
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│  BEFORE DEPLOYMENT (build machine / CI)                              │
+│                                                                      │
+│  Operator provides these deployment inputs in config.toml:           │
+│                                                                      │
+│  ┌─────────────────────────────────────────────────────────────┐    │
+│  │  [tee.kms]                                                   │    │
+│  │  key_arn = "arn:aws:kms:..."     ← from setup-kms-policy.sh │    │
+│  │  vta_did_template = "did:webvh:{SCID}:example.com:vta"      │    │
+│  │                                                               │    │
+│  │  public_url = "https://vta.example.com"  ← REST only         │    │
+│  │                                                               │    │
+│  │  [messaging]                             ← DIDComm profiles   │    │
+│  │  mediator_did = "did:web:mediator.example.com"                │    │
+│  └─────────────────────────────────────────────────────────────┘    │
+│                                                                      │
+│  Config is baked into the EIF → determines PCR0                      │
+└──────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────┐
+│  FIRST BOOT (inside enclave)                                         │
+│                                                                      │
+│  1. KMS bootstrap: generate seed + JWT key, encrypt to KMS           │
+│  2. Derive AES-256 storage key from seed (HKDF)                      │
+│  3. Auto-generate did:webvh from template:                           │
+│     • Derive signing + key-agreement keys from seed                  │
+│     • Create DID (replace {SCID} with real value)                    │
+│     • Persist DID in encrypted store                                 │
+│     • Write did.jsonl to /mnt/vta-data/secrets/                      │
+│  4. Start serving (auth fully functional)                            │
+│                                                                      │
+│  Operator: upload did.jsonl to WebVH server                          │
+└──────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────┐
+│  SUBSEQUENT BOOTS (inside enclave, same EIF)                         │
+│                                                                      │
+│  1. KMS decrypt: seed + JWT key from ciphertext (attestation-gated)  │
+│  2. Derive same storage key (deterministic — same seed + salt)       │
+│  3. Restore DID from encrypted store (template not re-evaluated)     │
+│  4. Start serving                                                    │
+└──────────────────────────────────────────────────────────────────────┘
+```
+
+### Deployment Inputs
+
+These values are set in `config.toml` before building the EIF:
+
+| Input | Required | When | Purpose |
+|-------|----------|------|---------|
+| `tee.kms.key_arn` | Yes | Always | KMS key ARN for secret encryption/decryption |
+| `tee.kms.vta_did_template` | Recommended | Always | Template for auto-generating the VTA's did:webvh identity on first boot. Eliminates the manual DID creation / rebuild cycle. |
+| `public_url` | Only for REST | Profiles B, C | External HTTPS URL where the VTA is reachable. Used in DID documents for the TEE attestation service endpoint. **Not needed for DIDComm-only (Profile A)** — all communication goes through the mediator. |
+| `messaging.mediator_did` | Only for DIDComm | Profiles A, B | DIDComm mediator DID. The mediator URL is always `ws://127.0.0.1:4443` inside the enclave (vsock-proxied). |
+| `vta_name` | No | Optional | Human-readable name for the VTA |
+
+**Profile-specific inputs:**
+
+| Profile | `public_url` | `mediator_did` | `vta_did_template` |
+|---------|-------------|----------------|-------------------|
+| A (Hardened, DIDComm only) | Not needed | Required | Recommended |
+| B (Full API, REST + DIDComm) | Required | Required | Recommended |
+| C (REST only) | Required | Not needed | Recommended |
+
 ## Quick Start
 
 For an interactive end-to-end deployment, use the deployment script:
@@ -443,34 +513,57 @@ To remove build role admin access later, re-run the script without
 The script outputs the KMS key ARN. Now update the VTA config and rebuild the
 enclave image.
 
-### 4d: Update Config with KMS Key ARN
+### 4d: Update Config — Deployment Inputs
 
-Edit the reference config file with the KMS key ARN from Step 4c:
+Edit `deploy/nitro/config.toml` with your deployment-specific values.
+These are the inputs that get baked into the EIF:
 
 ```bash
-# Edit the config
 nano deploy/nitro/config.toml
 ```
 
-Replace `REPLACE_WITH_KMS_KEY_ARN` with your actual KMS key ARN:
+**1. KMS key ARN** (required — from Step 4c):
 
 ```toml
 [tee.kms]
 region = "us-east-1"
 key_arn = "arn:aws:kms:us-east-1:123456789012:key/abc-def-456"
-seed_ciphertext_path = "/mnt/vta-data/secrets/seed.enc"
-jwt_ciphertext_path = "/mnt/vta-data/secrets/jwt.enc"
-allow_first_boot = true     # Set to false after the first successful boot
 ```
 
-If you have a DIDComm mediator, also uncomment and configure the `[messaging]`
-section:
+**2. VTA DID template** (recommended — auto-generates identity on first boot):
+
+```toml
+[tee.kms]
+vta_did_template = "did:webvh:{SCID}:example.com:vta"
+did_log_path = "/mnt/vta-data/secrets/did.jsonl"
+```
+
+Replace `example.com:vta` with the domain and path where your WebVH server
+hosts this VTA's DID document. The `{SCID}` placeholder is replaced with the
+real self-certifying identifier on first boot. See [Automatic DID identity
+generation](#automatic-did-identity-generation) for details.
+
+**3. Public URL** (REST deployments only — Profiles B and C):
+
+```toml
+public_url = "https://vta.example.com"
+```
+
+This is the external HTTPS URL where clients reach the VTA's REST API. It's
+embedded in the DID document as the TEE attestation service endpoint. **Not
+needed for DIDComm-only (Profile A)** — all communication goes through the
+mediator, so no public URL is required.
+
+**4. DIDComm mediator** (Profiles A and B):
 
 ```toml
 [messaging]
 mediator_url = "ws://127.0.0.1:4443"
 mediator_did = "did:web:mediator.example.com"
 ```
+
+The mediator URL is always `ws://127.0.0.1:4443` inside the enclave — the
+parent proxy forwards this to the actual mediator endpoint via vsock.
 
 ### 4e: Rebuild the Enclave Image with Updated Config
 
@@ -685,7 +778,7 @@ On first boot, the VTA:
 6. Derives AES-256 storage key from seed
 7. If `vta_did_template` is configured: auto-generates the VTA's did:webvh
    identity and writes `did.jsonl` to disk (see below)
-8. Starts serving
+8. Starts serving (auth fully functional if DID was auto-generated)
 
 ### Automatic DID identity generation
 

@@ -3,9 +3,11 @@
 # =============================================================================
 #
 # This config is baked into the Enclave Image File (EIF) during docker build.
-# Changing it requires rebuilding the Docker image and EIF.
+# Changing it requires rebuilding the Docker image and EIF (which changes PCR0).
 #
 # Secrets (seed, JWT key) are bootstrapped from KMS — NOT stored in this file.
+# The VTA identity (did:webvh) is auto-generated on first boot if a template
+# is configured — no manual DID creation or EIF rebuild needed.
 #
 # Networking: The VTA connects to localhost ports that are proxied through
 # vsock to the parent EC2 instance. The entrypoint script sets up the proxies.
@@ -14,19 +16,36 @@
 #   VTA REST API     → 127.0.0.1:8100  (served directly)
 #   DIDComm mediator → 127.0.0.1:4443  (proxied to parent → mediator)
 #   HTTPS traffic    → 127.0.0.1:4444  (proxied to parent → internet)
+#   IMDS credentials → 169.254.169.254  (proxied to parent → IMDS)
 # =============================================================================
 
-# VTA identity — set after first DID creation, then rebuild the EIF
+# ── Deployment inputs ────────────────────────────────────────────────────────
+# These are the values you MUST configure before building the EIF.
+#
+# public_url (optional): The external HTTPS URL where this VTA is reachable.
+#   Only needed when REST is enabled — used in DID documents to advertise the
+#   TEE attestation endpoint. DIDComm-only deployments (Profile A) do not need
+#   this since all communication goes through the mediator.
+#
+# vta_did_template (in [tee.kms]): Template for auto-generating the VTA's
+#   did:webvh identity on first boot. See the [tee.kms] section below.
+#
+# vta_did: Set this INSTEAD of vta_did_template if you want to manage the
+#   DID manually (e.g., created via CLI before baking the EIF). When both are
+#   set, vta_did takes precedence and the template is ignored.
+
 # vta_did = "did:webvh:..."
 # vta_name = "My VTA"
+
+# Only needed for REST deployments (Profiles B and C). Omit for DIDComm-only
+# (Profile A) — the mediator handles routing and this URL is not used.
 # public_url = "https://vta.example.com"
 
-# Service toggles — runtime overrides for compiled-in features.
-# These can only DISABLE a service that was compiled in, never enable one
-# that wasn't. For example, if the binary was built with FEATURES="didcomm,tee"
-# (Profile A), setting rest = true here has no effect — the REST code isn't
-# in the binary. You can set didcomm = false here to disable DIDComm at
-# runtime without rebuilding.
+# ── Service toggles ─────────────────────────────────────────────────────────
+# Runtime overrides for compiled-in features. These can only DISABLE a service
+# that was compiled in, never enable one that wasn't. For example, if the
+# binary was built with FEATURES="didcomm,tee" (Profile A), setting rest=true
+# here has no effect — the REST code isn't in the binary.
 [services]
 rest = true
 didcomm = true
@@ -42,31 +61,47 @@ format = "json"
 [store]
 data_dir = "/var/lib/vta/data"
 
-# DIDComm mediator — URL points to local proxy (vsock-bridged to parent).
-# The parent-proxy.sh forwards this to the actual mediator endpoint.
-# Uncomment and set your mediator DID:
+# ── DIDComm mediator ────────────────────────────────────────────────────────
+# Required for Profiles A (Hardened) and B (Full API). The URL points to the
+# local vsock proxy inside the enclave — the parent proxy forwards it to the
+# actual mediator endpoint.
 # [messaging]
 # mediator_url = "ws://127.0.0.1:4443"
 # mediator_did = "did:web:mediator.example.com"
 
+# ── TEE attestation ─────────────────────────────────────────────────────────
 [tee]
 mode = "required"           # Refuse to start if not in a TEE
 embed_in_did = true         # Add TeeAttestation service to DID documents
 attestation_cache_ttl = 300 # 5 minute cache
 storage_key_salt = "vta-tee-storage-v1"
 
-# KMS secret bootstrap — fill in after running setup-kms-policy.sh (Step 4c)
-# First boot is auto-detected: if ciphertext files don't exist, the VTA
-# generates new secrets inside the TEE and encrypts them to KMS.
-# Subsequent boots decrypt from the existing ciphertexts.
+# ── KMS secret bootstrap ────────────────────────────────────────────────────
+# On first boot: generates seed + JWT key inside TEE, encrypts to KMS, stores
+# ciphertext on the external EBS volume at the paths below.
+# On subsequent boots: decrypts from KMS with Nitro attestation verification.
+#
+# Fill in key_arn after running setup-kms-policy.sh (Step 4c in deploy guide).
 [tee.kms]
 region = "us-east-1"
 key_arn = "REPLACE_WITH_KMS_KEY_ARN"
 seed_ciphertext_path = "/mnt/vta-data/secrets/seed.enc"
 jwt_ciphertext_path = "/mnt/vta-data/secrets/jwt.enc"
-# Auto-generate a did:webvh identity on first boot. The VTA derives keys
-# from the bootstrapped seed, creates the DID, and writes did.jsonl to
-# did_log_path for you to upload to your WebVH server.
+
+# ── Automatic DID identity generation ────────────────────────────────────────
+# On first boot, the VTA can auto-generate its did:webvh identity from a
+# template. This eliminates the manual create-DID / update-config / rebuild
+# cycle. The template uses {SCID} as a placeholder for the self-certifying
+# identifier that is computed during DID creation.
+#
+# The VTA derives keys from the bootstrapped seed, creates the DID, persists
+# it in the encrypted store, and writes the initial did.jsonl log entry to
+# did_log_path. Upload this file to your WebVH server after first boot.
+#
+# On subsequent boots, the DID is restored from the encrypted store — the
+# template is not re-evaluated and no new did.jsonl is written.
+#
+# Uncomment and set your domain/path:
 # vta_did_template = "did:webvh:{SCID}:example.com:vta"
 # did_log_path = "/mnt/vta-data/secrets/did.jsonl"
 
