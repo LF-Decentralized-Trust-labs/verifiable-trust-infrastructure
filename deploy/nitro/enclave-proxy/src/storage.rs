@@ -192,7 +192,7 @@ async fn handle_connection(
 // ---------------------------------------------------------------------------
 
 async fn handle_get(state: &StorageState, data: &[u8]) -> Vec<u8> {
-    let result = (|| {
+    let result: Result<_, String> = (|| {
         let (ks_name, offset) = decode_keyspace(data, 0)?;
         let (key, _) = decode_bytes(data, offset)?;
         Ok((ks_name.to_string(), key.to_vec()))
@@ -216,7 +216,7 @@ async fn handle_get(state: &StorageState, data: &[u8]) -> Vec<u8> {
 }
 
 async fn handle_insert(state: &StorageState, data: &[u8]) -> Vec<u8> {
-    let result = (|| {
+    let result: Result<_, String> = (|| {
         let (ks_name, offset) = decode_keyspace(data, 0)?;
         let (key, offset) = decode_bytes(data, offset)?;
         let (value, _) = decode_bytes(data, offset)?;
@@ -240,7 +240,7 @@ async fn handle_insert(state: &StorageState, data: &[u8]) -> Vec<u8> {
 }
 
 async fn handle_delete(state: &StorageState, data: &[u8]) -> Vec<u8> {
-    let result = (|| {
+    let result: Result<_, String> = (|| {
         let (ks_name, offset) = decode_keyspace(data, 0)?;
         let (key, _) = decode_bytes(data, offset)?;
         Ok((ks_name.to_string(), key.to_vec()))
@@ -263,7 +263,7 @@ async fn handle_delete(state: &StorageState, data: &[u8]) -> Vec<u8> {
 }
 
 async fn handle_prefix_iter(state: &StorageState, data: &[u8]) -> Vec<u8> {
-    let result = (|| {
+    let result: Result<_, String> = (|| {
         let (ks_name, offset) = decode_keyspace(data, 0)?;
         let (prefix, _) = decode_bytes(data, offset)?;
         Ok((ks_name.to_string(), prefix.to_vec()))
@@ -292,7 +292,7 @@ async fn handle_prefix_iter(state: &StorageState, data: &[u8]) -> Vec<u8> {
 }
 
 async fn handle_prefix_keys(state: &StorageState, data: &[u8]) -> Vec<u8> {
-    let result = (|| {
+    let result: Result<_, String> = (|| {
         let (ks_name, offset) = decode_keyspace(data, 0)?;
         let (prefix, _) = decode_bytes(data, offset)?;
         Ok((ks_name.to_string(), prefix.to_vec()))
@@ -321,7 +321,7 @@ async fn handle_prefix_keys(state: &StorageState, data: &[u8]) -> Vec<u8> {
 }
 
 async fn handle_file_read(state: &StorageState, data: &[u8]) -> Vec<u8> {
-    let result = (|| {
+    let result: Result<_, String> = (|| {
         let (path, _) = decode_bytes(data, 0)?;
         Ok(std::str::from_utf8(path).map_err(|e| format!("invalid path: {e}"))?.to_string())
     })();
@@ -347,7 +347,7 @@ async fn handle_file_read(state: &StorageState, data: &[u8]) -> Vec<u8> {
 }
 
 async fn handle_file_write(state: &StorageState, data: &[u8]) -> Vec<u8> {
-    let result = (|| {
+    let result: Result<_, String> = (|| {
         let (path, offset) = decode_bytes(data, 0)?;
         let path_str = std::str::from_utf8(path).map_err(|e| format!("invalid path: {e}"))?;
         let (content, _) = decode_bytes(data, offset)?;
@@ -381,7 +381,7 @@ async fn handle_file_write(state: &StorageState, data: &[u8]) -> Vec<u8> {
 }
 
 async fn handle_file_exists(state: &StorageState, data: &[u8]) -> Vec<u8> {
-    let result = (|| {
+    let result: Result<_, String> = (|| {
         let (path, _) = decode_bytes(data, 0)?;
         Ok(std::str::from_utf8(path).map_err(|e| format!("invalid path: {e}"))?.to_string())
     })();
