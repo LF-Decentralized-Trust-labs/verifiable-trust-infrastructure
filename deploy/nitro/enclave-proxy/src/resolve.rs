@@ -55,7 +55,7 @@ impl DIDResolver {
         );
 
         for (i, svc) in services.iter().enumerate() {
-            let svc_id = svc.id.as_deref().unwrap_or("(no id)");
+            let svc_id = svc.id.as_ref().map(|u| u.as_str()).unwrap_or("(no id)");
             let has_didcomm = svc.type_.iter().any(|t| t == "DIDCommMessaging");
 
             debug!(
