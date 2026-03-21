@@ -99,7 +99,30 @@ The rest of this guide documents each step in detail.
 | Instance type | Nitro Enclave capable: `m5.xlarge`, `c5.xlarge`, `r5.xlarge` or larger |
 | AMI | Amazon Linux 2023 or Ubuntu 22.04+ |
 | Enclave support | Enabled at launch: `--enclave-options Enabled=true` |
+| IMDS hop limit | Must be **2** (see below) |
 | IAM role | Minimal: `kms:Decrypt`, `kms:Encrypt` only (see Step 3) |
+
+### IMDS Hop Limit
+
+The AWS SDK inside the enclave fetches IAM credentials from the Instance
+Metadata Service (IMDS) via a vsock proxy on the parent. IMDSv2 counts
+this proxy as an extra network hop. The default hop limit is 1, which
+causes the token response to be dropped before reaching the enclave.
+
+Set the hop limit to 2 on the EC2 instance:
+
+```bash
+aws ec2 modify-instance-metadata-options \
+    --instance-id <your-instance-id> \
+    --http-put-response-hop-limit 2
+```
+
+Or set it at launch time:
+
+```bash
+aws ec2 run-instances ... \
+    --metadata-options "HttpEndpoint=enabled,HttpTokens=required,HttpPutResponseHopLimit=2"
+```
 
 ### Software on the Parent Instance
 
@@ -771,6 +794,7 @@ nitro-cli console \
 | `Error relocating ... symbol not found` | glibc binary uses a function Alpine/musl doesn't provide | Check if the symbol needs a compat stub (see `libresolv_compat.so` in `Dockerfile.nitro`) |
 | Enclave exits immediately (hang-up event) | Process inside crashed — use `--attach-console` to see why | Start with `--debug-mode --attach-console` and read the error output |
 | `KMS Decrypt failed [ACCESS_DENIED]` | PCR0 mismatch — the EIF was rebuilt but KMS policy wasn't updated | Re-run `setup-kms-policy.sh` with the new PCR0 from the build output |
+| `failed to load IMDS session token` | IMDS hop limit too low or HTTP_PROXY interfering | Set IMDS hop limit to 2: `aws ec2 modify-instance-metadata-options --instance-id <id> --http-put-response-hop-limit 2` |
 | `KMS Decrypt failed [NETWORK]` | Can't reach KMS — parent proxy not running or allowlist wrong | Start the enclave-proxy on the parent and verify the KMS endpoint is allowlisted |
 | `KMS Decrypt failed [KEY_NOT_FOUND]` | Wrong KMS key ARN in config.toml | Verify `[tee.kms] key_arn` matches the key created by `setup-kms-policy.sh` |
 | `failed to open /dev/nsm` | Not running inside a Nitro Enclave | The VTA binary must run inside an enclave, not directly on the EC2 host |
