@@ -87,14 +87,16 @@ RUN cargo build --release --package vta-service \
 # ---------------------------------------------------------------------------
 # Stage 2: Minimal runtime image for the Nitro Enclave
 # ---------------------------------------------------------------------------
-FROM debian:bookworm-slim
+# Alpine Linux: ~7 MB base vs ~180 MB for debian:bookworm-slim.
+# Busybox provides `ip` (replacing iproute2) and `sed` natively.
+# gcompat provides glibc compatibility for the Rust binary.
+FROM alpine:3.21
 
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends \
+RUN apk add --no-cache \
         ca-certificates \
         socat \
-        iproute2 \
-    && rm -rf /var/lib/apt/lists/*
+        gcompat \
+    && rm -rf /var/cache/apk/*
 
 # Copy the VTA binary
 COPY --from=builder /build/target/release/vta /usr/local/bin/vta
