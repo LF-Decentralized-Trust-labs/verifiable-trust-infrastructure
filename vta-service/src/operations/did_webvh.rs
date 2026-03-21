@@ -682,7 +682,7 @@ async fn validate_server_did(
 // Helpers
 // ---------------------------------------------------------------------------
 
-pub(crate) fn build_did_document(
+pub fn build_did_document(
     derived: &keys::DerivedEntityKeys,
     config: &AppConfig,
     add_mediator_service: bool,
