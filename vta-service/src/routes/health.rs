@@ -66,7 +66,7 @@ pub async fn health_details(
         mediator_url,
         mediator_did,
         #[cfg(feature = "tee")]
-        tee_status: state.tee_state.as_ref().map(|ts| ts.status.clone()),
+        tee_status: state.tee.as_ref().map(|tc| tc.state.status.clone()),
         sealed,
         storage_encrypted,
     }))

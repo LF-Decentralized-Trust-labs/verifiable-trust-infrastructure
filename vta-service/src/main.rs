@@ -642,13 +642,24 @@ async fn main() {
                 }
             }
 
+            // Build TEE context (bundles tee_state + mnemonic_guard for server)
+            #[cfg(feature = "tee")]
+            let tee_context = {
+                let tee_state = tee::init_tee(&config.tee)
+                    .expect("TEE initialization failed");
+                tee_state.map(|state| server::TeeContext {
+                    state,
+                    mnemonic_guard: mnemonic_guard.clone(),
+                })
+            };
+
             if let Err(e) = server::run(
                 config,
                 store,
                 seed_store,
                 storage_encryption_key,
                 #[cfg(feature = "tee")]
-                mnemonic_guard,
+                tee_context,
             )
             .await
             {

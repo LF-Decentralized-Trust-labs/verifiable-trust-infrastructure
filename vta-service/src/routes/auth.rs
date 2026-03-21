@@ -90,7 +90,7 @@ pub async fn challenge(
     // Optionally bind a TEE attestation report to the challenge nonce.
     // This proves the challenge was generated inside a trusted execution environment.
     #[cfg(feature = "tee")]
-    let tee_attestation = if let Some(ref tee_state) = state.tee_state {
+    let tee_attestation = if let Some(ref tee) = state.tee {
         let config = state.config.read().await;
         let vta_did = config.vta_did.clone();
         drop(config);
@@ -98,7 +98,7 @@ pub async fn challenge(
         let user_data = vta_did.as_deref().unwrap_or("").as_bytes();
         let nonce_bytes = &challenge_bytes[..];
 
-        match tee_state.provider.attest(user_data, nonce_bytes) {
+        match tee.state.provider.attest(user_data, nonce_bytes) {
             Ok(mut report) => {
                 report.vta_did = vta_did;
                 Some(serde_json::to_value(&report).map_err(|e| {
@@ -231,7 +231,7 @@ pub async fn authenticate(
 
     // Check if VTA is running in a TEE
     #[cfg(feature = "tee")]
-    let tee_attested = state.tee_state.is_some();
+    let tee_attested = state.tee.is_some();
     #[cfg(not(feature = "tee"))]
     let tee_attested = false;
 
@@ -357,7 +357,7 @@ pub async fn refresh(
     drop(config);
 
     #[cfg(feature = "tee")]
-    let tee_attested = state.tee_state.is_some();
+    let tee_attested = state.tee.is_some();
     #[cfg(not(feature = "tee"))]
     let tee_attested = false;
 
