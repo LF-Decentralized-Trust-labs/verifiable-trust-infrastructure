@@ -4,10 +4,12 @@ use std::path::Path;
 /// Proxy configuration, read from the VTA's config.toml.
 #[derive(Debug, Clone)]
 pub struct ProxyConfig {
-    /// Mediator hostname (from config [messaging] mediator_host, or MEDIATOR_HOST env).
-    pub mediator_host: Option<String>,
-    /// Mediator port (default: 443).
-    pub mediator_port: u16,
+    /// Mediator DID (resolved via DID resolver to get the endpoint).
+    pub mediator_did: Option<String>,
+    /// Manual mediator host override (skips DID resolution).
+    pub mediator_host_override: Option<String>,
+    /// Mediator port override (default: from resolved URL, or 443).
+    pub mediator_port_override: Option<u16>,
     /// KMS region (for allowlisting kms.<region>.amazonaws.com).
     pub kms_region: String,
     /// Enclave CID (auto-detected or from CLI).
@@ -34,9 +36,8 @@ struct VtaConfig {
 
 #[derive(Debug, Deserialize)]
 struct MessagingConfig {
-    /// Explicit mediator hostname for the parent proxy to connect to.
-    /// This is the real external hostname (e.g., "mediator.example.com"),
-    /// NOT the enclave-local ws://127.0.0.1:4443 URL.
+    mediator_did: Option<String>,
+    /// Manual override — skips DID resolution if set.
     mediator_host: Option<String>,
 }
 
@@ -61,13 +62,25 @@ impl ProxyConfig {
             VtaConfig::default()
         };
 
-        // Mediator host: env var takes priority, then config file
-        let mediator_host = std::env::var("MEDIATOR_HOST").ok().or_else(|| {
+        // Mediator DID from config
+        let mediator_did = std::env::var("MEDIATOR_DID").ok().or_else(|| {
+            vta_config
+                .messaging
+                .as_ref()
+                .and_then(|m| m.mediator_did.clone())
+        });
+
+        // Manual host override (env var > config > None)
+        let mediator_host_override = std::env::var("MEDIATOR_HOST").ok().or_else(|| {
             vta_config
                 .messaging
                 .as_ref()
                 .and_then(|m| m.mediator_host.clone())
         });
+
+        let mediator_port_override = std::env::var("MEDIATOR_PORT")
+            .ok()
+            .and_then(|p| p.parse().ok());
 
         let kms_region = std::env::var("AWS_REGION").ok().unwrap_or_else(|| {
             vta_config
@@ -77,11 +90,6 @@ impl ProxyConfig {
                 .and_then(|k| k.region.clone())
                 .unwrap_or_else(|| "us-east-1".to_string())
         });
-
-        let mediator_port = std::env::var("MEDIATOR_PORT")
-            .ok()
-            .and_then(|p| p.parse().ok())
-            .unwrap_or(443);
 
         let listen_port = std::env::var("LISTEN_PORT")
             .ok()
@@ -109,8 +117,9 @@ impl ProxyConfig {
         }
 
         ProxyConfig {
-            mediator_host,
-            mediator_port,
+            mediator_did,
+            mediator_host_override,
+            mediator_port_override,
             kms_region,
             enclave_cid: cli.enclave_cid,
             listen_port,
@@ -129,8 +138,10 @@ impl ProxyConfig {
             (format!("kms.{}.amazonaws.com", self.kms_region), 443),
         ];
 
-        if let Some(ref mh) = self.mediator_host {
-            hosts.push((mh.clone(), self.mediator_port));
+        // Add manual mediator host if set
+        if let Some(ref mh) = self.mediator_host_override {
+            let port = self.mediator_port_override.unwrap_or(443);
+            hosts.push((mh.clone(), port));
         }
 
         // Add resolver host
@@ -145,7 +156,6 @@ impl ProxyConfig {
 }
 
 fn extract_host_from_url(url: &str) -> Option<String> {
-    // https://host:port/path → host
     url.split("://")
         .nth(1)
         .map(|rest| rest.split('/').next().unwrap_or(rest))

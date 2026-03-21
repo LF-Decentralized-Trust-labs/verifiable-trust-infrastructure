@@ -69,10 +69,23 @@ pub async fn run_inbound(listen_port: u16, enclave_cid: u32, vsock_port: u32) {
 // [2] Outbound: vsock → TLS (enclave DIDComm → mediator)
 // ---------------------------------------------------------------------------
 
+use crate::resolve::{MediatorEndpoint, resolve_mediator_endpoint};
+
+/// Mediator configuration — either a resolved DID or a manual host override.
+pub struct MediatorConfig {
+    /// Mediator DID to resolve (e.g., "did:webvh:...").
+    pub did: Option<String>,
+    /// Manual host override — skips DID resolution if set.
+    pub host_override: Option<String>,
+    /// Manual port override.
+    pub port_override: Option<u16>,
+    /// DID resolver URL.
+    pub resolver_url: String,
+}
+
 pub async fn run_mediator(
     vsock_port: u32,
-    mediator_host: String,
-    mediator_port: u16,
+    mediator_config: MediatorConfig,
 ) {
     let tls_connector = match build_tls_connector() {
         Ok(c) => c,
@@ -89,7 +102,22 @@ pub async fn run_mediator(
             return;
         }
     };
-    info!("[mediator] listening on vsock:{vsock_port} → {mediator_host}:{mediator_port} (TLS)");
+
+    // Resolve the initial mediator endpoint
+    let mut endpoint = match resolve_mediator(&mediator_config).await {
+        Some(ep) => ep,
+        None => {
+            error!("[mediator] no mediator endpoint configured or resolved — channel disabled");
+            return;
+        }
+    };
+
+    info!(
+        "[mediator] listening on vsock:{vsock_port} → {}:{} (TLS)",
+        endpoint.host, endpoint.port
+    );
+
+    let mut consecutive_failures: u32 = 0;
 
     loop {
         let (vsock_stream, peer) = match listener.accept().await {
@@ -101,40 +129,117 @@ pub async fn run_mediator(
         };
         debug!("[mediator] connection from vsock peer {peer:?}");
 
-        let host = mediator_host.clone();
+        let host = endpoint.host.clone();
+        let port = endpoint.port;
+        let use_tls = endpoint.tls;
         let connector = tls_connector.clone();
-        let port = mediator_port;
 
-        tokio::spawn(async move {
-            // Connect TCP to the mediator
-            let tcp_stream = match TcpStream::connect(format!("{host}:{port}")).await {
-                Ok(s) => s,
-                Err(e) => {
-                    warn!("[mediator] TCP connect to {host}:{port} failed: {e}");
-                    return;
-                }
-            };
+        // Try to connect and bridge
+        let success = tokio::spawn(async move {
+            if use_tls {
+                let tcp_stream = match TcpStream::connect(format!("{host}:{port}")).await {
+                    Ok(s) => s,
+                    Err(e) => {
+                        warn!("[mediator] TCP connect to {host}:{port} failed: {e}");
+                        return false;
+                    }
+                };
 
-            // Upgrade to TLS
-            let server_name = match rustls::pki_types::ServerName::try_from(host.as_str()) {
-                Ok(sn) => sn.to_owned(),
-                Err(e) => {
-                    warn!("[mediator] invalid server name {host}: {e}");
-                    return;
-                }
-            };
-            let tls_stream = match connector.connect(server_name, tcp_stream).await {
-                Ok(s) => s,
-                Err(e) => {
-                    warn!("[mediator] TLS handshake with {host}:{port} failed: {e}");
-                    return;
-                }
-            };
+                let server_name = match rustls::pki_types::ServerName::try_from(host.as_str()) {
+                    Ok(sn) => sn.to_owned(),
+                    Err(e) => {
+                        warn!("[mediator] invalid server name {host}: {e}");
+                        return false;
+                    }
+                };
+                let tls_stream = match connector.connect(server_name, tcp_stream).await {
+                    Ok(s) => s,
+                    Err(e) => {
+                        warn!("[mediator] TLS handshake with {host}:{port} failed: {e}");
+                        return false;
+                    }
+                };
 
-            if let Err(e) = bridge(vsock_stream, tls_stream).await {
-                debug!("[mediator] bridge error: {e}");
+                if let Err(e) = bridge(vsock_stream, tls_stream).await {
+                    debug!("[mediator] bridge error: {e}");
+                    return false;
+                }
+            } else {
+                // Plain TCP (no TLS) — for ws:// endpoints
+                let tcp_stream = match TcpStream::connect(format!("{host}:{port}")).await {
+                    Ok(s) => s,
+                    Err(e) => {
+                        warn!("[mediator] TCP connect to {host}:{port} failed: {e}");
+                        return false;
+                    }
+                };
+
+                if let Err(e) = bridge(vsock_stream, tcp_stream).await {
+                    debug!("[mediator] bridge error: {e}");
+                    return false;
+                }
             }
+            true
+        })
+        .await
+        .unwrap_or(false);
+
+        if success {
+            consecutive_failures = 0;
+        } else {
+            consecutive_failures += 1;
+
+            // After 3 consecutive failures, re-resolve the mediator DID
+            // in case the endpoint URL has changed
+            if consecutive_failures >= 3 && mediator_config.did.is_some() {
+                info!(
+                    "[mediator] {} consecutive connection failures — re-resolving mediator DID",
+                    consecutive_failures
+                );
+                if let Some(new_ep) = resolve_mediator(&mediator_config).await {
+                    if new_ep.host != endpoint.host || new_ep.port != endpoint.port {
+                        info!(
+                            "[mediator] mediator endpoint changed: {}:{} → {}:{}",
+                            endpoint.host, endpoint.port, new_ep.host, new_ep.port
+                        );
+                    }
+                    endpoint = new_ep;
+                }
+                consecutive_failures = 0;
+            }
+        }
+    }
+}
+
+/// Resolve the mediator endpoint from config.
+///
+/// Priority: MEDIATOR_HOST override > DID resolution > None.
+async fn resolve_mediator(config: &MediatorConfig) -> Option<MediatorEndpoint> {
+    // Manual override takes priority
+    if let Some(ref host) = config.host_override {
+        let port = config.port_override.unwrap_or(443);
+        info!("[mediator] using manual host override: {host}:{port}");
+        return Some(MediatorEndpoint {
+            host: host.clone(),
+            port,
+            tls: true,
         });
+    }
+
+    // Resolve from DID
+    let did = config.did.as_ref()?;
+    match resolve_mediator_endpoint(&config.resolver_url, did).await {
+        Ok(mut ep) => {
+            // Apply port override if set
+            if let Some(port) = config.port_override {
+                ep.port = port;
+            }
+            Some(ep)
+        }
+        Err(e) => {
+            error!("[mediator] failed to resolve DID {did}: {e}");
+            None
+        }
     }
 }
 
