@@ -521,10 +521,30 @@ no direct network access, so all HTTPS traffic is routed through a vsock proxy
 with an allowlist of permitted hosts.
 
 The proxy is a Rust binary that auto-reads the mediator DID and KMS region
-from `deploy/nitro/config.toml` and auto-detects the enclave CID. If the
-repo is cloned on the EC2 instance, the config is already at
-`deploy/nitro/config.toml`. If you built on a separate machine, ensure the
-finalized config (with KMS ARN) was copied over in Step 5.
+from `config.toml` and auto-detects the enclave CID.
+
+**Important:** The proxy needs the **finalized** `config.toml` — the same
+version baked into the EIF (with the real KMS ARN, mediator DID, etc.).
+A repo checkout on the EC2 instance may have stale values (e.g., `PLACEHOLDER`
+for the KMS ARN). There are two ways to provide the config:
+
+**Option A: Copy the finalized config from the build machine** (recommended)
+
+```bash
+# On the build/CI machine, after building the EIF:
+scp deploy/nitro/config.toml ec2-user@<instance-ip>:~/config.toml
+
+# On the EC2 instance, run the proxy with the copied config:
+./deploy/nitro/enclave-proxy/target/release/enclave-proxy -c ~/config.toml
+```
+
+**Option B: Pass settings via environment variables** (no config file needed)
+
+```bash
+AWS_REGION=us-east-1 \
+MEDIATOR_HOST=mediator.example.com \
+    ./deploy/nitro/enclave-proxy/target/release/enclave-proxy
+```
 
 Build and run the proxy on the EC2 instance:
 
@@ -534,21 +554,14 @@ cd deploy/nitro/enclave-proxy
 cargo build --release
 cd ../../..
 
-# Run — auto-reads mediator DID and KMS region from config.toml
-./deploy/nitro/enclave-proxy/target/release/enclave-proxy
+# Run with the finalized config
+./deploy/nitro/enclave-proxy/target/release/enclave-proxy -c ~/config.toml
 
 # With additional allowlisted hosts (WebVH servers, etc.)
-./deploy/nitro/enclave-proxy/target/release/enclave-proxy webvh-server.example.com:443
-
-# Override mediator host
-MEDIATOR_HOST=mediator.example.com ./deploy/nitro/enclave-proxy/target/release/enclave-proxy
+./deploy/nitro/enclave-proxy/target/release/enclave-proxy -c ~/config.toml webvh-server.example.com:443
 
 # Custom DID resolver URL (e.g., local Affinidi DID resolver)
-RESOLVER_URL=http://localhost:8200 ./deploy/nitro/enclave-proxy/target/release/enclave-proxy
-
-# If config.toml is not available, pass all settings via env vars:
-AWS_REGION=us-east-1 MEDIATOR_HOST=mediator.example.com \
-    ./deploy/nitro/enclave-proxy/target/release/enclave-proxy
+RESOLVER_URL=http://localhost:8200 ./deploy/nitro/enclave-proxy/target/release/enclave-proxy -c ~/config.toml
 ```
 
 The proxy starts three channels:
