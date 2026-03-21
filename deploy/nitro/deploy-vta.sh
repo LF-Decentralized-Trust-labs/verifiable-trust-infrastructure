@@ -30,6 +30,7 @@
 #   VTA_ENCLAVE_CPU     Enclave CPU count (default: 1)
 #   VTA_ENCLAVE_MEM     Enclave memory MiB (default: 512)
 #   VTA_KEY_ARN         Existing KMS key ARN (skip creation if set)
+#   VTA_BUILD_ADMIN     ARN of build role to grant KMS admin (optional)
 #   VTA_SKIP_IAM        Set to "true" to skip IAM role creation
 # =============================================================================
 
@@ -239,6 +240,17 @@ if [ "$NEEDS_MEDIATOR" = true ]; then
         warn "No mediator DID provided — DIDComm will be disabled at runtime"
     fi
 fi
+
+# Build admin role (for CI/CD KMS policy management)
+BUILD_ADMIN="${VTA_BUILD_ADMIN:-}"
+if [ "$INTERACTIVE" = true ]; then
+    echo ""
+    info "Optional: grant a build role KMS admin access for CI/CD PCR0 rotation."
+    info "This allows the build role to update the KMS key policy after rebuilds."
+    info "Leave blank to skip (only the current caller will have admin access)."
+    ask "Build admin role ARN (optional)" "$BUILD_ADMIN" BUILD_ADMIN
+fi
+[ -n "$BUILD_ADMIN" ] && ok "Build admin: $BUILD_ADMIN"
 
 # Signing key
 ask "Signing key directory" "${VTA_SIGNING_DIR:-./signing}" SIGNING_DIR
@@ -472,6 +484,12 @@ step 8 "KMS key setup"
 
 KEY_ARN="${VTA_KEY_ARN:-}"
 
+# Build the --build-admin flag if set
+BUILD_ADMIN_FLAG=()
+if [ -n "$BUILD_ADMIN" ]; then
+    BUILD_ADMIN_FLAG=(--build-admin "$BUILD_ADMIN")
+fi
+
 if [ -z "$PCR0" ]; then
     warn "Skipping KMS key setup — no PCR0 available"
     warn "After building the EIF on the EC2 instance, run:"
@@ -489,7 +507,8 @@ elif [ -n "$KEY_ARN" ]; then
         --pcr8 "$PCR8" \
         --role "$ROLE_ARN" \
         --key-arn "$KEY_ARN" \
-        --region "$REGION"
+        --region "$REGION" \
+        "${BUILD_ADMIN_FLAG[@]}"
     ok "KMS key policy updated"
 else
     info "Creating new KMS key with attestation policy..."
@@ -497,7 +516,8 @@ else
         --pcr0 "$PCR0" \
         --pcr8 "$PCR8" \
         --role "$ROLE_ARN" \
-        --region "$REGION" 2>&1)
+        --region "$REGION" \
+        "${BUILD_ADMIN_FLAG[@]}" 2>&1)
     echo "$KMS_OUTPUT"
 
     # Extract key ARN from the output
@@ -558,7 +578,8 @@ if [ -n "$KEY_ARN" ] && [ -n "$PCR0" ]; then
                 --pcr8 "$PCR8" \
                 --role "$ROLE_ARN" \
                 --key-arn "$KEY_ARN" \
-                --region "$REGION"
+                --region "$REGION" \
+                "${BUILD_ADMIN_FLAG[@]}"
             ok "KMS policy updated with new PCR0: ${PCR0:0:32}..."
         fi
     fi

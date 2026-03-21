@@ -378,6 +378,45 @@ This creates a KMS key with three policy statements:
 | Encrypt | EC2 instance role | `kms:Encrypt` | None (for first-boot seed storage) |
 | **Attestation decrypt** | EC2 instance role | `kms:Decrypt`, `kms:GenerateDataKey` | **PCR0 + PCR8 must match** |
 
+#### Granting build role admin access
+
+In CI/CD pipelines, the build role needs to update the KMS key policy to rotate
+PCR0 after each rebuild. Use `--build-admin` to grant a second principal KMS
+admin permissions (policy management only — no encrypt/decrypt access):
+
+```bash
+./deploy/nitro/setup-kms-policy.sh \
+    --pcr0 "abc123def456..." \
+    --pcr8 "789abc012..." \
+    --role "arn:aws:iam::123456789012:role/vta-enclave-role" \
+    --build-admin "arn:aws:iam::123456789012:role/vta-build-role" \
+    --region us-east-1
+```
+
+The build role can then update PCR0 in subsequent runs without the original
+creator's credentials:
+
+```bash
+# CI/CD pipeline runs as vta-build-role:
+./deploy/nitro/setup-kms-policy.sh \
+    --pcr0 "NEW_PCR0_HASH" \
+    --pcr8 "$(cat ./signing/pcr8.txt)" \
+    --role "arn:aws:iam::123456789012:role/vta-enclave-role" \
+    --build-admin "arn:aws:iam::123456789012:role/vta-build-role" \
+    --key-arn "arn:aws:kms:us-east-1:123456789012:key/abc-def-456"
+```
+
+To remove build role admin access later, re-run the script without
+`--build-admin` — the policy is fully replaced each time:
+
+```bash
+./deploy/nitro/setup-kms-policy.sh \
+    --pcr0 "abc123def456..." \
+    --pcr8 "789abc012..." \
+    --role "arn:aws:iam::123456789012:role/vta-enclave-role" \
+    --key-arn "arn:aws:kms:us-east-1:123456789012:key/abc-def-456"
+```
+
 The script outputs the KMS key ARN. Now update the VTA config and rebuild the
 enclave image.
 
