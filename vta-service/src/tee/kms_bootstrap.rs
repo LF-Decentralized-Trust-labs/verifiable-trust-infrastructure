@@ -249,32 +249,121 @@ pub(crate) fn derive_storage_key(seed: &[u8], salt: &str) -> [u8; 32] {
 
 /// Decrypt ciphertext using KMS.
 ///
-/// On real Nitro hardware (/dev/nsm available), this should use the
-/// attestation-based Recipient parameter. Currently uses direct KMS Decrypt
-/// which is protected by the KMS key policy's PCR conditions.
+/// On real Nitro hardware (`/dev/nsm` available), uses attestation-based
+/// KMS Decrypt with the `Recipient` parameter: KMS re-encrypts the
+/// plaintext to an ephemeral RSA key bound to the enclave's NSM attestation
+/// document, preventing even the parent EC2 instance from reading the
+/// response on the vsock channel.
+///
+/// Falls back to direct KMS Decrypt if attestation fails (with a warning).
 async fn kms_decrypt(
     config: &TeeKmsConfig,
     ciphertext: &[u8],
 ) -> Result<Vec<u8>, AppError> {
     if std::path::Path::new("/dev/nsm").exists() {
-        // TODO: Implement attestation-based KMS Decrypt with Recipient parameter.
-        // This requires aws-nitro-enclaves-nsm-api for NSM attestation docs and
-        // RSA key generation, plus CMS envelope parsing (RFC 5652).
-        //
-        // Currently using direct KMS Decrypt. Security is maintained by the KMS
-        // key policy which requires attestation conditions (PCR0/PCR3/PCR8) on
-        // the EC2 instance role — KMS rejects requests from non-matching enclaves.
-        //
-        // The Recipient parameter adds an additional layer: KMS re-encrypts the
-        // response to the enclave's ephemeral RSA key, preventing even the parent
-        // from reading the response. Without it, the parent could theoretically
-        // intercept the KMS response on the vsock channel. In practice, the
-        // response is protected by TLS between the AWS SDK and KMS.
-        warn!("using direct KMS Decrypt (attestation-based Recipient parameter not yet implemented)");
+        match kms_decrypt_attested(config, ciphertext).await {
+            Ok(plaintext) => {
+                info!("KMS Decrypt succeeded with Nitro attestation (Recipient parameter)");
+                return Ok(plaintext);
+            }
+            Err(e) => {
+                warn!(
+                    error = %e,
+                    "attestation-based KMS Decrypt failed — falling back to direct Decrypt"
+                );
+            }
+        }
     }
 
     kms_decrypt_direct(config, ciphertext).await
 }
+
+/// KMS Decrypt with Nitro attestation via the Recipient parameter.
+///
+/// Flow:
+/// 1. Generate ephemeral RSA-2048 keypair
+/// 2. Get NSM attestation document binding the RSA public key
+/// 3. Call KMS Decrypt with Recipient (attestation doc + key algorithm)
+/// 4. KMS returns CiphertextForRecipient (CMS EnvelopedData, RFC 5652)
+/// 5. Unwrap CMS envelope: RSA-OAEP-SHA256 decrypt the CEK, AES-GCM decrypt the content
+async fn kms_decrypt_attested(
+    config: &TeeKmsConfig,
+    ciphertext: &[u8],
+) -> Result<Vec<u8>, AppError> {
+    use rsa::pkcs8::EncodePublicKey;
+
+    // 1. Generate ephemeral RSA-2048 keypair
+    //    rsa 0.9 re-exports rand_core 0.6; use its OsRng for compatibility
+    let mut rng = rsa::rand_core::OsRng;
+    let private_key = rsa::RsaPrivateKey::new(&mut rng, 2048).map_err(|e| {
+        tee_attestation_error(format!("RSA key generation failed: {e}"))
+    })?;
+
+    let public_key_der = private_key
+        .to_public_key()
+        .to_public_key_der()
+        .map_err(|e| {
+            tee_attestation_error(format!("RSA public key DER encoding failed: {e}"))
+        })?;
+
+    debug!(
+        pubkey_der_len = public_key_der.as_ref().len(),
+        "generated ephemeral RSA-2048 keypair for KMS Recipient"
+    );
+
+    // 2. Get NSM attestation document with the RSA public key embedded
+    let attestation_doc =
+        super::nitro::request_nsm_attestation_for_kms(public_key_der.as_ref())?;
+
+    debug!(
+        attestation_doc_len = attestation_doc.len(),
+        "obtained NSM attestation document with embedded public key"
+    );
+
+    // 3. Call KMS Decrypt with Recipient parameter
+    let sdk_config = aws_config::defaults(aws_config::BehaviorVersion::latest())
+        .region(aws_config::Region::new(config.region.clone()))
+        .load()
+        .await;
+
+    let client = aws_sdk_kms::Client::new(&sdk_config);
+
+    let recipient = aws_sdk_kms::types::RecipientInfo::builder()
+        .attestation_document(aws_sdk_kms::primitives::Blob::new(attestation_doc))
+        .key_encryption_algorithm(
+            aws_sdk_kms::types::KeyEncryptionMechanism::RsaesOaepSha256,
+        )
+        .build();
+
+    let resp = client
+        .decrypt()
+        .ciphertext_blob(aws_sdk_kms::primitives::Blob::new(ciphertext))
+        .key_id(&config.key_arn)
+        .recipient(recipient)
+        .send()
+        .await
+        .map_err(|e| classify_kms_error("Decrypt(attested)", e))?;
+
+    // 4. Extract CiphertextForRecipient (CMS envelope)
+    //    When Recipient is provided, KMS returns CiphertextForRecipient instead of Plaintext
+    let cms_bytes = resp
+        .ciphertext_for_recipient()
+        .ok_or_else(|| {
+            tee_attestation_error(
+                "KMS response missing CiphertextForRecipient — \
+                 the KMS key may not support attestation-based decryption",
+            )
+        })?;
+
+    debug!(
+        cms_len = cms_bytes.as_ref().len(),
+        "received CMS envelope from KMS"
+    );
+
+    // 5. Unwrap the CMS EnvelopedData to recover the plaintext
+    decrypt_cms_envelope(cms_bytes.as_ref(), &private_key)
+}
+
 
 /// Direct KMS Decrypt without the Recipient parameter.
 async fn kms_decrypt_direct(
@@ -326,6 +415,283 @@ async fn kms_encrypt(
         .ok_or_else(|| tee_attestation_error("KMS Encrypt returned no ciphertext"))
 }
 
+// ---------------------------------------------------------------------------
+// CMS EnvelopedData decryption (RFC 5652)
+// ---------------------------------------------------------------------------
+
+/// Decrypt a CMS EnvelopedData envelope returned by KMS CiphertextForRecipient.
+///
+/// KMS produces a CMS EnvelopedData (RFC 5652) with:
+/// - One `KeyTransRecipientInfo` containing the CEK encrypted with RSA-OAEP-SHA256
+/// - `EncryptedContentInfo` with AES-256-GCM encrypted plaintext
+///
+/// We parse the DER structure manually (the format from KMS is fixed), unwrap the
+/// CEK with the ephemeral RSA private key, then decrypt the content with AES-256-GCM.
+fn decrypt_cms_envelope(
+    cms_bytes: &[u8],
+    private_key: &rsa::RsaPrivateKey,
+) -> Result<Vec<u8>, AppError> {
+    // Parse the CMS EnvelopedData to extract the three fields we need
+    let fields = cms_der::parse_enveloped_data(cms_bytes)?;
+
+    // RSA-OAEP-SHA256 decrypt the content-encryption key (CEK)
+    use rsa::Oaep;
+    let cek = private_key
+        .decrypt(Oaep::new::<sha2::Sha256>(), &fields.encrypted_key)
+        .map_err(|e| {
+            tee_attestation_error(format!("RSA-OAEP decryption of CEK failed: {e}"))
+        })?;
+
+    debug!(cek_len = cek.len(), "decrypted content-encryption key from CMS envelope");
+
+    // AES-GCM decrypt the content
+    use aes_gcm::{Aes256Gcm, KeyInit, aead::Aead};
+    use aes_gcm::aead::generic_array::GenericArray;
+
+    if cek.len() != 32 {
+        return Err(tee_attestation_error(format!(
+            "unexpected CEK length: {} (expected 32 for AES-256)",
+            cek.len()
+        )));
+    }
+
+    let cipher = Aes256Gcm::new(GenericArray::from_slice(&cek));
+    let nonce = GenericArray::from_slice(&fields.nonce);
+    let plaintext = cipher
+        .decrypt(nonce, fields.ciphertext.as_ref())
+        .map_err(|e| {
+            tee_attestation_error(format!("AES-GCM decryption of CMS content failed: {e}"))
+        })?;
+
+    debug!(plaintext_len = plaintext.len(), "CMS envelope decrypted successfully");
+    Ok(plaintext)
+}
+
+/// Minimal DER parser for the CMS EnvelopedData structure from KMS.
+///
+/// Parses just enough ASN.1 to extract the encrypted CEK, AES-GCM nonce,
+/// and ciphertext. No external DER/ASN.1 crate needed — the structure
+/// from KMS is predictable and constrained.
+mod cms_der {
+    use crate::error::{AppError, tee_attestation_error};
+
+    /// Parsed fields from a CMS EnvelopedData needed for decryption.
+    pub(super) struct CmsFields {
+        pub encrypted_key: Vec<u8>,
+        pub nonce: Vec<u8>,
+        pub ciphertext: Vec<u8>,
+    }
+
+    /// Parse a CMS ContentInfo → EnvelopedData and extract the three fields needed
+    /// for decryption.
+    ///
+    /// ASN.1 structure (simplified):
+    /// ```text
+    /// ContentInfo ::= SEQUENCE {
+    ///   contentType  OID (envelopedData)
+    ///   content      [0] EXPLICIT EnvelopedData
+    /// }
+    /// EnvelopedData ::= SEQUENCE {
+    ///   version          INTEGER
+    ///   recipientInfos   SET { KeyTransRecipientInfo SEQUENCE {
+    ///     version          INTEGER
+    ///     rid              RecipientIdentifier
+    ///     keyEncAlg        AlgorithmIdentifier
+    ///     encryptedKey     OCTET STRING
+    ///   }}
+    ///   encryptedContentInfo SEQUENCE {
+    ///     contentType      OID
+    ///     contentEncAlg    SEQUENCE { OID, SEQUENCE { nonce OCTET STRING, ... } }
+    ///     encryptedContent [0] IMPLICIT OCTET STRING
+    ///   }
+    /// }
+    /// ```
+    pub(super) fn parse_enveloped_data(data: &[u8]) -> Result<CmsFields, AppError> {
+        let mut pos = 0;
+
+        // ContentInfo SEQUENCE
+        let (_, ci_body) = read_tlv(data, &mut pos, "ContentInfo")?;
+
+        let mut ci_pos = 0;
+        // contentType OID — skip
+        let _ = read_tlv(&ci_body, &mut ci_pos, "contentType OID")?;
+        // content [0] EXPLICIT
+        let (_, ctx0_body) = read_tlv(&ci_body, &mut ci_pos, "[0] content")?;
+
+        // EnvelopedData SEQUENCE
+        let mut env_pos = 0;
+        let (_, env_body) = read_tlv(&ctx0_body, &mut env_pos, "EnvelopedData")?;
+
+        let mut ed_pos = 0;
+        // version INTEGER — skip
+        let _ = read_tlv(&env_body, &mut ed_pos, "EnvelopedData version")?;
+        // recipientInfos SET
+        let (_, ri_set) = read_tlv(&env_body, &mut ed_pos, "recipientInfos SET")?;
+        // encryptedContentInfo SEQUENCE
+        let (_, eci_body) = read_tlv(&env_body, &mut ed_pos, "encryptedContentInfo")?;
+
+        // Parse KeyTransRecipientInfo (first element in SET)
+        let encrypted_key = parse_key_trans_ri(&ri_set)?;
+
+        // Parse EncryptedContentInfo
+        let (nonce, ciphertext) = parse_encrypted_content_info(&eci_body)?;
+
+        Ok(CmsFields {
+            encrypted_key,
+            nonce,
+            ciphertext,
+        })
+    }
+
+    fn parse_key_trans_ri(set_data: &[u8]) -> Result<Vec<u8>, AppError> {
+        let mut pos = 0;
+        // KeyTransRecipientInfo SEQUENCE
+        let (_, ktri_body) = read_tlv(set_data, &mut pos, "KeyTransRI")?;
+
+        let mut kp = 0;
+        // version INTEGER — skip
+        let _ = read_tlv(&ktri_body, &mut kp, "KeyTransRI version")?;
+        // rid (RecipientIdentifier) — skip
+        let _ = read_tlv(&ktri_body, &mut kp, "KeyTransRI rid")?;
+        // keyEncryptionAlgorithm — skip
+        let _ = read_tlv(&ktri_body, &mut kp, "KeyTransRI keyEncAlg")?;
+        // encryptedKey OCTET STRING
+        let (_, ek_value) = read_tlv(&ktri_body, &mut kp, "encryptedKey")?;
+
+        Ok(ek_value.to_vec())
+    }
+
+    fn parse_encrypted_content_info(
+        eci_data: &[u8],
+    ) -> Result<(Vec<u8>, Vec<u8>), AppError> {
+        let mut pos = 0;
+        // contentType OID — skip
+        let _ = read_tlv(eci_data, &mut pos, "ECI contentType")?;
+        // contentEncryptionAlgorithm SEQUENCE
+        let (_, alg_body) = read_tlv(eci_data, &mut pos, "ECI algorithm")?;
+        // encryptedContent [0] IMPLICIT OCTET STRING
+        let (_, ct_value) = read_tlv(eci_data, &mut pos, "encryptedContent")?;
+
+        // Parse algorithm to get the GCM nonce
+        let nonce = parse_aes_gcm_params(&alg_body)?;
+
+        Ok((nonce, ct_value.to_vec()))
+    }
+
+    fn parse_aes_gcm_params(alg_data: &[u8]) -> Result<Vec<u8>, AppError> {
+        let mut pos = 0;
+        // algorithm OID — skip
+        let _ = read_tlv(alg_data, &mut pos, "algorithm OID")?;
+        // parameters: GCMParameters SEQUENCE
+        let (_, params_body) = read_tlv(alg_data, &mut pos, "GCM parameters")?;
+
+        let mut pp = 0;
+        // nonce OCTET STRING
+        let (_, nonce_value) = read_tlv(&params_body, &mut pp, "GCM nonce")?;
+
+        Ok(nonce_value.to_vec())
+    }
+
+    /// Read a DER TLV (tag-length-value) at the given position.
+    ///
+    /// Returns (tag_byte, value_bytes) and advances `pos` past the TLV.
+    /// The value_bytes is the content after the tag+length header.
+    fn read_tlv<'a>(
+        data: &'a [u8],
+        pos: &mut usize,
+        context: &str,
+    ) -> Result<(u8, &'a [u8]), AppError> {
+        if *pos >= data.len() {
+            return Err(tee_attestation_error(format!(
+                "CMS: unexpected end of data reading {context}"
+            )));
+        }
+
+        let tag = data[*pos];
+        *pos += 1;
+
+        // Read length
+        if *pos >= data.len() {
+            return Err(tee_attestation_error(format!(
+                "CMS: truncated length for {context}"
+            )));
+        }
+
+        let first_len = data[*pos];
+        *pos += 1;
+
+        let len: usize = if first_len < 0x80 {
+            // Short form: length in single byte
+            first_len as usize
+        } else if first_len == 0x80 {
+            return Err(tee_attestation_error(format!(
+                "CMS: indefinite length not supported for {context}"
+            )));
+        } else {
+            // Long form: first_len & 0x7F = number of length bytes
+            let num_bytes = (first_len & 0x7F) as usize;
+            if *pos + num_bytes > data.len() {
+                return Err(tee_attestation_error(format!(
+                    "CMS: truncated length bytes for {context}"
+                )));
+            }
+            let mut len: usize = 0;
+            for i in 0..num_bytes {
+                len = (len << 8) | (data[*pos + i] as usize);
+            }
+            *pos += num_bytes;
+            len
+        };
+
+        if *pos + len > data.len() {
+            return Err(tee_attestation_error(format!(
+                "CMS: value overflows buffer for {context} (need {len} bytes at offset {pos}, have {})",
+                data.len()
+            )));
+        }
+
+        let value = &data[*pos..*pos + len];
+        *pos += len;
+
+        Ok((tag, value))
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn test_read_tlv_short_form() {
+            // OCTET STRING, length 3, value [0x01, 0x02, 0x03]
+            let data = [0x04, 0x03, 0x01, 0x02, 0x03];
+            let mut pos = 0;
+            let (tag, value) = read_tlv(&data, &mut pos, "test").unwrap();
+            assert_eq!(tag, 0x04);
+            assert_eq!(value, &[0x01, 0x02, 0x03]);
+            assert_eq!(pos, 5);
+        }
+
+        #[test]
+        fn test_read_tlv_long_form() {
+            // OCTET STRING, length 128 (0x81 0x80), then 128 bytes of 0xAA
+            let mut data = vec![0x04, 0x81, 0x80];
+            data.extend_from_slice(&[0xAA; 128]);
+            let mut pos = 0;
+            let (tag, value) = read_tlv(&data, &mut pos, "test").unwrap();
+            assert_eq!(tag, 0x04);
+            assert_eq!(value.len(), 128);
+            assert_eq!(pos, 131);
+        }
+
+        #[test]
+        fn test_read_tlv_truncated() {
+            let data = [0x04, 0x05, 0x01]; // claims 5 bytes but only 1
+            let mut pos = 0;
+            assert!(read_tlv(&data, &mut pos, "test").is_err());
+        }
+    }
+}
+
 /// Classify KMS errors for operator diagnostics.
 fn classify_kms_error<E: std::error::Error>(operation: &str, err: E) -> AppError {
     let err_str = format!("{err}");
@@ -359,6 +725,171 @@ fn classify_kms_error<E: std::error::Error>(operation: &str, err: E) -> AppError
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Build a synthetic CMS EnvelopedData that mimics what KMS returns
+    /// with CiphertextForRecipient. This allows us to test the full
+    /// decrypt_cms_envelope round-trip without needing real KMS or NSM.
+    #[test]
+    fn test_cms_envelope_roundtrip() {
+        use aes_gcm::{Aes256Gcm, KeyInit, aead::Aead};
+        use aes_gcm::aead::generic_array::GenericArray;
+        use rsa::{RsaPrivateKey, Oaep};
+        use rsa::pkcs8::EncodePublicKey;
+
+        // Generate RSA keypair (the "ephemeral" key the enclave would create)
+        let mut rng = rsa::rand_core::OsRng;
+        let private_key = RsaPrivateKey::new(&mut rng, 2048).unwrap();
+
+        // The plaintext KMS would return (e.g., a 32-byte seed)
+        let original_plaintext = b"this is a secret seed value!!!!!"; // 32 bytes
+
+        // Generate random AES-256 CEK and GCM nonce
+        let mut cek = [0u8; 32];
+        rand::fill(&mut cek);
+        let mut nonce_bytes = [0u8; 12];
+        rand::fill(&mut nonce_bytes);
+
+        // AES-GCM encrypt the plaintext
+        let cipher = Aes256Gcm::new(GenericArray::from_slice(&cek));
+        let nonce = GenericArray::from_slice(&nonce_bytes);
+        let aes_ciphertext = cipher.encrypt(nonce, original_plaintext.as_ref()).unwrap();
+
+        // RSA-OAEP-SHA256 encrypt the CEK
+        let encrypted_cek = private_key
+            .to_public_key()
+            .encrypt(&mut rng, Oaep::new::<sha2::Sha256>(), &cek)
+            .unwrap();
+
+        // Build the CMS EnvelopedData DER structure
+        let cms_bytes = build_test_cms_envelope(&encrypted_cek, &nonce_bytes, &aes_ciphertext);
+
+        // Now decrypt it using our implementation
+        let recovered = decrypt_cms_envelope(&cms_bytes, &private_key).unwrap();
+
+        assert_eq!(recovered, original_plaintext);
+    }
+
+    /// Construct a minimal CMS ContentInfo/EnvelopedData DER structure.
+    fn build_test_cms_envelope(
+        encrypted_cek: &[u8],
+        nonce: &[u8],
+        aes_ciphertext: &[u8],
+    ) -> Vec<u8> {
+        // OID for envelopedData: 1.2.840.113549.1.7.3
+        let enveloped_data_oid = &[
+            0x06, 0x09, 0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x07, 0x03,
+        ];
+
+        // OID for data: 1.2.840.113549.1.7.1
+        let data_oid = &[
+            0x06, 0x09, 0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x07, 0x01,
+        ];
+
+        // OID for AES-256-GCM: 2.16.840.1.101.3.4.1.46
+        let aes_256_gcm_oid = &[
+            0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x01, 0x2E,
+        ];
+
+        // OID for RSAES-OAEP: 1.2.840.113549.1.1.7
+        let rsaes_oaep_oid = &[
+            0x06, 0x09, 0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x01, 0x07,
+        ];
+
+        // GCMParameters SEQUENCE { nonce OCTET STRING }
+        let nonce_tlv = der_octet_string(nonce);
+        let gcm_params = der_sequence(&nonce_tlv);
+
+        // AlgorithmIdentifier SEQUENCE { OID, GCMParameters }
+        let mut alg_id_content = Vec::new();
+        alg_id_content.extend_from_slice(aes_256_gcm_oid);
+        alg_id_content.extend_from_slice(&gcm_params);
+        let alg_id = der_sequence(&alg_id_content);
+
+        // encryptedContent [0] IMPLICIT OCTET STRING
+        let encrypted_content = der_context_implicit(0, aes_ciphertext);
+
+        // EncryptedContentInfo SEQUENCE
+        let mut eci_content = Vec::new();
+        eci_content.extend_from_slice(data_oid);
+        eci_content.extend_from_slice(&alg_id);
+        eci_content.extend_from_slice(&encrypted_content);
+        let eci = der_sequence(&eci_content);
+
+        // Fake RecipientIdentifier (IssuerAndSerialNumber — minimal)
+        let fake_rid = der_sequence(&[0x30, 0x00, 0x02, 0x01, 0x01]); // SEQUENCE{SEQUENCE{}, INTEGER 1}
+
+        // KeyEncryptionAlgorithm (RSAES-OAEP — simplified, just OID)
+        let key_enc_alg = der_sequence(rsaes_oaep_oid);
+
+        // KeyTransRecipientInfo SEQUENCE
+        let mut ktri_content = Vec::new();
+        ktri_content.extend_from_slice(&[0x02, 0x01, 0x00]); // version INTEGER 0
+        ktri_content.extend_from_slice(&fake_rid);
+        ktri_content.extend_from_slice(&key_enc_alg);
+        ktri_content.extend_from_slice(&der_octet_string(encrypted_cek));
+        let ktri = der_sequence(&ktri_content);
+
+        // RecipientInfos SET
+        let ri_set = der_set(&ktri);
+
+        // EnvelopedData SEQUENCE
+        let mut env_content = Vec::new();
+        env_content.extend_from_slice(&[0x02, 0x01, 0x00]); // version INTEGER 0
+        env_content.extend_from_slice(&ri_set);
+        env_content.extend_from_slice(&eci);
+        let enveloped_data = der_sequence(&env_content);
+
+        // [0] EXPLICIT EnvelopedData
+        let ctx0 = der_context_explicit(0, &enveloped_data);
+
+        // ContentInfo SEQUENCE
+        let mut ci_content = Vec::new();
+        ci_content.extend_from_slice(enveloped_data_oid);
+        ci_content.extend_from_slice(&ctx0);
+        der_sequence(&ci_content)
+    }
+
+    fn der_sequence(content: &[u8]) -> Vec<u8> {
+        der_tlv(0x30, content)
+    }
+
+    fn der_set(content: &[u8]) -> Vec<u8> {
+        der_tlv(0x31, content)
+    }
+
+    fn der_octet_string(content: &[u8]) -> Vec<u8> {
+        der_tlv(0x04, content)
+    }
+
+    fn der_context_explicit(tag_num: u8, content: &[u8]) -> Vec<u8> {
+        der_tlv(0xA0 | tag_num, content) // constructed context-specific
+    }
+
+    fn der_context_implicit(tag_num: u8, content: &[u8]) -> Vec<u8> {
+        der_tlv(0x80 | tag_num, content) // primitive context-specific
+    }
+
+    fn der_tlv(tag: u8, content: &[u8]) -> Vec<u8> {
+        let mut buf = vec![tag];
+        let len = content.len();
+        if len < 0x80 {
+            buf.push(len as u8);
+        } else if len < 0x100 {
+            buf.push(0x81);
+            buf.push(len as u8);
+        } else if len < 0x10000 {
+            buf.push(0x82);
+            buf.push((len >> 8) as u8);
+            buf.push(len as u8);
+        } else {
+            buf.push(0x83);
+            buf.push((len >> 16) as u8);
+            buf.push((len >> 8) as u8);
+            buf.push(len as u8);
+        }
+        buf.extend_from_slice(content);
+        buf
+    }
 
     #[test]
     fn test_derive_storage_key_deterministic() {
