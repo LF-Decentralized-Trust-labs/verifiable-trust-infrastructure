@@ -70,7 +70,7 @@ async fn main() {
             Some(cid) => cid,
             None => {
                 error!("no running enclave found — start one first:");
-                error!("  nitro-cli run-enclave --eif-path vta.eif --cpu-count 2 --memory 1024");
+                error!("  nitro-cli run-enclave --eif-path vta.eif --cpu-count 1 --memory 512");
                 std::process::exit(1);
             }
         };

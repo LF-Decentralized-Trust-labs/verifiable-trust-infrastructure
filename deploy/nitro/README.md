@@ -126,8 +126,8 @@ sudo usermod -aG docker,ne $USER
 Edit `/etc/nitro_enclaves/allocator.yaml`:
 
 ```yaml
-memory_mib: 1024
-cpu_count: 2
+memory_mib: 512
+cpu_count: 1
 ```
 
 ```bash
@@ -464,8 +464,8 @@ scp vta.eif ec2-user@<instance-ip>:~/
 # SSH to instance and start the enclave
 nitro-cli run-enclave \
     --eif-path ~/vta.eif \
-    --cpu-count 2 \
-    --memory 1024 \
+    --cpu-count 1 \
+    --memory 512 \
     --enclave-cid 16
 
 # Verify
@@ -592,7 +592,7 @@ nitro-cli terminate-enclave --enclave-id $(nitro-cli describe-enclaves | jq -r '
 
 # Restart with a 5-minute export window
 VTA_MNEMONIC_EXPORT_WINDOW=300 nitro-cli run-enclave \
-    --eif-path vta.eif --cpu-count 2 --memory 1024 --enclave-cid 16
+    --eif-path vta.eif --cpu-count 1 --memory 512 --enclave-cid 16
 
 # Authenticate as super admin and export within 5 minutes:
 TOKEN=$(curl -s -X POST http://localhost:8443/auth/challenge -H 'Content-Type: application/json' \
