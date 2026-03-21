@@ -30,6 +30,7 @@ tee = [
   "dep:hmac",
   "dep:aws-sdk-kms",
   "dep:aws-config",
+  "dep:rsa",
 ]
 
 [[bin]]
@@ -86,3 +87,4 @@ tower = { version = "0.5", features = ["limit"] }
 aes-gcm = "0.10"
 hmac = { version = "0.12", optional = true }
 aws-sdk-kms = { version = "1", optional = true }
+rsa = { version = "0.9", optional = true, features = ["sha2"] }

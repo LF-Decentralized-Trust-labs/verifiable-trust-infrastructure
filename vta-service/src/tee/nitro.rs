@@ -145,12 +145,28 @@ fn request_nsm_attestation(user_data: &[u8], nonce: &[u8]) -> Result<Vec<u8>, Ap
     let fd = open_nsm_device()?;
 
     // Build the CBOR-encoded attestation request
-    let request = build_nsm_request(user_data, nonce);
+    let request = build_nsm_request(user_data, nonce, None);
 
     // Send request and receive response via ioctl
     let response = nsm_ioctl(fd.as_raw_fd(), &request)?;
 
     // Parse the CBOR response to extract the attestation document
+    extract_attestation_document(&response)
+}
+
+/// Request an NSM attestation document with an embedded public key.
+///
+/// Used by KMS bootstrap to bind an ephemeral RSA public key to the
+/// attestation document. KMS uses this to re-encrypt the response so
+/// only the enclave (holding the private key) can decrypt it.
+///
+/// `public_key_der` must be the RSA public key in DER-encoded SPKI format.
+pub(crate) fn request_nsm_attestation_for_kms(
+    public_key_der: &[u8],
+) -> Result<Vec<u8>, AppError> {
+    let fd = open_nsm_device()?;
+    let request = build_nsm_request(&[], &[], Some(public_key_der));
+    let response = nsm_ioctl(fd.as_raw_fd(), &request)?;
     extract_attestation_document(&response)
 }
 
@@ -247,10 +263,14 @@ fn nsm_ioctl(fd: std::os::unix::io::RawFd, request: &[u8]) -> Result<Vec<u8>, Ap
 
 /// Build a CBOR-encoded NSM attestation request.
 ///
+/// When `public_key` is `None`, the request encodes `public_key: null`.
+/// When `Some(der_bytes)`, the public key DER is embedded in the attestation
+/// document — used by KMS to re-encrypt the response to that key.
+///
 /// ```text
-/// { "Attestation": { "user_data": <bytes>, "nonce": <bytes>, "public_key": null } }
+/// { "Attestation": { "user_data": <bytes>, "nonce": <bytes>, "public_key": <bytes|null> } }
 /// ```
-fn build_nsm_request(user_data: &[u8], nonce: &[u8]) -> Vec<u8> {
+fn build_nsm_request(user_data: &[u8], nonce: &[u8], public_key: Option<&[u8]>) -> Vec<u8> {
     let mut buf = Vec::with_capacity(64 + user_data.len() + nonce.len());
 
     // Map(1)
@@ -265,9 +285,12 @@ fn build_nsm_request(user_data: &[u8], nonce: &[u8]) -> Vec<u8> {
     // "nonce" => bytes
     encode_cbor_text(&mut buf, b"nonce");
     encode_cbor_bytes(&mut buf, nonce);
-    // "public_key" => null
+    // "public_key" => bytes or null
     encode_cbor_text(&mut buf, b"public_key");
-    buf.push(0xF6); // CBOR null
+    match public_key {
+        Some(pk) => encode_cbor_bytes(&mut buf, pk),
+        None => buf.push(0xF6), // CBOR null
+    }
 
     buf
 }
