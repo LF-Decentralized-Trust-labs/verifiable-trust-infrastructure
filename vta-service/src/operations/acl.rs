@@ -6,7 +6,7 @@ use vta_sdk::protocols::acl_management::{
 
 use crate::acl::{
     AclEntry, Role, delete_acl_entry, get_acl_entry, is_acl_entry_visible, list_acl_entries,
-    store_acl_entry, validate_acl_modification,
+    store_acl_entry, validate_acl_modification, validate_role_assignment,
 };
 use crate::auth::AuthClaims;
 use crate::auth::session::now_epoch;
@@ -40,6 +40,7 @@ pub async fn create_acl(
     channel: &str,
 ) -> Result<CreateAclResultBody, AppError> {
     auth.require_manage()?;
+    validate_role_assignment(auth, &role)?;
     validate_acl_modification(auth, &allowed_contexts)?;
 
     if get_acl_entry(acl_ks, did).await?.is_some() {
@@ -124,8 +125,9 @@ pub async fn update_acl(
         )));
     }
 
-    if let Some(role) = params.role {
-        entry.role = role;
+    if let Some(ref role) = params.role {
+        validate_role_assignment(auth, role)?;
+        entry.role = role.clone();
     }
     if let Some(label) = params.label {
         entry.label = Some(label);
