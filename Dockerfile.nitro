@@ -96,6 +96,7 @@ RUN apk add --no-cache \
         ca-certificates \
         socat \
         gcompat \
+        libgcc \
     && rm -rf /var/cache/apk/*
 
 # Copy the VTA binary
