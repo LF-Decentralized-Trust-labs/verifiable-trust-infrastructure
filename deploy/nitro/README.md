@@ -494,26 +494,23 @@ don't exist yet, so the VTA generates new secrets inside the TEE and encrypts
 them to KMS. On subsequent boots it finds the ciphertexts and decrypts them.
 No config changes or redeployment needed between first and subsequent boots.
 
-## Step 5: Deploy and Run the Enclave
+## Step 5: Copy Artifacts to the EC2 Instance
+
+If building on a separate machine, copy the EIF and finalized config:
 
 ```bash
-# If building on a separate machine, copy EIF and config to the EC2 instance.
-# The parent proxy reads config.toml for the mediator DID and KMS region.
 scp vta.eif ec2-user@<instance-ip>:~/
-scp deploy/nitro/config.toml ec2-user@<instance-ip>:~/deploy/nitro/config.toml
-
-# SSH to instance and start the enclave
-nitro-cli run-enclave \
-    --eif-path ~/vta.eif \
-    --cpu-count 1 \
-    --memory 512 \
-    --enclave-cid 16
-
-# Verify
-nitro-cli describe-enclaves
+scp deploy/nitro/config.toml ec2-user@<instance-ip>:~/config.toml
 ```
 
-## Step 6: Start the Parent Proxy
+If building directly on the EC2 instance, the files are already in place.
+
+## Step 6: Start the Parent Proxy (before the enclave)
+
+> **Important:** The parent proxy must be running **before** the enclave
+> starts. On boot, the enclave immediately tries to reach KMS and IMDS
+> through vsock. If the parent proxy isn't listening, these connections
+> fail and the VTA crashes.
 
 The parent proxy bridges all networking between the enclave and the outside
 world. This includes DID resolution (`did:web`, `did:webvh`) — the enclave has
@@ -623,7 +620,30 @@ through the parent-side resolver.
 > **Fallback:** The shell script `parent-proxy.sh` is still available if you
 > prefer not to build the Rust proxy. It requires `socat` and `vsock-proxy`.
 
-## Step 7: First Boot (auto-detected)
+## Step 7: Start the Enclave
+
+With the parent proxy running, start the enclave:
+
+```bash
+nitro-cli run-enclave \
+    --eif-path ~/vta.eif \
+    --cpu-count 1 \
+    --memory 512 \
+    --debug-mode
+
+# Verify it's running
+nitro-cli describe-enclaves
+
+# Watch the console output (debug mode required)
+nitro-cli console \
+    --enclave-id $(nitro-cli describe-enclaves | jq -r '.[0].EnclaveID')
+```
+
+> **Tip:** Use `--debug-mode --attach-console` to stream console output
+> directly to your terminal. See the [Troubleshooting](#troubleshooting)
+> section for more details.
+
+## Step 8: First boot (auto-detected)
 
 First boot is detected automatically — no config changes needed. The VTA
 checks if ciphertext files exist on the external storage path:
@@ -674,7 +694,7 @@ curl -s -X POST http://localhost:8443/attestation/mnemonic \
 After 5 minutes (or one successful export), the entropy is permanently zeroed.
 The VTA continues running — only the mnemonic words are gone.
 
-## Step 8: Subsequent Boots
+## Step 9: Subsequent Boots
 
 On subsequent boots, the VTA:
 1. Finds existing ciphertext files on external storage
@@ -687,7 +707,7 @@ On subsequent boots, the VTA:
 
 No mnemonic export is possible on subsequent boots (no entropy exists).
 
-## Step 9: Verify
+## Step 10: Verify
 
 ```bash
 # Health check
