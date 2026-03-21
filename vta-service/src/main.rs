@@ -507,138 +507,17 @@ async fn main() {
 
             init_tracing(&config);
 
-            // In vsock-store mode, connect to the parent's storage proxy early —
-            // needed for file I/O during KMS bootstrap (ciphertext read/write).
-            #[cfg(feature = "vsock-store")]
-            let vsock_store = if config.tee.kms.is_some() {
-                Some(
-                    store::VsockStore::connect(None)
-                        .await
-                        .expect("failed to connect to vsock storage proxy"),
-                )
-            } else {
-                None
-            };
-
-            // In TEE mode with KMS config: bootstrap secrets from KMS
-            // (generates on first boot, decrypts on subsequent boots)
-            #[cfg(feature = "tee")]
-            let tee_bootstrap = if let Some(ref kms_config) = config.tee.kms {
-                Some(
-                    tee::kms_bootstrap::bootstrap_secrets(
-                        kms_config,
-                        &config.tee.storage_key_salt,
-                        #[cfg(feature = "vsock-store")]
-                        vsock_store.as_ref(),
-                    )
-                        .await
-                        .expect("TEE KMS bootstrap failed"),
-                )
-            } else {
-                None
-            };
-
-            // Open the store: reuse vsock connection in TEE mode, local fjall otherwise
-            #[cfg(feature = "vsock-store")]
-            let store = if let Some(vs) = vsock_store {
-                store::Store::Vsock(vs)
-            } else {
-                store::Store::open(&config.store).expect("failed to open store")
-            };
-            #[cfg(not(feature = "vsock-store"))]
             let store = store::Store::open(&config.store).expect("failed to open store");
-
-            // Create seed store: KMS TEE store if bootstrapped, otherwise normal backends
-            #[cfg(feature = "tee")]
-            let seed_store: Arc<dyn keys::seed_store::SeedStore> = if let Some(ref bootstrap) = tee_bootstrap {
-                let kms_config = config.tee.kms.as_ref().unwrap();
-                Arc::new(keys::seed_store::KmsTeeSeedStore::new(
-                    bootstrap.seed.clone(),
-                    kms_config.key_arn.clone(),
-                    kms_config.region.clone(),
-                    kms_config.seed_ciphertext_path.clone(),
-                ))
-            } else {
-                Arc::from(create_seed_store(&config).expect("failed to create seed store"))
-            };
-            #[cfg(not(feature = "tee"))]
             let seed_store: Arc<dyn keys::seed_store::SeedStore> =
                 Arc::from(create_seed_store(&config).expect("failed to create seed store"));
-
-            // In TEE mode with KMS: override JWT signing key and extract storage key
-            #[cfg(feature = "tee")]
-            let (mut config, storage_encryption_key) = if let Some(ref bootstrap) = tee_bootstrap {
-                let mut config = config;
-                let jwt_b64 = BASE64.encode(&bootstrap.jwt_signing_key);
-                config.auth.jwt_signing_key = Some(jwt_b64);
-                (config, Some(bootstrap.storage_key))
-            } else {
-                (config, None)
-            };
-            #[cfg(not(feature = "tee"))]
-            let storage_encryption_key: Option<[u8; 32]> = None;
-
-            // Create mnemonic export guard (TEE mode, first boot only)
-            #[cfg(feature = "tee")]
-            let mnemonic_guard = {
-                let export_window: Option<u64> = std::env::var("VTA_MNEMONIC_EXPORT_WINDOW")
-                    .ok()
-                    .and_then(|v| v.parse().ok());
-
-                if let Some(ref bootstrap) = tee_bootstrap {
-                    if let (Some(entropy), Some(window_secs)) = (bootstrap.entropy, export_window) {
-                        Some(Arc::new(
-                            tee::mnemonic_guard::MnemonicExportGuard::new(entropy, window_secs),
-                        ))
-                    } else if bootstrap.entropy.is_some() && export_window.is_none() {
-                        tracing::info!(
-                            "first boot but VTA_MNEMONIC_EXPORT_WINDOW not set — mnemonic export disabled"
-                        );
-                        Some(Arc::new(tee::mnemonic_guard::MnemonicExportGuard::empty()))
-                    } else {
-                        // Subsequent boot — no entropy to export
-                        Some(Arc::new(tee::mnemonic_guard::MnemonicExportGuard::empty()))
-                    }
-                } else {
-                    None
-                }
-            };
-
-            // Auto-generate VTA did:webvh identity on first boot if template
-            // is configured. On subsequent boots, restores the DID from the store.
-            #[cfg(feature = "tee")]
-            {
-                if let Err(e) = tee::did_autogen::maybe_generate_vta_did(
-                    &mut config,
-                    &*seed_store,
-                    &store,
-                    storage_encryption_key,
-                )
-                .await
-                {
-                    tracing::warn!("VTA DID auto-generation failed: {e}");
-                    // Non-fatal: server starts without DID (auth endpoints return 401)
-                }
-            }
-
-            // Build TEE context (bundles tee_state + mnemonic_guard for server)
-            #[cfg(feature = "tee")]
-            let tee_context = {
-                let tee_state = tee::init_tee(&config.tee)
-                    .expect("TEE initialization failed");
-                tee_state.map(|state| server::TeeContext {
-                    state,
-                    mnemonic_guard: mnemonic_guard.clone(),
-                })
-            };
 
             if let Err(e) = server::run(
                 config,
                 store,
                 seed_store,
-                storage_encryption_key,
+                None, // no storage encryption (non-TEE mode)
                 #[cfg(feature = "tee")]
-                tee_context,
+                None, // no TEE context (use vta-enclave for TEE mode)
             )
             .await
             {
