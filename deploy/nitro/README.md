@@ -702,6 +702,110 @@ curl -X POST http://localhost:8443/attestation/report \
     -d '{"nonce":"deadbeef0123456789abcdef01234567"}'
 ```
 
+## Troubleshooting
+
+### Viewing enclave console output
+
+Nitro Enclaves have no SSH access and no network. The only way to see what's
+happening inside is through the console, which requires **debug mode**.
+
+```bash
+# Start the enclave in debug mode with console attached to your terminal.
+# You'll see kernel boot messages, entrypoint output, and any errors.
+nitro-cli run-enclave \
+    --eif-path vta.eif \
+    --cpu-count 1 \
+    --memory 512 \
+    --debug-mode \
+    --attach-console
+```
+
+If you prefer to run the enclave in the background and read the console
+separately:
+
+```bash
+# Start in debug mode (background)
+nitro-cli run-enclave \
+    --eif-path vta.eif \
+    --cpu-count 1 \
+    --memory 512 \
+    --debug-mode
+
+# Read the console output (streams until Ctrl+C or enclave stops)
+nitro-cli console \
+    --enclave-id $(nitro-cli describe-enclaves | jq -r '.[0].EnclaveID')
+```
+
+> **Note:** `--debug-mode` must be specified at launch time. You cannot
+> attach a console to an enclave that was started without it. Debug mode
+> does not weaken security — it only enables the console output channel.
+
+### Common startup errors
+
+| Symptom | Cause | Fix |
+|---------|-------|-----|
+| `Error loading shared library ...` | Missing runtime library in the Alpine image | Add the library to the `apk add` list in `Dockerfile.nitro` and rebuild |
+| `Error relocating ... symbol not found` | glibc binary uses a function Alpine/musl doesn't provide | Check if the symbol needs a compat stub (see `libresolv_compat.so` in `Dockerfile.nitro`) |
+| Enclave exits immediately (hang-up event) | Process inside crashed — use `--attach-console` to see why | Start with `--debug-mode --attach-console` and read the error output |
+| `KMS Decrypt failed [ACCESS_DENIED]` | PCR0 mismatch — the EIF was rebuilt but KMS policy wasn't updated | Re-run `setup-kms-policy.sh` with the new PCR0 from the build output |
+| `KMS Decrypt failed [NETWORK]` | Can't reach KMS — parent proxy not running or allowlist wrong | Start the enclave-proxy on the parent and verify the KMS endpoint is allowlisted |
+| `KMS Decrypt failed [KEY_NOT_FOUND]` | Wrong KMS key ARN in config.toml | Verify `[tee.kms] key_arn` matches the key created by `setup-kms-policy.sh` |
+| `failed to open /dev/nsm` | Not running inside a Nitro Enclave | The VTA binary must run inside an enclave, not directly on the EC2 host |
+| `TEE mode is 'required' but no TEE hardware detected` | TEE mode set to required but `/dev/nsm` not found | Ensure you're running inside a Nitro Enclave, or set `tee.mode = "optional"` for testing |
+| Health endpoint returns but no `tee_status` | TEE subsystem didn't initialize | Check console logs for TEE init errors; verify the `tee` feature was included in the build |
+
+### Checking enclave status
+
+```bash
+# List running enclaves
+nitro-cli describe-enclaves
+
+# Check if the VTA is responding (via the parent proxy)
+curl http://localhost:8443/health
+
+# Terminate a running enclave
+nitro-cli terminate-enclave \
+    --enclave-id $(nitro-cli describe-enclaves | jq -r '.[0].EnclaveID')
+```
+
+### Checking parent proxy logs
+
+The enclave-proxy logs to stderr. If started in the foreground, logs appear
+in your terminal. If started via `deploy-vta.sh`, logs are written to
+`.deploy-nitro/proxy.log`:
+
+```bash
+# View proxy logs
+tail -f .deploy-nitro/proxy.log
+
+# Check if the proxy is running
+cat .deploy-nitro/proxy.pid | xargs ps -p
+```
+
+### Rebuilding after changes
+
+Any change to `config.toml`, the VTA source code, or the Dockerfile requires
+the full rebuild cycle because PCR0 changes:
+
+```bash
+# 1. Rebuild Docker image
+docker build -f Dockerfile.nitro --build-arg FEATURES="rest,didcomm,tee" -t vta-nitro .
+
+# 2. Rebuild and sign EIF — note the new PCR0
+nitro-cli build-enclave --docker-uri vta-nitro --output-file vta.eif \
+    --signing-certificate signing-cert.pem --private-key signing-key.pem
+
+# 3. Update KMS policy with new PCR0
+./deploy/nitro/setup-kms-policy.sh \
+    --pcr0 "NEW_PCR0" --pcr8 "$(cat signing/pcr8.txt)" \
+    --role "arn:aws:iam::ACCOUNT:role/vta-enclave-role" \
+    --key-arn "arn:aws:kms:REGION:ACCOUNT:key/KEY_ID"
+
+# 4. Terminate old enclave and start new one
+nitro-cli terminate-enclave --enclave-id $(nitro-cli describe-enclaves | jq -r '.[0].EnclaveID')
+nitro-cli run-enclave --eif-path vta.eif --cpu-count 1 --memory 512 --debug-mode
+```
+
 ## Disaster Recovery
 
 | Scenario | Recovery |
