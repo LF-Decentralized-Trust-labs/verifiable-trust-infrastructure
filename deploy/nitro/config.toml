@@ -44,7 +44,7 @@
 # ── Service toggles ─────────────────────────────────────────────────────────
 # Runtime overrides for compiled-in features. These can only DISABLE a service
 # that was compiled in, never enable one that wasn't. For example, if the
-# binary was built with FEATURES="didcomm,tee" (Profile A), setting rest=true
+# binary was built with FEATURES="didcomm,vsock-store" (Profile A), setting rest=true
 # here has no effect — the REST code isn't in the binary.
 [services]
 rest = true
