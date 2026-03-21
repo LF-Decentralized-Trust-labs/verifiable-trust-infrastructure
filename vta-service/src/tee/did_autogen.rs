@@ -163,14 +163,9 @@ pub async fn maybe_generate_vta_did(
     // Flush the store to ensure durability before writing did.jsonl
     store.persist().await?;
 
-    // Write did.jsonl to the filesystem for the operator
+    // Write did.jsonl to persistent storage for the operator
     let log_path = &kms_config.did_log_path;
-    if let Some(parent) = std::path::Path::new(log_path).parent() {
-        std::fs::create_dir_all(parent).map_err(|e| {
-            AppError::Internal(format!("failed to create directory for did.jsonl: {e}"))
-        })?;
-    }
-    std::fs::write(log_path, &log_content).map_err(|e| {
+    store.write_file(log_path, log_content.as_bytes()).await.map_err(|e| {
         AppError::Internal(format!("failed to write did.jsonl: {e}"))
     })?;
 

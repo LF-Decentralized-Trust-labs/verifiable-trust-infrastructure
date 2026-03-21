@@ -528,12 +528,30 @@ async fn main() {
 
             init_tracing(&config);
 
+            // In vsock-store mode, connect to the parent's storage proxy early —
+            // needed for file I/O during KMS bootstrap (ciphertext read/write).
+            #[cfg(feature = "vsock-store")]
+            let vsock_store = if config.tee.kms.is_some() {
+                Some(
+                    store::VsockStore::connect(None)
+                        .await
+                        .expect("failed to connect to vsock storage proxy"),
+                )
+            } else {
+                None
+            };
+
             // In TEE mode with KMS config: bootstrap secrets from KMS
             // (generates on first boot, decrypts on subsequent boots)
             #[cfg(feature = "tee")]
             let tee_bootstrap = if let Some(ref kms_config) = config.tee.kms {
                 Some(
-                    tee::kms_bootstrap::bootstrap_secrets(kms_config, &config.tee.storage_key_salt)
+                    tee::kms_bootstrap::bootstrap_secrets(
+                        kms_config,
+                        &config.tee.storage_key_salt,
+                        #[cfg(feature = "vsock-store")]
+                        vsock_store.as_ref(),
+                    )
                         .await
                         .expect("TEE KMS bootstrap failed"),
                 )
@@ -541,6 +559,14 @@ async fn main() {
                 None
             };
 
+            // Open the store: reuse vsock connection in TEE mode, local fjall otherwise
+            #[cfg(feature = "vsock-store")]
+            let store = if let Some(vs) = vsock_store {
+                store::Store::Vsock(vs)
+            } else {
+                store::Store::open(&config.store).expect("failed to open store")
+            };
+            #[cfg(not(feature = "vsock-store"))]
             let store = store::Store::open(&config.store).expect("failed to open store");
 
             // Create seed store: KMS TEE store if bootstrapped, otherwise normal backends
