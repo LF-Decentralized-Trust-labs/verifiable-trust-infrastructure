@@ -60,6 +60,13 @@ pub struct Cli {
 
 #[tokio::main]
 async fn main() {
+    // Install the ring crypto provider for rustls before any TLS is used.
+    // Both the proxy's direct TLS connections and reqwest (for DID resolution)
+    // need this to be set as the process-level default.
+    rustls::crypto::ring::default_provider()
+        .install_default()
+        .expect("failed to install rustls crypto provider");
+
     // Initialize tracing
     let filter = EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| EnvFilter::new("info"));
