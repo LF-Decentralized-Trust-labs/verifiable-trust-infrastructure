@@ -1,4 +1,4 @@
-//! Resolve a DID via a Universal Resolver and extract service endpoints.
+//! Resolve a DID via the Affinidi DID resolver and extract service endpoints.
 
 use tracing::{debug, info, warn};
 

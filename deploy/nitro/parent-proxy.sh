@@ -24,7 +24,7 @@
 # Environment variable overrides:
 #   MEDIATOR_HOST     Override mediator hostname (default: from config.toml)
 #   MEDIATOR_PORT     Override mediator port (default: 443)
-#   RESOLVER_URL      DID resolver URL (default: https://dev.uniresolver.io)
+#   RESOLVER_URL      DID resolver URL (default: https://did.server.affinidi.io)
 #   RESOLVER_PORT     Local DID resolver port (default: 8200)
 #   LISTEN_PORT       External REST API port (default: 8443)
 # =============================================================================
@@ -90,7 +90,7 @@ VSOCK_RESOLVER_PORT="${VSOCK_RESOLVER_PORT:-5400}"      # Outbound DID resolver
 LISTEN_PORT="${LISTEN_PORT:-8443}"                      # External REST API port
 MEDIATOR_PORT="${MEDIATOR_PORT:-443}"                   # Mediator WSS port
 RESOLVER_PORT="${RESOLVER_PORT:-8200}"                  # Local DID resolver port
-RESOLVER_URL="${RESOLVER_URL:-https://dev.uniresolver.io}"  # Upstream DID resolver
+RESOLVER_URL="${RESOLVER_URL:-https://did.server.affinidi.io}"  # Upstream DID resolver
 
 REGION="${CONFIG_REGION}"
 
@@ -228,7 +228,7 @@ EOF
 
     echo "  Allowlist: $(grep -c 'address:' "$ALLOWLIST_FILE") hosts"
     # Default target is the resolver host (most common outbound call)
-    vsock-proxy ${VSOCK_HTTPS_PORT} "${RESOLVER_HOST:-dev.uniresolver.io}" ${RESOLVER_HOST_PORT:-443} \
+    vsock-proxy ${VSOCK_HTTPS_PORT} "${RESOLVER_HOST:-did.server.affinidi.io}" ${RESOLVER_HOST_PORT:-443} \
         --config "$ALLOWLIST_FILE" &
     PIDS+=($!)
 else
