@@ -13,7 +13,19 @@
 #   - IAM role ARN for the EC2 instance running the enclave
 #
 # Usage:
-#   ./setup-kms-policy.sh --pcr0 <hash> --pcr8 <hash> --role <iam-role-arn> [--key-arn <existing>] [--region <region>]
+#   ./setup-kms-policy.sh --pcr0 <hash> --pcr8 <hash> --role <iam-role-arn> [options]
+#
+# Options:
+#   --pcr0 <hash>           Enclave image hash (required)
+#   --pcr8 <hash>           Signing certificate hash (optional but recommended)
+#   --role <arn>            EC2 instance IAM role ARN (required)
+#   --key-arn <arn>         Existing KMS key ARN (creates new key if omitted)
+#   --region <region>       AWS region (default: us-east-1)
+#   --build-admin <arn>     Grant KMS admin to this role/user (e.g., CI/CD build role).
+#                           This principal can update the key policy (e.g., to rotate
+#                           PCR0 after a rebuild) without the original creator's
+#                           credentials. Does NOT grant encrypt/decrypt access.
+#                           To remove later, re-run without --build-admin.
 #
 # Examples:
 #   # Create new KMS key:
@@ -22,7 +34,14 @@
 #       --pcr8 "def456..." \
 #       --role "arn:aws:iam::123456789012:role/vta-enclave-role"
 #
-#   # Update existing KMS key:
+#   # Grant build role admin access (for CI/CD PCR0 rotation):
+#   ./setup-kms-policy.sh \
+#       --pcr0 "abc123..." \
+#       --pcr8 "def456..." \
+#       --role "arn:aws:iam::123456789012:role/vta-enclave-role" \
+#       --build-admin "arn:aws:iam::123456789012:role/vta-build-role"
+#
+#   # Update existing KMS key (also removes build-admin if previously set):
 #   ./setup-kms-policy.sh \
 #       --pcr0 "abc123..." \
 #       --pcr8 "def456..." \
@@ -38,6 +57,7 @@ PCR8=""
 ROLE_ARN=""
 KEY_ARN=""
 REGION="${AWS_DEFAULT_REGION:-us-east-1}"
+BUILD_ADMIN=""
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -46,13 +66,17 @@ while [[ $# -gt 0 ]]; do
         --role) ROLE_ARN="$2"; shift 2;;
         --key-arn) KEY_ARN="$2"; shift 2;;
         --region) REGION="$2"; shift 2;;
+        --build-admin) BUILD_ADMIN="$2"; shift 2;;
+        --help|-h)
+            sed -n '2,/^# =====/p' "$0" | head -n -1 | sed 's/^# \?//'
+            exit 0;;
         *) echo "Unknown argument: $1"; exit 1;;
     esac
 done
 
 # Validate required args
 if [ -z "$PCR0" ] || [ -z "$ROLE_ARN" ]; then
-    echo "Usage: $0 --pcr0 <hash> --role <iam-role-arn> [--pcr8 <hash>] [--key-arn <existing>] [--region <region>]"
+    echo "Usage: $0 --pcr0 <hash> --role <iam-role-arn> [--pcr8 <hash>] [--key-arn <existing>] [--region <region>] [--build-admin <arn>]"
     exit 1
 fi
 
@@ -68,6 +92,7 @@ echo "  Region:     $REGION"
 echo "  Role ARN:   $ROLE_ARN"
 echo "  PCR0:       ${PCR0:0:32}..."
 [ -n "$PCR8" ] && echo "  PCR8:       ${PCR8:0:32}..."
+[ -n "$BUILD_ADMIN" ] && echo "  Build admin: $BUILD_ADMIN"
 echo ""
 
 # Build the attestation condition block
@@ -84,6 +109,19 @@ COND
 )
 fi
 
+# Build the admin principal — either just the caller, or caller + build role
+if [ -n "$BUILD_ADMIN" ]; then
+    ADMIN_PRINCIPAL=$(cat <<PRINC
+                "AWS": ["$CALLER_ARN", "$BUILD_ADMIN"]
+PRINC
+)
+else
+    ADMIN_PRINCIPAL=$(cat <<PRINC
+                "AWS": "$CALLER_ARN"
+PRINC
+)
+fi
+
 # Build key policy
 POLICY=$(cat <<EOF
 {
@@ -93,7 +131,7 @@ POLICY=$(cat <<EOF
             "Sid": "AllowKeyAdministration",
             "Effect": "Allow",
             "Principal": {
-                "AWS": "$CALLER_ARN"
+$ADMIN_PRINCIPAL
             },
             "Action": [
                 "kms:Create*",
@@ -187,6 +225,7 @@ echo "  Decrypt:        $ROLE_ARN (only with attestation matching PCR0"
 [ -n "$PCR8" ] && echo "                   + PCR8)"
 [ -z "$PCR8" ] && echo "                   )"
 echo "  Administration: $CALLER_ARN"
+[ -n "$BUILD_ADMIN" ] && echo "                   $BUILD_ADMIN (build admin)"
 echo ""
 echo "Add this to your VTA config.toml:"
 echo ""
@@ -197,4 +236,10 @@ echo ""
 echo "IMPORTANT: After rebuilding the enclave image, update PCR0:"
 echo "  $0 --pcr0 <new-hash> --role $ROLE_ARN --key-arn $KEY_ARN"
 [ -n "$PCR8" ] && echo "  (PCR8 only changes if you regenerate the signing key)"
+if [ -n "$BUILD_ADMIN" ]; then
+    echo ""
+    echo "To remove build admin access later:"
+    echo "  $0 --pcr0 <hash> --role $ROLE_ARN --key-arn $KEY_ARN"
+    echo "  (omit --build-admin to remove it from the policy)"
+fi
 echo ""
