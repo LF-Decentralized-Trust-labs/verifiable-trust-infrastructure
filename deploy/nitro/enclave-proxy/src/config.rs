@@ -28,7 +28,7 @@ pub struct ProxyConfig {
     /// Directory for the persistent key-value store (on parent EBS).
     pub storage_data_dir: PathBuf,
     /// Directory for secrets files (on parent EBS).
-    pub storage_secrets_dir: PathBuf,
+    pub storage_files_dir: PathBuf,
 }
 
 /// Partial VTA config — only the fields we need.
@@ -130,7 +130,7 @@ impl ProxyConfig {
             allowlist_hosts,
             vsock_storage_port: cli.vsock_storage,
             storage_data_dir: cli.storage_data_dir.clone(),
-            storage_secrets_dir: cli.storage_secrets_dir.clone(),
+            storage_files_dir: cli.storage_files_dir.clone(),
         }
     }
 

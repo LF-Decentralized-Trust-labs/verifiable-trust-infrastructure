@@ -93,8 +93,8 @@ storage_key_salt = "vta-tee-storage-v1"
 [tee.kms]
 region = "us-east-1"
 key_arn = "REPLACE_WITH_KMS_KEY_ARN"
-seed_ciphertext_path = "/mnt/vta-data/secrets/seed.enc"
-jwt_ciphertext_path = "/mnt/vta-data/secrets/jwt.enc"
+seed_ciphertext_path = "/mnt/vta-data/files/seed.enc"
+jwt_ciphertext_path = "/mnt/vta-data/files/jwt.enc"
 
 # ── Automatic DID identity generation ────────────────────────────────────────
 # On first boot, the VTA can auto-generate its did:webvh identity from a
@@ -111,7 +111,7 @@ jwt_ciphertext_path = "/mnt/vta-data/secrets/jwt.enc"
 #
 # Uncomment and set your domain/path:
 # vta_did_template = "did:webvh:{SCID}:example.com:vta"
-# did_log_path = "/mnt/vta-data/secrets/did.jsonl"
+# did_log_path = "/mnt/vta-data/files/did.jsonl"
 
 [auth]
 access_token_expiry = 900

@@ -21,15 +21,15 @@ use crate::protocol::*;
 /// Run the parent-side storage server.
 ///
 /// Opens a fjall database at `data_dir` and listens for K/V operations on
-/// the given vsock port. File operations are restricted to `secrets_dir`.
-pub async fn run_storage(vsock_port: u32, data_dir: PathBuf, secrets_dir: PathBuf) {
+/// the given vsock port. File operations are restricted to `files_dir`.
+pub async fn run_storage(vsock_port: u32, data_dir: PathBuf, files_dir: PathBuf) {
     // Open the fjall database on the parent's EBS volume
     if let Err(e) = std::fs::create_dir_all(&data_dir) {
         error!("[storage] failed to create data directory {}: {e}", data_dir.display());
         return;
     }
-    if let Err(e) = std::fs::create_dir_all(&secrets_dir) {
-        error!("[storage] failed to create secrets directory {}: {e}", secrets_dir.display());
+    if let Err(e) = std::fs::create_dir_all(&files_dir) {
+        error!("[storage] failed to create secrets directory {}: {e}", files_dir.display());
         return;
     }
 
@@ -44,13 +44,13 @@ pub async fn run_storage(vsock_port: u32, data_dir: PathBuf, secrets_dir: PathBu
     info!(
         "[storage] opened database at {} (secrets: {})",
         data_dir.display(),
-        secrets_dir.display()
+        files_dir.display()
     );
 
     let state = Arc::new(StorageState {
         db,
         keyspaces: RwLock::new(HashMap::new()),
-        secrets_dir,
+        files_dir,
     });
 
     let mut listener = match VsockListener::bind(VsockAddr::new(VMADDR_CID_ANY, vsock_port)) {
@@ -85,7 +85,7 @@ pub async fn run_storage(vsock_port: u32, data_dir: PathBuf, secrets_dir: PathBu
 struct StorageState {
     db: Database,
     keyspaces: RwLock<HashMap<String, Keyspace>>,
-    secrets_dir: PathBuf,
+    files_dir: PathBuf,
 }
 
 impl StorageState {
@@ -125,7 +125,7 @@ impl StorageState {
 
         // Canonicalize the secrets dir (resolve symlinks)
         let base = self
-            .secrets_dir
+            .files_dir
             .canonicalize()
             .map_err(|e| format!("failed to canonicalize secrets dir: {e}"))?;
 
