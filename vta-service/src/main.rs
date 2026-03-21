@@ -16,7 +16,7 @@ use vta_service::*;
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD as BASE64;
 use clap::{Parser, Subcommand};
-use config::{AppConfig, LogFormat};
+use config::AppConfig;
 use ed25519_dalek::SigningKey;
 use ed25519_dalek_bip32::{DerivationPath, ExtendedSigningKey};
 use keys::seed_store::create_seed_store;
@@ -24,7 +24,6 @@ use keys::seeds::load_seed_bytes;
 use multibase::Base;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tracing_subscriber::EnvFilter;
 
 // There must be a valid mix of transports for the VTA Service
 // The following checks if a valid set of features is enabled at compile time and produces a
@@ -516,7 +515,6 @@ async fn main() {
                 store,
                 seed_store,
                 None, // no storage encryption (non-TEE mode)
-                #[cfg(feature = "tee")]
                 None, // no TEE context (use vta-enclave for TEE mode)
             )
             .await
@@ -641,17 +639,7 @@ async fn run_bootstrap_admin(
     Ok(())
 }
 
-fn init_tracing(config: &AppConfig) {
-    let filter =
-        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(&config.log.level));
-
-    let subscriber = tracing_subscriber::fmt().with_env_filter(filter);
-
-    match config.log.format {
-        LogFormat::Json => subscriber.json().init(),
-        LogFormat::Text => subscriber.init(),
-    }
-}
+// init_tracing is now in vta_service::init_tracing (lib.rs)
 
 async fn export_admin(config_path: Option<PathBuf>) -> Result<(), Box<dyn std::error::Error>> {
     let config = AppConfig::load(config_path)?;

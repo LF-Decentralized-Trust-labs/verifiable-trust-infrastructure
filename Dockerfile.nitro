@@ -108,7 +108,7 @@ RUN apk add --no-cache \
     && rm -rf /var/cache/apk/*
 
 # Copy the VTA binary and glibc compat stub
-COPY --from=builder /build/target/release/vta /usr/local/bin/vta
+COPY --from=builder /build/target/release/vta-enclave /usr/local/bin/vta
 COPY --from=builder /tmp/libresolv_compat.so /usr/lib/libresolv_compat.so
 ENV LD_PRELOAD=/usr/lib/libresolv_compat.so
 

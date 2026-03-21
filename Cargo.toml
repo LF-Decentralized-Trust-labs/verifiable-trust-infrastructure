@@ -16,7 +16,7 @@ exclude = [
 resolver = "3"
 
 [workspace.package]
-description = "Verifiable Trust Communities - Verifiable Trust Agent SDK and Services"
+description = "Verifiable Trust Infrastructure (VTI) — VTA, VTC, and supporting crates"
 version = "0.1.1"
 edition = "2024"
 publish = false

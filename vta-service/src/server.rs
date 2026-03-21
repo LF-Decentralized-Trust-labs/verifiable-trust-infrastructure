@@ -32,12 +32,21 @@ use tracing::{debug, error, info, warn};
 
 /// TEE context passed by the caller (main.rs or vta-enclave).
 /// None when running outside a TEE.
-#[cfg(feature = "tee")]
+///
+/// When the `tee` feature is not compiled in, this is a unit struct
+/// that is never constructed — callers pass `None::<TeeContext>`.
 #[derive(Clone)]
+#[cfg(feature = "tee")]
 pub struct TeeContext {
     pub state: crate::tee::TeeState,
     pub mnemonic_guard: Option<Arc<crate::tee::mnemonic_guard::MnemonicExportGuard>>,
 }
+
+/// Stub type when TEE is not compiled in. Never constructed.
+#[derive(Clone)]
+#[cfg(not(feature = "tee"))]
+pub struct TeeContext(());
+
 
 #[derive(Clone)]
 pub struct AppState {
@@ -55,7 +64,6 @@ pub struct AppState {
     #[cfg(feature = "didcomm")]
     pub didcomm_bridge: Arc<OnceLock<DIDCommBridge>>,
     pub jwt_keys: Option<Arc<JwtKeys>>,
-    #[cfg(feature = "tee")]
     pub tee: Option<TeeContext>,
 }
 
@@ -73,7 +81,7 @@ pub async fn run(
     store: Store,
     seed_store: Arc<dyn SeedStore>,
     storage_encryption_key: Option<[u8; 32]>,
-    #[cfg(feature = "tee")] tee_context: Option<TeeContext>,
+    tee_context: Option<TeeContext>,
 ) -> Result<(), AppError> {
     // Determine which services will actually start (feature flag AND config)
     let rest_enabled = cfg!(feature = "rest") && config.services.rest;
@@ -173,6 +181,8 @@ pub async fn run(
             didcomm_bridge: didcomm_bridge.clone(),
             #[cfg(feature = "tee")]
             tee_state: tee_context.as_ref().map(|tc| tc.state.clone()),
+            #[cfg(not(feature = "tee"))]
+            tee_state: None,
         })
     } else {
         None
@@ -197,7 +207,6 @@ pub async fn run(
             #[cfg(feature = "didcomm")]
             didcomm_bridge: didcomm_bridge.clone(),
             jwt_keys,
-            #[cfg(feature = "tee")]
             tee: tee_context.clone(),
         };
         let mut rest_shutdown_rx = shutdown_rx.clone();

@@ -17,7 +17,7 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD as BASE64;
 use clap::Parser;
 use tracing::info;
 
-use vta_service::config::{AppConfig, LogFormat};
+use vta_service::config::AppConfig;
 use vta_service::keys::seed_store::{KmsTeeSeedStore, SeedStore};
 use vta_service::server::TeeContext;
 use vta_service::store;
@@ -47,7 +47,7 @@ async fn main() {
         }
     };
 
-    init_tracing(&config);
+    vta_service::init_tracing(&config);
     print_banner();
 
     // ── VsockStore (persistent storage via parent proxy) ──
@@ -172,26 +172,7 @@ async fn main() {
     }
 }
 
-fn init_tracing(config: &AppConfig) {
-    use tracing_subscriber::EnvFilter;
-
-    let filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new(&config.log.level));
-
-    match config.log.format {
-        LogFormat::Json => {
-            tracing_subscriber::fmt()
-                .json()
-                .with_env_filter(filter)
-                .init();
-        }
-        LogFormat::Text => {
-            tracing_subscriber::fmt()
-                .with_env_filter(filter)
-                .init();
-        }
-    }
-}
+// init_tracing is in vta_service::init_tracing (shared with all front-ends)
 
 fn print_banner() {
     let cyan = "\x1b[36m";

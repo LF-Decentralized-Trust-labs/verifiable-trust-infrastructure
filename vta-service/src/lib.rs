@@ -31,3 +31,19 @@ pub mod webvh_client;
 pub mod webvh_didcomm;
 #[cfg(feature = "webvh")]
 pub mod webvh_store;
+
+/// Initialize tracing/logging from config. Call once at startup before any
+/// log output. Shared by all VTA front-end binaries.
+pub fn init_tracing(config: &config::AppConfig) {
+    use tracing_subscriber::EnvFilter;
+
+    let filter = EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| EnvFilter::new(&config.log.level));
+
+    let subscriber = tracing_subscriber::fmt().with_env_filter(filter);
+
+    match config.log.format {
+        config::LogFormat::Json => subscriber.json().init(),
+        config::LogFormat::Text => subscriber.init(),
+    }
+}
