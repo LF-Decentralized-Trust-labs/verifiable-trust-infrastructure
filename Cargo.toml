@@ -9,6 +9,9 @@ members = [
   "vtc-service",
   "vti-common",
 ]
+exclude = [
+  "deploy/nitro/enclave-proxy",
+]
 resolver = "3"
 
 [workspace.package]
