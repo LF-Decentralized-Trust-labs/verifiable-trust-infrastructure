@@ -10,7 +10,7 @@ license.workspace = true
 repository.workspace = true
 
 [[bin]]
-name = "vta"
+name = "vta-enclave"
 path = "src/main.rs"
 
 [features]
