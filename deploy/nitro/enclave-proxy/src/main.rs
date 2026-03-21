@@ -49,8 +49,8 @@ pub struct Cli {
     #[arg(long, default_value_t = 5400)]
     vsock_imds: u32,
 
-    /// DID resolver URL (enclave resolves DIDs through this)
-    #[arg(long, default_value = "https://dev.uniresolver.io")]
+    /// Affinidi DID resolver URL
+    #[arg(long, default_value = "https://did.server.affinidi.io")]
     resolver_url: String,
 
     /// Additional hosts to allowlist for HTTPS proxy (host:port)
