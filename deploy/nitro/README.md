@@ -497,8 +497,10 @@ No config changes or redeployment needed between first and subsequent boots.
 ## Step 5: Deploy and Run the Enclave
 
 ```bash
-# If building on a separate machine, copy EIF to the EC2 instance
+# If building on a separate machine, copy EIF and config to the EC2 instance.
+# The parent proxy reads config.toml for the mediator DID and KMS region.
 scp vta.eif ec2-user@<instance-ip>:~/
+scp deploy/nitro/config.toml ec2-user@<instance-ip>:~/deploy/nitro/config.toml
 
 # SSH to instance and start the enclave
 nitro-cli run-enclave \
@@ -518,9 +520,13 @@ world. This includes DID resolution (`did:web`, `did:webvh`) — the enclave has
 no direct network access, so all HTTPS traffic is routed through a vsock proxy
 with an allowlist of permitted hosts.
 
-The proxy is a Rust binary that auto-reads the mediator configuration from
-`deploy/nitro/config.toml` (the same config baked into the EIF) and auto-detects
-the enclave CID. Build it on the EC2 instance:
+The proxy is a Rust binary that auto-reads the mediator DID and KMS region
+from `deploy/nitro/config.toml` and auto-detects the enclave CID. If the
+repo is cloned on the EC2 instance, the config is already at
+`deploy/nitro/config.toml`. If you built on a separate machine, ensure the
+finalized config (with KMS ARN) was copied over in Step 5.
+
+Build and run the proxy on the EC2 instance:
 
 ```bash
 # Build the proxy (first time only — on the parent EC2 instance)
@@ -528,7 +534,7 @@ cd deploy/nitro/enclave-proxy
 cargo build --release
 cd ../../..
 
-# Run — auto-detects everything from config.toml
+# Run — auto-reads mediator DID and KMS region from config.toml
 ./deploy/nitro/enclave-proxy/target/release/enclave-proxy
 
 # With additional allowlisted hosts (WebVH servers, etc.)
@@ -539,6 +545,10 @@ MEDIATOR_HOST=mediator.example.com ./deploy/nitro/enclave-proxy/target/release/e
 
 # Custom DID resolver URL (e.g., local Affinidi DID resolver)
 RESOLVER_URL=http://localhost:8200 ./deploy/nitro/enclave-proxy/target/release/enclave-proxy
+
+# If config.toml is not available, pass all settings via env vars:
+AWS_REGION=us-east-1 MEDIATOR_HOST=mediator.example.com \
+    ./deploy/nitro/enclave-proxy/target/release/enclave-proxy
 ```
 
 The proxy starts three channels:
