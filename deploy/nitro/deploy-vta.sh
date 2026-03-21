@@ -27,8 +27,8 @@
 #   VTA_ROLE_NAME       IAM role name (default: vta-enclave-role)
 #   VTA_SIGNING_DIR     Signing key directory (default: ./signing)
 #   VTA_MEDIATOR_DID    DIDComm mediator DID (optional)
-#   VTA_ENCLAVE_CPU     Enclave CPU count (default: 2)
-#   VTA_ENCLAVE_MEM     Enclave memory MiB (default: 1024)
+#   VTA_ENCLAVE_CPU     Enclave CPU count (default: 1)
+#   VTA_ENCLAVE_MEM     Enclave memory MiB (default: 512)
 #   VTA_KEY_ARN         Existing KMS key ARN (skip creation if set)
 #   VTA_SKIP_IAM        Set to "true" to skip IAM role creation
 # =============================================================================
@@ -217,8 +217,8 @@ step 2 "Configuration"
 
 ask "AWS region" "${VTA_REGION:-us-east-1}" REGION
 ask "IAM role name for EC2 instance" "${VTA_ROLE_NAME:-vta-enclave-role}" ROLE_NAME
-ask "Enclave CPU count" "${VTA_ENCLAVE_CPU:-2}" ENCLAVE_CPU
-ask "Enclave memory (MiB)" "${VTA_ENCLAVE_MEM:-1024}" ENCLAVE_MEM
+ask "Enclave CPU count" "${VTA_ENCLAVE_CPU:-1}" ENCLAVE_CPU
+ask "Enclave memory (MiB)" "${VTA_ENCLAVE_MEM:-512}" ENCLAVE_MEM
 
 ROLE_ARN="arn:aws:iam::${ACCOUNT_ID}:role/${ROLE_NAME}"
 

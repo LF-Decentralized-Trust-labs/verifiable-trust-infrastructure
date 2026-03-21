@@ -109,7 +109,7 @@ if not running:
 print(running[0]['EnclaveCID'])
 " 2>/dev/null) || {
     echo "ERROR: No running enclave found. Start one first:"
-    echo "  nitro-cli run-enclave --eif-path vta.eif --cpu-count 2 --memory 1024"
+    echo "  nitro-cli run-enclave --eif-path vta.eif --cpu-count 1 --memory 512"
     exit 1
 }
 
