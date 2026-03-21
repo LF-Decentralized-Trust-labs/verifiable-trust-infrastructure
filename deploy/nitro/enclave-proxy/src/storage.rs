@@ -1,17 +1,16 @@
 //! Parent-side persistent key-value storage server.
 //!
 //! Listens on a vsock port and serves K/V operations backed by fjall on the
-//! parent EC2 instance's EBS volume. Also handles proxied file I/O for
-//! KMS ciphertexts and did.jsonl.
+//! parent EC2 instance's EBS volume.
 //!
 //! All data from the enclave is already encrypted (AES-256-GCM) before it
 //! reaches this server — the parent only stores opaque blobs.
 
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 
-use fjall::{Database, Keyspace, KeyspaceCreateOptions, PersistMode};
+use fjall::{Database, KeyspaceCreateOptions, Keyspace, PersistMode};
 use tokio::sync::RwLock;
 use tokio_vsock::{VsockAddr, VsockListener, VMADDR_CID_ANY};
 use tracing::{debug, error, info, warn};
@@ -21,15 +20,11 @@ use crate::protocol::*;
 /// Run the parent-side storage server.
 ///
 /// Opens a fjall database at `data_dir` and listens for K/V operations on
-/// the given vsock port. File operations are restricted to `files_dir`.
-pub async fn run_storage(vsock_port: u32, data_dir: PathBuf, files_dir: PathBuf) {
+/// the given vsock port.
+pub async fn run_storage(vsock_port: u32, data_dir: PathBuf) {
     // Open the fjall database on the parent's EBS volume
     if let Err(e) = std::fs::create_dir_all(&data_dir) {
         error!("[storage] failed to create data directory {}: {e}", data_dir.display());
-        return;
-    }
-    if let Err(e) = std::fs::create_dir_all(&files_dir) {
-        error!("[storage] failed to create secrets directory {}: {e}", files_dir.display());
         return;
     }
 
@@ -41,16 +36,11 @@ pub async fn run_storage(vsock_port: u32, data_dir: PathBuf, files_dir: PathBuf)
         }
     };
 
-    info!(
-        "[storage] opened database at {} (secrets: {})",
-        data_dir.display(),
-        files_dir.display()
-    );
+    info!("[storage] opened database at {}", data_dir.display());
 
     let state = Arc::new(StorageState {
         db,
         keyspaces: RwLock::new(HashMap::new()),
-        files_dir,
     });
 
     let mut listener = match VsockListener::bind(VsockAddr::new(VMADDR_CID_ANY, vsock_port)) {
@@ -85,7 +75,6 @@ pub async fn run_storage(vsock_port: u32, data_dir: PathBuf, files_dir: PathBuf)
 struct StorageState {
     db: Database,
     keyspaces: RwLock<HashMap<String, Keyspace>>,
-    files_dir: PathBuf,
 }
 
 impl StorageState {
@@ -112,40 +101,6 @@ impl StorageState {
         ks_map.insert(name.to_string(), ks.clone());
         debug!("[storage] created keyspace: {name}");
         Ok(ks)
-    }
-
-    /// Validate a file path is under the secrets directory.
-    fn validate_file_path(&self, path: &str) -> Result<PathBuf, String> {
-        let requested = Path::new(path);
-
-        // Must be absolute
-        if !requested.is_absolute() {
-            return Err(format!("file path must be absolute: {path}"));
-        }
-
-        // Canonicalize the secrets dir (resolve symlinks)
-        let base = self
-            .files_dir
-            .canonicalize()
-            .map_err(|e| format!("failed to canonicalize secrets dir: {e}"))?;
-
-        // Check the path is under the secrets dir (prevent traversal)
-        // We can't canonicalize the requested path (file may not exist yet),
-        // so check for ".." components and verify the prefix.
-        for component in requested.components() {
-            if let std::path::Component::ParentDir = component {
-                return Err(format!("path traversal not allowed: {path}"));
-            }
-        }
-
-        if !requested.starts_with(&base) {
-            return Err(format!(
-                "file path must be under {}: {path}",
-                base.display()
-            ));
-        }
-
-        Ok(requested.to_path_buf())
     }
 }
 
@@ -176,9 +131,6 @@ async fn handle_connection(
             OP_DELETE => handle_delete(state, &request[1..]).await,
             OP_PREFIX_ITER => handle_prefix_iter(state, &request[1..]).await,
             OP_PREFIX_KEYS => handle_prefix_keys(state, &request[1..]).await,
-            OP_FILE_READ => handle_file_read(state, &request[1..]).await,
-            OP_FILE_WRITE => handle_file_write(state, &request[1..]).await,
-            OP_FILE_EXISTS => handle_file_exists(state, &request[1..]).await,
             OP_PERSIST => handle_persist(state).await,
             _ => build_error(&format!("unknown opcode: {opcode:#04x}")),
         };
@@ -318,85 +270,6 @@ async fn handle_prefix_keys(state: &StorageState, data: &[u8]) -> Vec<u8> {
 
     let refs: Vec<&[u8]> = keys.iter().map(|k| k.as_slice()).collect();
     build_ok_key_list(&refs)
-}
-
-async fn handle_file_read(state: &StorageState, data: &[u8]) -> Vec<u8> {
-    let result: Result<_, String> = (|| {
-        let (path, _) = decode_bytes(data, 0)?;
-        Ok(std::str::from_utf8(path).map_err(|e| format!("invalid path: {e}"))?.to_string())
-    })();
-
-    let path_str = match result {
-        Ok(v) => v,
-        Err(e) => return build_error(&format!("invalid file_read request: {e}")),
-    };
-
-    let path = match state.validate_file_path(&path_str) {
-        Ok(p) => p,
-        Err(e) => return build_error(&e),
-    };
-
-    match std::fs::read(&path) {
-        Ok(data) => {
-            debug!("[storage] file read: {} ({} bytes)", path.display(), data.len());
-            build_ok_value(&data)
-        }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => build_not_found(),
-        Err(e) => build_error(&format!("file read failed: {e}")),
-    }
-}
-
-async fn handle_file_write(state: &StorageState, data: &[u8]) -> Vec<u8> {
-    let result: Result<_, String> = (|| {
-        let (path, offset) = decode_bytes(data, 0)?;
-        let path_str = std::str::from_utf8(path).map_err(|e| format!("invalid path: {e}"))?;
-        let (content, _) = decode_bytes(data, offset)?;
-        Ok((path_str.to_string(), content.to_vec()))
-    })();
-
-    let (path_str, content) = match result {
-        Ok(v) => v,
-        Err(e) => return build_error(&format!("invalid file_write request: {e}")),
-    };
-
-    let path = match state.validate_file_path(&path_str) {
-        Ok(p) => p,
-        Err(e) => return build_error(&e),
-    };
-
-    // Create parent directories
-    if let Some(parent) = path.parent() {
-        if let Err(e) = std::fs::create_dir_all(parent) {
-            return build_error(&format!("failed to create directory: {e}"));
-        }
-    }
-
-    match std::fs::write(&path, &content) {
-        Ok(()) => {
-            info!("[storage] file written: {} ({} bytes)", path.display(), content.len());
-            build_ok_empty()
-        }
-        Err(e) => build_error(&format!("file write failed: {e}")),
-    }
-}
-
-async fn handle_file_exists(state: &StorageState, data: &[u8]) -> Vec<u8> {
-    let result: Result<_, String> = (|| {
-        let (path, _) = decode_bytes(data, 0)?;
-        Ok(std::str::from_utf8(path).map_err(|e| format!("invalid path: {e}"))?.to_string())
-    })();
-
-    let path_str = match result {
-        Ok(v) => v,
-        Err(e) => return build_error(&format!("invalid file_exists request: {e}")),
-    };
-
-    let path = match state.validate_file_path(&path_str) {
-        Ok(p) => p,
-        Err(e) => return build_error(&e),
-    };
-
-    build_ok_bool(path.exists())
 }
 
 async fn handle_persist(state: &StorageState) -> Vec<u8> {

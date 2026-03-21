@@ -19,10 +19,7 @@ pub const OP_INSERT: u8 = 0x02;
 pub const OP_DELETE: u8 = 0x03;
 pub const OP_PREFIX_ITER: u8 = 0x04;
 pub const OP_PREFIX_KEYS: u8 = 0x05;
-pub const OP_FILE_READ: u8 = 0x06;
-pub const OP_FILE_WRITE: u8 = 0x07;
-pub const OP_FILE_EXISTS: u8 = 0x08;
-pub const OP_PERSIST: u8 = 0x09;
+pub const OP_PERSIST: u8 = 0x06;
 
 // ---------------------------------------------------------------------------
 // Response status
@@ -153,25 +150,6 @@ pub fn build_prefix_keys_request(keyspace: &str, prefix: &[u8]) -> Vec<u8> {
     let mut buf = vec![OP_PREFIX_KEYS];
     encode_keyspace(&mut buf, keyspace);
     encode_bytes(&mut buf, prefix);
-    buf
-}
-
-pub fn build_file_read_request(path: &str) -> Vec<u8> {
-    let mut buf = vec![OP_FILE_READ];
-    encode_bytes(&mut buf, path.as_bytes());
-    buf
-}
-
-pub fn build_file_write_request(path: &str, data: &[u8]) -> Vec<u8> {
-    let mut buf = vec![OP_FILE_WRITE];
-    encode_bytes(&mut buf, path.as_bytes());
-    encode_bytes(&mut buf, data);
-    buf
-}
-
-pub fn build_file_exists_request(path: &str) -> Vec<u8> {
-    let mut buf = vec![OP_FILE_EXISTS];
-    encode_bytes(&mut buf, path.as_bytes());
     buf
 }
 
@@ -429,13 +407,4 @@ mod tests {
         assert!(!decode_bool_response(&build_ok_bool(false)).unwrap());
     }
 
-    #[test]
-    fn test_file_write_request() {
-        let req = build_file_write_request("/mnt/data/test.enc", b"encrypted_data");
-        assert_eq!(req[0], OP_FILE_WRITE);
-        let (path, offset) = decode_bytes(&req, 1).unwrap();
-        assert_eq!(std::str::from_utf8(path).unwrap(), "/mnt/data/test.enc");
-        let (data, _) = decode_bytes(&req, offset).unwrap();
-        assert_eq!(data, b"encrypted_data");
-    }
 }

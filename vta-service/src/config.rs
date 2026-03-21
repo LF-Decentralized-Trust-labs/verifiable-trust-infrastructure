@@ -167,45 +167,21 @@ pub struct TeeKmsConfig {
     pub region: String,
     /// KMS key ARN used to encrypt/decrypt VTA secrets.
     pub key_arn: String,
-    /// Path to the encrypted seed ciphertext file.
-    /// Written on first boot, read on subsequent boots.
-    #[serde(default = "default_seed_ciphertext_path")]
-    pub seed_ciphertext_path: String,
-    /// Path to the encrypted JWT key ciphertext file.
-    #[serde(default = "default_jwt_ciphertext_path")]
-    pub jwt_ciphertext_path: String,
     /// Template for auto-generating a did:webvh identity on first boot.
     ///
     /// Use `{SCID}` as a placeholder for the self-certifying identifier:
     ///   `did:webvh:{SCID}:example.com:vta`
     ///
     /// On first boot, the VTA derives keys from the bootstrapped seed,
-    /// creates the DID, writes the did.jsonl log entry to `did_log_path`,
-    /// and persists the DID in the encrypted store.
+    /// creates the DID, and persists it in the encrypted store.
     ///
     /// Ignored if `vta_did` is already set in config or the store.
     #[serde(default)]
     pub vta_did_template: Option<String>,
-    /// Path to write the did.jsonl log entry on first boot.
-    /// The operator uploads this file to their WebVH server.
-    #[serde(default = "default_did_log_path")]
-    pub did_log_path: String,
 }
 
-#[cfg(feature = "tee")]
-fn default_did_log_path() -> String {
-    "/mnt/vta-data/files/did.jsonl".to_string()
-}
-
-#[cfg(feature = "tee")]
-fn default_seed_ciphertext_path() -> String {
-    "/mnt/vta-data/files/seed.enc".to_string()
-}
-
-#[cfg(feature = "tee")]
-fn default_jwt_ciphertext_path() -> String {
-    "/mnt/vta-data/files/jwt.enc".to_string()
-}
+// KMS ciphertexts (seed, JWT key, fingerprint) are stored as K/V entries
+// in the "bootstrap" keyspace — no file paths needed.
 
 #[cfg(feature = "tee")]
 fn default_attestation_cache_ttl() -> u64 {

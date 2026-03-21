@@ -24,10 +24,7 @@ const OP_INSERT: u8 = 0x02;
 const OP_DELETE: u8 = 0x03;
 const OP_PREFIX_ITER: u8 = 0x04;
 const OP_PREFIX_KEYS: u8 = 0x05;
-const OP_FILE_READ: u8 = 0x06;
-const OP_FILE_WRITE: u8 = 0x07;
-const OP_FILE_EXISTS: u8 = 0x08;
-const OP_PERSIST: u8 = 0x09;
+const OP_PERSIST: u8 = 0x06;
 
 const STATUS_OK: u8 = 0x00;
 const STATUS_NOT_FOUND: u8 = 0x01;
@@ -395,35 +392,6 @@ impl VsockKeyspaceHandle {
 }
 
 // ---------------------------------------------------------------------------
-// File I/O over vsock (for KMS ciphertexts, did.jsonl)
-// ---------------------------------------------------------------------------
-
-/// Read a file from the parent's filesystem via the storage proxy.
-pub async fn file_read(store: &VsockStore, path: &str) -> Result<Option<Vec<u8>>, AppError> {
-    let mut payload = vec![OP_FILE_READ];
-    encode_bytes(&mut payload, path.as_bytes());
-    let resp = store.send(&payload).await?;
-    decode_value(&resp)
-}
-
-/// Write a file to the parent's filesystem via the storage proxy.
-pub async fn file_write(store: &VsockStore, path: &str, data: &[u8]) -> Result<(), AppError> {
-    let mut payload = vec![OP_FILE_WRITE];
-    encode_bytes(&mut payload, path.as_bytes());
-    encode_bytes(&mut payload, data);
-    let resp = store.send(&payload).await?;
-    decode_ok(&resp)
-}
-
-/// Check if a file exists on the parent's filesystem via the storage proxy.
-pub async fn file_exists(store: &VsockStore, path: &str) -> Result<bool, AppError> {
-    let mut payload = vec![OP_FILE_EXISTS];
-    encode_bytes(&mut payload, path.as_bytes());
-    let resp = store.send(&payload).await?;
-    decode_bool(&resp)
-}
-
-// ---------------------------------------------------------------------------
 // Response decoders
 // ---------------------------------------------------------------------------
 
@@ -455,23 +423,6 @@ fn decode_value(data: &[u8]) -> Result<Option<Vec<u8>>, AppError> {
             Ok(Some(value.to_vec()))
         }
         STATUS_NOT_FOUND => Ok(None),
-        STATUS_ERROR => {
-            let (msg, _) = decode_bytes(data, 1)
-                .map_err(|e| AppError::Internal(format!("decode error: {e}")))?;
-            Err(AppError::Internal(
-                format!("storage proxy error: {}", String::from_utf8_lossy(msg)),
-            ))
-        }
-        s => Err(AppError::Internal(format!("unexpected status: {s:#04x}"))),
-    }
-}
-
-fn decode_bool(data: &[u8]) -> Result<bool, AppError> {
-    if data.len() < 2 {
-        return Err(AppError::Internal("truncated bool response".into()));
-    }
-    match data[0] {
-        STATUS_OK => Ok(data[1] != 0),
         STATUS_ERROR => {
             let (msg, _) = decode_bytes(data, 1)
                 .map_err(|e| AppError::Internal(format!("decode error: {e}")))?;

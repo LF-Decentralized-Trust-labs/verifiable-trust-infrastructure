@@ -86,15 +86,14 @@ storage_key_salt = "vta-tee-storage-v1"
 
 # ── KMS secret bootstrap ────────────────────────────────────────────────────
 # On first boot: generates seed + JWT key inside TEE, encrypts to KMS, stores
-# ciphertext on the external EBS volume at the paths below.
+# ciphertexts as K/V entries in the "bootstrap" keyspace of the persistent store.
 # On subsequent boots: decrypts from KMS with Nitro attestation verification.
+# No file paths needed — everything goes through the vsock storage proxy.
 #
 # Fill in key_arn after running setup-kms-policy.sh (Step 4c in deploy guide).
 [tee.kms]
 region = "us-east-1"
 key_arn = "REPLACE_WITH_KMS_KEY_ARN"
-seed_ciphertext_path = "/mnt/vta-data/files/seed.enc"
-jwt_ciphertext_path = "/mnt/vta-data/files/jwt.enc"
 
 # ── Automatic DID identity generation ────────────────────────────────────────
 # On first boot, the VTA can auto-generate its did:webvh identity from a
@@ -102,16 +101,16 @@ jwt_ciphertext_path = "/mnt/vta-data/files/jwt.enc"
 # cycle. The template uses {SCID} as a placeholder for the self-certifying
 # identifier that is computed during DID creation.
 #
-# The VTA derives keys from the bootstrapped seed, creates the DID, persists
-# it in the encrypted store, and writes the initial did.jsonl log entry to
-# did_log_path. Upload this file to your WebVH server after first boot.
+# The VTA derives keys from the bootstrapped seed, creates the DID, and
+# persists it in the encrypted store. The did.jsonl log entry is stored in
+# the "keys" keyspace under key "tee:did_log" — retrieve it via the API
+# or from the fjall database on the parent.
 #
 # On subsequent boots, the DID is restored from the encrypted store — the
-# template is not re-evaluated and no new did.jsonl is written.
+# template is not re-evaluated.
 #
 # Uncomment and set your domain/path:
 # vta_did_template = "did:webvh:{SCID}:example.com:vta"
-# did_log_path = "/mnt/vta-data/files/did.jsonl"
 
 [auth]
 access_token_expiry = 900

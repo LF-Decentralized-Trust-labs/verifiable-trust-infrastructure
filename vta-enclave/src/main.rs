@@ -50,26 +50,26 @@ async fn main() {
     vta_service::init_tracing(&config);
     print_banner();
 
-    // ── VsockStore (persistent storage via parent proxy) ──
+    // ── Open store (vsock-proxied or local) ──
     #[cfg(feature = "vsock-store")]
-    let vsock_store = if config.tee.kms.is_some() {
-        Some(
-            store::VsockStore::connect(None)
-                .await
-                .expect("failed to connect to vsock storage proxy"),
-        )
+    let store = if config.tee.kms.is_some() {
+        let vs = store::VsockStore::connect(None)
+            .await
+            .expect("failed to connect to vsock storage proxy");
+        store::Store::Vsock(vs)
     } else {
-        None
+        store::Store::open(&config.store).expect("failed to open store")
     };
+    #[cfg(not(feature = "vsock-store"))]
+    let store = store::Store::open(&config.store).expect("failed to open store");
 
-    // ── KMS secret bootstrap ──
+    // ── KMS secret bootstrap (uses the store for ciphertext K/V storage) ──
     let tee_bootstrap = if let Some(ref kms_config) = config.tee.kms {
         Some(
             tee::kms_bootstrap::bootstrap_secrets(
                 kms_config,
                 &config.tee.storage_key_salt,
-                #[cfg(feature = "vsock-store")]
-                vsock_store.as_ref(),
+                &store,
             )
             .await
             .expect("TEE KMS bootstrap failed"),
@@ -78,16 +78,6 @@ async fn main() {
         None
     };
 
-    // ── Open store ──
-    #[cfg(feature = "vsock-store")]
-    let store = if let Some(vs) = vsock_store {
-        store::Store::Vsock(vs)
-    } else {
-        store::Store::open(&config.store).expect("failed to open store")
-    };
-    #[cfg(not(feature = "vsock-store"))]
-    let store = store::Store::open(&config.store).expect("failed to open store");
-
     // ── Seed store ──
     let seed_store: Arc<dyn SeedStore> = if let Some(ref bootstrap) = tee_bootstrap {
         let kms_config = config.tee.kms.as_ref().unwrap();
@@ -95,7 +85,6 @@ async fn main() {
             bootstrap.seed.clone(),
             kms_config.key_arn.clone(),
             kms_config.region.clone(),
-            kms_config.seed_ciphertext_path.clone(),
         ))
     } else {
         Arc::from(
