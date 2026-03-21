@@ -10,7 +10,7 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::Mutex;
-use tracing::{debug, info, warn};
+use tracing::{info, warn};
 
 use crate::error::AppError;
 
@@ -325,7 +325,7 @@ impl VsockKeyspaceHandle {
         let new_key_bytes = new_key.into();
 
         // Check if new key exists
-        if self.get_raw(&new_key_bytes).await?.is_some() {
+        if self.get_raw(new_key_bytes.clone()).await?.is_some() {
             return Ok(false);
         }
 
@@ -508,7 +508,7 @@ fn decode_kv_list(data: &[u8]) -> Result<Vec<(Vec<u8>, Vec<u8>)>, AppError> {
         STATUS_ERROR => {
             let (msg, _) = decode_bytes(data, 1)
                 .map_err(|e| AppError::Internal(format!("decode error: {e}")))?;
-            Err(AppError::Store(String::from_utf8_lossy(msg).into_owned().into()))
+            Err(AppError::Internal(format!("storage proxy error: {}", String::from_utf8_lossy(msg))))
         }
         s => Err(AppError::Internal(format!("unexpected status: {s:#04x}"))),
     }
@@ -537,7 +537,7 @@ fn decode_key_list(data: &[u8]) -> Result<Vec<Vec<u8>>, AppError> {
         STATUS_ERROR => {
             let (msg, _) = decode_bytes(data, 1)
                 .map_err(|e| AppError::Internal(format!("decode error: {e}")))?;
-            Err(AppError::Store(String::from_utf8_lossy(msg).into_owned().into()))
+            Err(AppError::Internal(format!("storage proxy error: {}", String::from_utf8_lossy(msg))))
         }
         s => Err(AppError::Internal(format!("unexpected status: {s:#04x}"))),
     }
