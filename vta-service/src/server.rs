@@ -565,8 +565,18 @@ async fn init_auth(
         }
     };
 
-    // 1. DID resolver (local mode)
-    let did_resolver = match DIDCacheClient::new(DIDCacheConfigBuilder::default().build()).await {
+    // 1. DID resolver (network mode if resolver_url is set, local mode otherwise)
+    let resolver_config = {
+        let mut builder = DIDCacheConfigBuilder::default();
+        if let Some(ref url) = config.resolver_url {
+            info!(url = %url, "DID resolver using network mode (remote resolver)");
+            builder = builder.with_network_mode(url);
+        } else {
+            info!("DID resolver using local mode");
+        }
+        builder.build()
+    };
+    let did_resolver = match DIDCacheClient::new(resolver_config).await {
         Ok(r) => r,
         Err(e) => {
             warn!("failed to create DID resolver: {e} — auth endpoints will not work");

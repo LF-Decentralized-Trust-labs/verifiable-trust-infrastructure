@@ -462,6 +462,63 @@ pub async fn run_imds(vsock_port: u32) {
 }
 
 // ---------------------------------------------------------------------------
+// [6] Outbound: vsock → TCP (enclave DID resolver → sidecar)
+// ---------------------------------------------------------------------------
+
+/// Proxies DID resolver WebSocket connections from the enclave to the
+/// affinidi-did-resolver-cache-server sidecar running on the parent.
+///
+/// The VTA's DID resolver SDK connects via WebSocket to ws://127.0.0.1:4445.
+/// socat inside the enclave bridges that to vsock:5600. This channel bridges
+/// vsock:5600 to the local sidecar at localhost:resolver_port.
+pub async fn run_resolver(vsock_port: u32, resolver_port: u16) {
+    let semaphore = Arc::new(Semaphore::new(MAX_CONCURRENT_CONNECTIONS));
+
+    let mut listener = match VsockListener::bind(VsockAddr::new(VMADDR_CID_ANY, vsock_port)) {
+        Ok(l) => l,
+        Err(e) => {
+            error!("[resolver] failed to bind vsock:{vsock_port}: {e}");
+            return;
+        }
+    };
+    info!("[resolver] listening on vsock:{vsock_port} → localhost:{resolver_port} (DID resolver sidecar)");
+
+    loop {
+        let (vsock_stream, peer) = match listener.accept().await {
+            Ok(s) => s,
+            Err(e) => {
+                warn!("[resolver] accept error: {e}");
+                continue;
+            }
+        };
+
+        let permit = match semaphore.clone().try_acquire_owned() {
+            Ok(p) => p,
+            Err(_) => {
+                warn!("[resolver] connection limit reached, rejecting vsock peer {peer:?}");
+                drop(vsock_stream);
+                continue;
+            }
+        };
+        debug!("[resolver] connection from vsock peer {peer:?}");
+
+        tokio::spawn(async move {
+            let _permit = permit;
+            match TcpStream::connect(format!("127.0.0.1:{resolver_port}")).await {
+                Ok(tcp_stream) => {
+                    if let Err(e) = bridge(vsock_stream, tcp_stream).await {
+                        debug!("[resolver] bridge error: {e}");
+                    }
+                }
+                Err(e) => {
+                    warn!("[resolver] failed to connect to localhost:{resolver_port}: {e}");
+                }
+            }
+        });
+    }
+}
+
+// ---------------------------------------------------------------------------
 // TLS helpers
 // ---------------------------------------------------------------------------
 

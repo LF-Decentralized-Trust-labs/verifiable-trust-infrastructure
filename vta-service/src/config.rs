@@ -13,6 +13,13 @@ pub struct AppConfig {
     #[serde(alias = "community_name")]
     pub vta_name: Option<String>,
     pub public_url: Option<String>,
+    /// WebSocket URL of a remote DID resolver (network mode).
+    /// When set, the VTA uses the remote resolver instead of resolving locally.
+    /// Format: `ws://host:port/did/v1/ws`
+    /// In TEE mode, this points to the affinidi-did-resolver-cache-server
+    /// sidecar on the parent, bridged via vsock.
+    #[serde(default)]
+    pub resolver_url: Option<String>,
     #[serde(default = "default_server_config")]
     pub server: ServerConfig,
     #[serde(default)]
