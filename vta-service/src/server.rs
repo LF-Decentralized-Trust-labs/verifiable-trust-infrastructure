@@ -104,17 +104,18 @@ pub async fn run(
     let (did_resolver, secrets_resolver, jwt_keys) =
         init_auth(&config, &*seed_store, &keys_ks).await;
 
-    // In TEE required mode, authentication must be fully initialized.
-    // A VTA without working auth in a TEE would serve unauthenticated
-    // endpoints (health) while unable to authenticate any requests.
+    // In TEE required mode, warn if authentication isn't fully initialized.
+    // This happens on first boot when vta_did hasn't been configured yet.
+    // The VTA will start and serve health/attestation endpoints, but
+    // authenticated endpoints will return 401 until setup is complete.
     #[cfg(feature = "tee")]
     if config.tee.mode == crate::config::TeeMode::Required && jwt_keys.is_none() {
-        return Err(AppError::Config(
-            "TEE mode is 'required' but authentication failed to initialize. \
-             Ensure VTA setup is complete (vta_did, jwt_signing_key, seed store) \
-             before deploying in TEE required mode."
-                .into(),
-        ));
+        warn!(
+            "TEE mode is 'required' but authentication is not initialized \
+             (vta_did not configured). The VTA will start but authenticated \
+             endpoints will return 401. Complete setup by creating a DID \
+             identity and updating the config."
+        );
     }
 
     // Initialize TEE attestation subsystem
