@@ -43,6 +43,11 @@ pub struct AuthConfig {
 pub struct MessagingConfig {
     pub mediator_url: String,
     pub mediator_did: String,
+    /// Real external hostname of the mediator (e.g., "mediator.example.com").
+    /// Used by the parent proxy to establish the TLS connection.
+    /// Not used by the VTA itself (which connects via the local vsock proxy).
+    #[serde(default)]
+    pub mediator_host: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

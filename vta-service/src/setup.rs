@@ -952,6 +952,7 @@ async fn configure_messaging(
             Ok(Some(MessagingConfig {
                 mediator_url: String::new(),
                 mediator_did: did,
+                mediator_host: None,
             }))
         }
         // Create new did:webvh — needs a mediator context
@@ -993,6 +994,7 @@ async fn configure_messaging(
             Ok(Some(MessagingConfig {
                 mediator_url,
                 mediator_did,
+                mediator_host: None,
             }))
         }
         // Skip DIDComm
