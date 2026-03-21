@@ -268,6 +268,63 @@ async fn handle_connect_request(
 }
 
 // ---------------------------------------------------------------------------
+// [4] Outbound: vsock → TCP (enclave IMDS → parent 169.254.169.254)
+// ---------------------------------------------------------------------------
+
+/// Proxies IMDS (Instance Metadata Service) requests from the enclave to
+/// the parent's real IMDS endpoint at 169.254.169.254:80.
+///
+/// The AWS SDK inside the enclave fetches IAM role credentials from IMDS.
+/// Since the enclave has no network access, this proxy bridges the request
+/// through vsock to the parent, which can reach the real IMDS.
+pub async fn run_imds(vsock_port: u32) {
+    let semaphore = Arc::new(Semaphore::new(MAX_CONCURRENT_CONNECTIONS));
+
+    let mut listener = match VsockListener::bind(VsockAddr::new(VMADDR_CID_ANY, vsock_port)) {
+        Ok(l) => l,
+        Err(e) => {
+            error!("[imds] failed to bind vsock:{vsock_port}: {e}");
+            return;
+        }
+    };
+    info!("[imds] listening on vsock:{vsock_port} → 169.254.169.254:80");
+
+    loop {
+        let (vsock_stream, peer) = match listener.accept().await {
+            Ok(s) => s,
+            Err(e) => {
+                warn!("[imds] accept error: {e}");
+                continue;
+            }
+        };
+
+        let permit = match semaphore.clone().try_acquire_owned() {
+            Ok(p) => p,
+            Err(_) => {
+                warn!("[imds] connection limit reached, rejecting vsock peer {peer:?}");
+                drop(vsock_stream);
+                continue;
+            }
+        };
+        debug!("[imds] connection from vsock peer {peer:?}");
+
+        tokio::spawn(async move {
+            let _permit = permit;
+            match TcpStream::connect("169.254.169.254:80").await {
+                Ok(tcp_stream) => {
+                    if let Err(e) = bridge(vsock_stream, tcp_stream).await {
+                        debug!("[imds] bridge error: {e}");
+                    }
+                }
+                Err(e) => {
+                    warn!("[imds] failed to connect to 169.254.169.254:80: {e}");
+                }
+            }
+        });
+    }
+}
+
+// ---------------------------------------------------------------------------
 // TLS helpers
 // ---------------------------------------------------------------------------
 

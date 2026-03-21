@@ -57,7 +57,7 @@ storage, and signed enclave images.
 │  │           /dev/nsm for attestation reports                   │   │
 │  └──────────────────────────────────────────────────────────────┘   │
 │                                                                     │
-│  vsock proxies: inbound(:5100) mediator(:5200) HTTPS(:5300)        │
+│  vsock proxies: inbound(:5100) mediator(:5200) HTTPS(:5300) IMDS(:5400) │
 └────────────┬──────────────┬──────────────┬──────────────────────────┘
              │ vsock        │ vsock        │ vsock
 ┌────────────▼──────────────▼──────────────▼──────────────────────────┐
@@ -571,6 +571,7 @@ The proxy starts three channels:
 | Inbound REST | `TCP:8443 → vsock:5100 → Enclave :8100` | External clients access VTA API |
 | Outbound DIDComm | `Enclave → vsock:5200 → TLS → mediator` | VTA DIDComm messaging |
 | Outbound HTTPS | `Enclave → vsock:5300 → allowlisted hosts` | DID resolution, KMS, WebVH |
+| Outbound IMDS | `Enclave → vsock:5400 → 169.254.169.254:80` | AWS IAM credentials |
 
 The HTTPS channel implements an **HTTP CONNECT proxy** with an allowlist.
 Inside the enclave, `HTTPS_PROXY=http://127.0.0.1:4444` routes all HTTPS
@@ -919,7 +920,8 @@ jobs:
 |-----------|-----------|---------|
 | 5100 | Parent → Enclave | Inbound REST API |
 | 5200 | Enclave → Parent | Outbound DIDComm (mediator WebSocket) |
-| 5300 | Enclave → Parent | Outbound HTTPS (DID resolution) |
+| 5300 | Enclave → Parent | Outbound HTTPS (DID resolution, KMS) |
+| 5400 | Enclave → Parent | Outbound IMDS (AWS IAM credentials) |
 
 ## Files
 
