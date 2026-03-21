@@ -43,7 +43,7 @@ LOCAL_MEDIATOR_PORT="${LOCAL_MEDIATOR_PORT:-4443}"     # VTA connects here for m
 LOCAL_HTTPS_PORT="${LOCAL_HTTPS_PORT:-4444}"            # VTA connects here for HTTPS
 
 echo "=== VTA Nitro Enclave ==="
-echo "VTA version:  $(vta --version 2>/dev/null || echo unknown)"
+echo "VTA version:  $(vta-enclave --version 2>/dev/null || echo unknown)"
 echo "NSM device:   $(ls -la /dev/nsm 2>/dev/null || echo 'NOT FOUND')"
 echo "Parent CID:   ${PARENT_CID}"
 echo ""
@@ -200,4 +200,4 @@ echo ""
 echo "Starting VTA on 127.0.0.1:${VTA_PORT} (TEE mode: required)"
 echo ""
 
-exec vta --config "$CONFIG_PATH"
+exec vta-enclave --config "$CONFIG_PATH"
