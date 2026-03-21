@@ -30,6 +30,15 @@ use tower_http::trace::{DefaultMakeSpan, DefaultOnRequest, DefaultOnResponse, Tr
 use tracing::Level;
 use tracing::{debug, error, info, warn};
 
+/// TEE context passed by the caller (main.rs or vta-enclave).
+/// None when running outside a TEE.
+#[cfg(feature = "tee")]
+#[derive(Clone)]
+pub struct TeeContext {
+    pub state: crate::tee::TeeState,
+    pub mnemonic_guard: Option<Arc<crate::tee::mnemonic_guard::MnemonicExportGuard>>,
+}
+
 #[derive(Clone)]
 pub struct AppState {
     pub keys_ks: KeyspaceHandle,
@@ -47,9 +56,7 @@ pub struct AppState {
     pub didcomm_bridge: Arc<OnceLock<DIDCommBridge>>,
     pub jwt_keys: Option<Arc<JwtKeys>>,
     #[cfg(feature = "tee")]
-    pub tee_state: Option<crate::tee::TeeState>,
-    #[cfg(feature = "tee")]
-    pub mnemonic_guard: Option<Arc<crate::tee::mnemonic_guard::MnemonicExportGuard>>,
+    pub tee: Option<TeeContext>,
 }
 
 impl AuthState for AppState {
@@ -66,7 +73,7 @@ pub async fn run(
     store: Store,
     seed_store: Arc<dyn SeedStore>,
     storage_encryption_key: Option<[u8; 32]>,
-    #[cfg(feature = "tee")] mnemonic_guard: Option<Arc<crate::tee::mnemonic_guard::MnemonicExportGuard>>,
+    #[cfg(feature = "tee")] tee_context: Option<TeeContext>,
 ) -> Result<(), AppError> {
     // Determine which services will actually start (feature flag AND config)
     let rest_enabled = cfg!(feature = "rest") && config.services.rest;
@@ -105,9 +112,6 @@ pub async fn run(
         init_auth(&config, &*seed_store, &keys_ks).await;
 
     // In TEE required mode, warn if authentication isn't fully initialized.
-    // This happens on first boot when vta_did hasn't been configured yet.
-    // The VTA will start and serve health/attestation endpoints, but
-    // authenticated endpoints will return 401 until setup is complete.
     #[cfg(feature = "tee")]
     if config.tee.mode == crate::config::TeeMode::Required && jwt_keys.is_none() {
         warn!(
@@ -117,10 +121,6 @@ pub async fn run(
              identity and updating the config."
         );
     }
-
-    // Initialize TEE attestation subsystem
-    #[cfg(feature = "tee")]
-    let tee_state = crate::tee::init_tee(&config.tee)?;
 
     // Bind TCP listener only if REST is enabled
     #[cfg(feature = "rest")]
@@ -172,7 +172,7 @@ pub async fn run(
             did_resolver: did_resolver.clone(),
             didcomm_bridge: didcomm_bridge.clone(),
             #[cfg(feature = "tee")]
-            tee_state: tee_state.clone(),
+            tee_state: tee_context.as_ref().map(|tc| tc.state.clone()),
         })
     } else {
         None
@@ -198,9 +198,7 @@ pub async fn run(
             didcomm_bridge: didcomm_bridge.clone(),
             jwt_keys,
             #[cfg(feature = "tee")]
-            tee_state,
-            #[cfg(feature = "tee")]
-            mnemonic_guard: mnemonic_guard.clone(),
+            tee: tee_context.clone(),
         };
         let mut rest_shutdown_rx = shutdown_rx.clone();
         Some(

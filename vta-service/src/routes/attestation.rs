@@ -10,7 +10,7 @@ use crate::tee::types::{AttestationRequest, AttestationResponse, TeeStatus};
 
 /// GET /attestation/status — TEE detection status (unauthenticated).
 pub async fn status(State(state): State<AppState>) -> Result<Json<TeeStatus>, AppError> {
-    let tee_state = state.tee_state.as_ref().ok_or_else(|| {
+    let tee_state = state.tee.as_ref().map(|tc| &tc.state).ok_or_else(|| {
         tee_attestation_error("TEE attestation is not enabled on this VTA")
     })?;
 
@@ -22,7 +22,7 @@ pub async fn generate_report(
     State(state): State<AppState>,
     Json(body): Json<AttestationRequest>,
 ) -> Result<Json<AttestationResponse>, AppError> {
-    let tee_state = state.tee_state.as_ref().ok_or_else(|| {
+    let tee_state = state.tee.as_ref().map(|tc| &tc.state).ok_or_else(|| {
         tee_attestation_error("TEE attestation is not enabled on this VTA")
     })?;
 
@@ -37,7 +37,7 @@ pub async fn generate_report(
 pub async fn cached_report(
     State(state): State<AppState>,
 ) -> Result<Json<AttestationResponse>, AppError> {
-    let tee_state = state.tee_state.as_ref().ok_or_else(|| {
+    let tee_state = state.tee.as_ref().map(|tc| &tc.state).ok_or_else(|| {
         tee_attestation_error("TEE attestation is not enabled on this VTA")
     })?;
 
@@ -51,7 +51,7 @@ pub async fn mnemonic_status(
     _auth: SuperAdminAuth,
     State(state): State<AppState>,
 ) -> Result<Json<MnemonicExportStatus>, AppError> {
-    let guard = state.mnemonic_guard.as_ref().ok_or_else(|| {
+    let guard = state.tee.as_ref().and_then(|tc| tc.mnemonic_guard.as_ref()).ok_or_else(|| {
         tee_attestation_error("mnemonic export not available (TEE mode not active or no KMS bootstrap)")
     })?;
 
@@ -69,7 +69,7 @@ pub async fn mnemonic_export(
     _auth: SuperAdminAuth,
     State(state): State<AppState>,
 ) -> Result<Json<MnemonicExportResponse>, AppError> {
-    let guard = state.mnemonic_guard.as_ref().ok_or_else(|| {
+    let guard = state.tee.as_ref().and_then(|tc| tc.mnemonic_guard.as_ref()).ok_or_else(|| {
         tee_attestation_error("mnemonic export not available (TEE mode not active or no KMS bootstrap)")
     })?;
 
