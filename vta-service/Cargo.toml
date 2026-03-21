@@ -31,6 +31,7 @@ tee = [
   "dep:aws-sdk-kms",
   "dep:aws-config",
   "dep:rsa",
+  "dep:didwebvh-rs",
 ]
 
 [[bin]]

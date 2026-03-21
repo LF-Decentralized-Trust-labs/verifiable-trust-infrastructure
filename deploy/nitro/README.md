@@ -683,8 +683,52 @@ On first boot, the VTA:
 4. Derives seed from entropy
 5. Encrypts seed + JWT key with KMS → stores ciphertext on external EBS
 6. Derives AES-256 storage key from seed
-7. Creates default context, VTA identity DID, admin ACL
+7. If `vta_did_template` is configured: auto-generates the VTA's did:webvh
+   identity and writes `did.jsonl` to disk (see below)
 8. Starts serving
+
+### Automatic DID identity generation
+
+To avoid a manual DID creation / config update / EIF rebuild cycle, set
+`vta_did_template` in `config.toml` before baking the EIF:
+
+```toml
+[tee.kms]
+vta_did_template = "did:webvh:{SCID}:example.com:vta"
+did_log_path = "/mnt/vta-data/secrets/did.jsonl"
+```
+
+On first boot, the VTA:
+1. Derives signing and key-agreement keys from the bootstrapped seed
+2. Creates a did:webvh DID using the template (replacing `{SCID}` with the real value)
+3. Persists the DID in the encrypted store (restored automatically on subsequent boots)
+4. Writes the initial `did.jsonl` log entry to `did_log_path`
+
+After the enclave starts, copy `did.jsonl` from the parent EC2 instance and
+upload it to your WebVH server:
+
+```bash
+# On the parent EC2 instance:
+cat /mnt/vta-data/secrets/did.jsonl
+
+# Upload to your WebVH server at the matching path:
+# e.g., https://example.com/vta/did.jsonl
+curl -X POST https://webvh-server.example.com/api/publish \
+    -H 'Content-Type: application/json' \
+    -d @/mnt/vta-data/secrets/did.jsonl
+```
+
+**No EIF rebuild is needed.** The template is stable across boots — the actual
+DID (with real SCID) is generated once on first boot and persisted in the
+encrypted store. Subsequent boots restore it directly.
+
+The template format follows the did:webvh spec. Examples:
+
+| Template | Resulting URL |
+|----------|--------------|
+| `did:webvh:{SCID}:example.com:vta` | `https://example.com/vta` |
+| `did:webvh:{SCID}:example.com:org:agents:vta-1` | `https://example.com/org/agents/vta-1` |
+| `did:webvh:{SCID}:example.com%3A8080:vta` | `https://example.com:8080/vta` |
 
 > **Note on ciphertext deletion:** If an attacker deletes the ciphertext files,
 > the next boot will generate a new identity. This is a denial-of-service (the old

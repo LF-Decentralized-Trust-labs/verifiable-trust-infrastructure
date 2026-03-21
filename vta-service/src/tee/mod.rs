@@ -1,3 +1,4 @@
+pub mod did_autogen;
 mod detect;
 pub mod kms_bootstrap;
 pub mod mnemonic_guard;
