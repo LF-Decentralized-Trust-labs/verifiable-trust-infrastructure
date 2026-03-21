@@ -76,6 +76,56 @@ impl AuthState for AppState {
     }
 }
 
+/// Build the shared application state from config, store, and TEE context.
+///
+/// Use this to construct `AppState` without the full thread orchestration
+/// of `run()`. Useful for non-axum front-ends (e.g., Lambda handlers)
+/// that need the state but manage their own request loop.
+pub async fn build_app_state(
+    config: AppConfig,
+    store: &Store,
+    seed_store: Arc<dyn SeedStore>,
+    storage_encryption_key: Option<[u8; 32]>,
+    tee_context: Option<TeeContext>,
+) -> Result<AppState, AppError> {
+    let apply_encryption = |ks: KeyspaceHandle| -> KeyspaceHandle {
+        if let Some(key) = storage_encryption_key {
+            ks.with_encryption(key)
+        } else {
+            ks
+        }
+    };
+
+    let keys_ks = apply_encryption(store.keyspace("keys")?);
+    let sessions_ks = apply_encryption(store.keyspace("sessions")?);
+    let acl_ks = apply_encryption(store.keyspace("acl")?);
+    let contexts_ks = apply_encryption(store.keyspace("contexts")?);
+    let audit_ks = apply_encryption(store.keyspace("audit")?);
+    #[cfg(feature = "webvh")]
+    let webvh_ks = apply_encryption(store.keyspace("webvh")?);
+
+    let (did_resolver, secrets_resolver, jwt_keys) =
+        init_auth(&config, &*seed_store, &keys_ks).await;
+
+    Ok(AppState {
+        keys_ks,
+        sessions_ks,
+        acl_ks,
+        contexts_ks,
+        audit_ks,
+        #[cfg(feature = "webvh")]
+        webvh_ks,
+        config: Arc::new(RwLock::new(config)),
+        seed_store,
+        did_resolver,
+        secrets_resolver,
+        #[cfg(feature = "didcomm")]
+        didcomm_bridge: Arc::new(OnceLock::new()),
+        jwt_keys,
+        tee: tee_context,
+    })
+}
+
 pub async fn run(
     config: AppConfig,
     store: Store,
@@ -95,8 +145,7 @@ pub async fn run(
         ));
     }
 
-    // Open cached keyspace handles.
-    // In TEE mode with a storage key, all values are AES-256-GCM encrypted.
+    // Open cached keyspace handles with optional encryption.
     let apply_encryption = |ks: KeyspaceHandle| -> KeyspaceHandle {
         match storage_encryption_key {
             Some(key) => {
@@ -119,14 +168,13 @@ pub async fn run(
     let (did_resolver, secrets_resolver, jwt_keys) =
         init_auth(&config, &*seed_store, &keys_ks).await;
 
-    // In TEE required mode, warn if authentication isn't fully initialized.
+    // In TEE required mode, warn if auth isn't initialized.
     #[cfg(feature = "tee")]
     if config.tee.mode == crate::config::TeeMode::Required && jwt_keys.is_none() {
         warn!(
             "TEE mode is 'required' but authentication is not initialized \
              (vta_did not configured). The VTA will start but authenticated \
-             endpoints will return 401. Complete setup by creating a DID \
-             identity and updating the config."
+             endpoints will return 401."
         );
     }
 
@@ -180,9 +228,7 @@ pub async fn run(
             did_resolver: did_resolver.clone(),
             didcomm_bridge: didcomm_bridge.clone(),
             #[cfg(feature = "tee")]
-            tee_state: tee_context.as_ref().map(|tc| tc.state.clone()),
-            #[cfg(not(feature = "tee"))]
-            tee_state: None,
+            tee_state: tee_context.as_ref().and_then(|tc| Some(tc.state.clone())),
         })
     } else {
         None
