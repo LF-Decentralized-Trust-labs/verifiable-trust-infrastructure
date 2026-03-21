@@ -332,9 +332,13 @@ async fn handle_connect_request(
     if parts.len() < 2 || parts[0] != "CONNECT" {
         // SECURITY: Only CONNECT requests are allowed. Reject anything else
         // to prevent request smuggling through the proxy.
+        let method = parts.first().unwrap_or(&"<empty>");
+        let target = parts.get(1).unwrap_or(&"<none>");
         warn!(
-            "[https] rejected non-CONNECT request: {}",
-            parts.first().unwrap_or(&"<empty>")
+            "[https] rejected non-CONNECT request: {method} {target} — \
+             only CONNECT tunnels are supported. If this is from the \
+             AWS SDK (IMDS/KMS), check that HTTPS_PROXY is set correctly \
+             and NO_PROXY includes 169.254.169.254"
         );
         drop(buf_reader);
         stream
@@ -365,7 +369,17 @@ async fn handle_connect_request(
         .any(|(h, p)| h == &host && *p == port);
 
     if !allowed {
-        warn!("[https] CONNECT to {host}:{port} BLOCKED (not in allowlist)");
+        let allowed_hosts: Vec<String> = allowlist
+            .iter()
+            .map(|(h, p)| format!("{h}:{p}"))
+            .collect();
+        warn!(
+            "[https] CONNECT to {host}:{port} BLOCKED — not in allowlist. \
+             This request came from inside the enclave (via HTTPS_PROXY). \
+             To allow this host, add it to the proxy allowlist: \
+             ./enclave-proxy {host}:{port}\n\
+             Current allowlist: {allowed_hosts:?}"
+        );
         drop(buf_reader);
         stream
             .write_all(b"HTTP/1.1 403 Forbidden\r\n\r\n")
@@ -373,7 +387,7 @@ async fn handle_connect_request(
         return Ok(());
     }
 
-    debug!("[https] CONNECT to {host}:{port} (allowed)");
+    info!("[https] CONNECT to {host}:{port} (allowed)");
 
     // Establish TCP connection to the target
     let tcp_stream = TcpStream::connect(format!("{host}:{port}")).await?;
