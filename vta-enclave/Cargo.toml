@@ -1,0 +1,31 @@
+[package]
+name = "vta-enclave"
+description = "VTA binary for AWS Nitro Enclaves (TEE mode)"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "vta"
+path = "src/main.rs"
+
+[features]
+default = ["rest", "didcomm"]
+rest = ["vta-service/rest"]
+didcomm = ["vta-service/didcomm"]
+webvh = ["vta-service/webvh"]
+vsock-store = ["vta-service/vsock-store"]
+
+[dependencies]
+vta-service = { path = "../vta-service", default-features = false, features = ["tee"] }
+vti-common = { path = "../vti-common", features = ["encryption"] }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+clap = { workspace = true }
+base64 = { workspace = true }
+serde_json = { workspace = true }

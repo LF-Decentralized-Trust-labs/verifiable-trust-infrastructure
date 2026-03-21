@@ -6,6 +6,7 @@ members = [
   "vta-cli-common",
   "vta-sdk",
   "vta-service",
+  "vta-enclave",
   "vtc-service",
   "vti-common",
 ]
