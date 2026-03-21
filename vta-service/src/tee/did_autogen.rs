@@ -160,21 +160,19 @@ pub async fn maybe_generate_vta_did(
         .insert_raw(VTA_DID_STORE_KEY, final_did.as_bytes().to_vec())
         .await?;
 
-    // Flush the store to ensure durability before writing did.jsonl
-    store.persist().await?;
+    // Store did.jsonl as a K/V entry for retrieval
+    keys_ks
+        .insert_raw("tee:did_log", log_content.as_bytes().to_vec())
+        .await?;
 
-    // Write did.jsonl to persistent storage for the operator
-    let log_path = &kms_config.did_log_path;
-    store.write_file(log_path, log_content.as_bytes()).await.map_err(|e| {
-        AppError::Internal(format!("failed to write did.jsonl: {e}"))
-    })?;
+    // Flush the store to ensure durability
+    store.persist().await?;
 
     info!(
         did = %final_did,
         scid = %scid,
-        log_path = %log_path,
-        "VTA did:webvh identity auto-generated — upload {} to your WebVH server",
-        log_path
+        "VTA did:webvh identity auto-generated — retrieve did.jsonl via: \
+         GET /attestation/did-log or from the bootstrap keyspace key 'tee:did_log'"
     );
 
     config.vta_did = Some(final_did);

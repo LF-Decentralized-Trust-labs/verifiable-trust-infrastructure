@@ -86,47 +86,6 @@ impl Store {
         }
     }
 
-    /// Read a file from persistent storage.
-    /// In vsock mode, reads from the parent's EBS via the storage proxy.
-    /// In local mode, reads from the local filesystem.
-    pub async fn read_file(&self, path: &str) -> Result<Option<Vec<u8>>, AppError> {
-        match self {
-            Store::Local(_) => {
-                match std::fs::read(path) {
-                    Ok(data) => Ok(Some(data)),
-                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-                    Err(e) => Err(AppError::Io(e)),
-                }
-            }
-            #[cfg(feature = "vsock-store")]
-            Store::Vsock(s) => vsock::file_read(s, path).await,
-        }
-    }
-
-    /// Write a file to persistent storage.
-    /// In vsock mode, writes to the parent's EBS via the storage proxy.
-    /// In local mode, writes to the local filesystem (creating dirs as needed).
-    pub async fn write_file(&self, path: &str, data: &[u8]) -> Result<(), AppError> {
-        match self {
-            Store::Local(_) => {
-                if let Some(parent) = std::path::Path::new(path).parent() {
-                    std::fs::create_dir_all(parent).map_err(AppError::Io)?;
-                }
-                std::fs::write(path, data).map_err(AppError::Io)
-            }
-            #[cfg(feature = "vsock-store")]
-            Store::Vsock(s) => vsock::file_write(s, path, data).await,
-        }
-    }
-
-    /// Check if a file exists on persistent storage.
-    pub async fn file_exists(&self, path: &str) -> Result<bool, AppError> {
-        match self {
-            Store::Local(_) => Ok(std::path::Path::new(path).exists()),
-            #[cfg(feature = "vsock-store")]
-            Store::Vsock(s) => vsock::file_exists(s, path).await,
-        }
-    }
 }
 
 // ===========================================================================

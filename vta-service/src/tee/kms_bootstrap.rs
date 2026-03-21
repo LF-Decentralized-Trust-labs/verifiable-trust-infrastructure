@@ -50,38 +50,33 @@ impl Drop for BootstrappedSecrets {
     }
 }
 
-/// JWT key fingerprint file name (stored alongside ciphertexts).
-const JWT_FINGERPRINT_FILE: &str = "jwt.fingerprint";
 
 /// Bootstrap secrets from KMS.
 ///
 /// - If ciphertext files exist: decrypt via KMS, verify JWT fingerprint (subsequent boot)
 /// - If no ciphertext files: generate new secrets, encrypt with KMS, store ciphertext + fingerprint (first boot)
+/// Well-known keys in the bootstrap keyspace (no encryption — data is KMS-encrypted).
+const BOOTSTRAP_SEED_CT_KEY: &str = "bootstrap:seed_ciphertext";
+const BOOTSTRAP_JWT_CT_KEY: &str = "bootstrap:jwt_ciphertext";
+const BOOTSTRAP_JWT_FINGERPRINT_KEY: &str = "bootstrap:jwt_fingerprint";
+
 pub async fn bootstrap_secrets(
     kms_config: &TeeKmsConfig,
     storage_key_salt: &str,
-    #[cfg(feature = "vsock-store")]
-    vsock_store: Option<&crate::store::VsockStore>,
+    store: &crate::store::Store,
 ) -> Result<BootstrappedSecrets, AppError> {
-    let seed_ct_path = &kms_config.seed_ciphertext_path;
-    let jwt_ct_path = &kms_config.jwt_ciphertext_path;
+    // Bootstrap keyspace — no encryption (ciphertexts are already KMS-encrypted)
+    let bs_ks = store.keyspace("bootstrap")?;
 
     let seed: Vec<u8>;
     let jwt_key: [u8; 32];
 
-    let seed_exists = pfs_exists(seed_ct_path, #[cfg(feature = "vsock-store")] vsock_store).await?;
-    let jwt_exists = pfs_exists(jwt_ct_path, #[cfg(feature = "vsock-store")] vsock_store).await?;
+    let seed_ct = bs_ks.get_raw(BOOTSTRAP_SEED_CT_KEY).await?;
+    let jwt_ct = bs_ks.get_raw(BOOTSTRAP_JWT_CT_KEY).await?;
 
-    if seed_exists && jwt_exists {
+    if let (Some(seed_ciphertext), Some(jwt_ciphertext)) = (seed_ct, jwt_ct) {
         // ── Subsequent boot: decrypt existing ciphertexts ──
-        info!("found existing secret ciphertexts — decrypting via KMS");
-
-        let seed_ciphertext = pfs_read(seed_ct_path, #[cfg(feature = "vsock-store")] vsock_store)
-            .await?
-            .ok_or_else(|| tee_attestation_error("seed ciphertext file missing"))?;
-        let jwt_ciphertext = pfs_read(jwt_ct_path, #[cfg(feature = "vsock-store")] vsock_store)
-            .await?
-            .ok_or_else(|| tee_attestation_error("JWT ciphertext file missing"))?;
+        info!("found existing secret ciphertexts in store — decrypting via KMS");
 
         seed = kms_decrypt(kms_config, &seed_ciphertext).await?;
         let jwt_bytes = kms_decrypt(kms_config, &jwt_ciphertext).await?;
@@ -90,14 +85,13 @@ pub async fn bootstrap_secrets(
         })?;
 
         // Verify JWT key fingerprint (tamper detection)
-        verify_jwt_fingerprint(kms_config, #[cfg(feature = "vsock-store")] vsock_store, &jwt_key).await?;
+        verify_jwt_fingerprint(&bs_ks, &jwt_key).await?;
 
         info!("secrets decrypted from KMS — subsequent boot");
     } else {
         // ── First boot: generate new secrets inside the TEE ──
         info!("no existing ciphertexts found — first boot, generating new secrets in TEE");
 
-        // Generate BIP-39 entropy using platform random (NSM-backed in Nitro).
         let mut entropy = [0u8; 32];
         rand::fill(&mut entropy);
         let mnemonic = bip39::Mnemonic::from_entropy(&entropy)
@@ -107,23 +101,22 @@ pub async fn bootstrap_secrets(
         info!("to export the mnemonic, restart with VTA_MNEMONIC_EXPORT_WINDOW=<seconds>");
 
         seed = mnemonic.to_seed("").to_vec();
-        // BIP-39 to_seed returns 64 bytes; we use the first 32 for BIP-32 compatibility
         let seed = seed[..32].to_vec();
 
-        // Generate random JWT signing key
         let mut jwt_key_bytes = [0u8; 32];
         rand::fill(&mut jwt_key_bytes);
         jwt_key = jwt_key_bytes;
 
-        // Encrypt and store ciphertexts
+        // Encrypt with KMS and store ciphertexts in the bootstrap keyspace
         let seed_ciphertext = kms_encrypt(kms_config, &seed).await?;
         let jwt_ciphertext = kms_encrypt(kms_config, &jwt_key).await?;
 
-        pfs_write(seed_ct_path, &seed_ciphertext, #[cfg(feature = "vsock-store")] vsock_store).await?;
-        pfs_write(jwt_ct_path, &jwt_ciphertext, #[cfg(feature = "vsock-store")] vsock_store).await?;
+        bs_ks.insert_raw(BOOTSTRAP_SEED_CT_KEY, seed_ciphertext).await?;
+        bs_ks.insert_raw(BOOTSTRAP_JWT_CT_KEY, jwt_ciphertext).await?;
+        store_jwt_fingerprint(&bs_ks, &jwt_key).await?;
 
-        // Store JWT key fingerprint for tamper detection on subsequent boots
-        store_jwt_fingerprint(kms_config, #[cfg(feature = "vsock-store")] vsock_store, &jwt_key).await?;
+        // Flush to ensure ciphertexts survive if the enclave crashes during startup
+        store.persist().await?;
 
         info!("secrets generated and encrypted to KMS — ciphertexts stored");
 
@@ -158,96 +151,33 @@ fn jwt_fingerprint(key: &[u8; 32]) -> String {
 }
 
 // ---------------------------------------------------------------------------
-// Proxied file system helpers (vsock or local, depending on feature)
-// ---------------------------------------------------------------------------
-
-/// Check if a file exists, using vsock proxy when available.
-async fn pfs_exists(
-    path: &str,
-    #[cfg(feature = "vsock-store")]
-    vsock_store: Option<&crate::store::VsockStore>,
-) -> Result<bool, AppError> {
-    #[cfg(feature = "vsock-store")]
-    if let Some(store) = vsock_store {
-        return crate::store::file_exists(store, path).await;
-    }
-    Ok(std::path::Path::new(path).exists())
-}
-
-/// Read a file, using vsock proxy when available.
-async fn pfs_read(
-    path: &str,
-    #[cfg(feature = "vsock-store")]
-    vsock_store: Option<&crate::store::VsockStore>,
-) -> Result<Option<Vec<u8>>, AppError> {
-    #[cfg(feature = "vsock-store")]
-    if let Some(store) = vsock_store {
-        return crate::store::file_read(store, path).await;
-    }
-    match std::fs::read(path) {
-        Ok(data) => Ok(Some(data)),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(e) => Err(tee_attestation_error(format!("failed to read {path}: {e}"))),
-    }
-}
-
-/// Write a file, using vsock proxy when available.
-async fn pfs_write(
-    path: &str,
-    data: &[u8],
-    #[cfg(feature = "vsock-store")]
-    vsock_store: Option<&crate::store::VsockStore>,
-) -> Result<(), AppError> {
-    #[cfg(feature = "vsock-store")]
-    if let Some(store) = vsock_store {
-        return crate::store::file_write(store, path, data).await;
-    }
-    // Local filesystem: create parent directories
-    if let Some(parent) = std::path::Path::new(path).parent() {
-        std::fs::create_dir_all(parent).map_err(|e| {
-            tee_attestation_error(format!("failed to create directory for {path}: {e}"))
-        })?;
-    }
-    std::fs::write(path, data).map_err(|e| {
-        tee_attestation_error(format!("failed to write {path}: {e}"))
-    })
-}
-
-// ---------------------------------------------------------------------------
 // JWT key fingerprint (tamper detection)
 // ---------------------------------------------------------------------------
 
-/// Store the JWT key fingerprint alongside the ciphertexts.
+/// Store the JWT key fingerprint in the bootstrap keyspace.
 async fn store_jwt_fingerprint(
-    config: &TeeKmsConfig,
-    #[cfg(feature = "vsock-store")]
-    vsock_store: Option<&crate::store::VsockStore>,
+    bs_ks: &crate::store::KeyspaceHandle,
     key: &[u8; 32],
 ) -> Result<(), AppError> {
     let fingerprint = jwt_fingerprint(key);
-    let path = fingerprint_path(config);
-    pfs_write(&path, fingerprint.as_bytes(), #[cfg(feature = "vsock-store")] vsock_store).await?;
+    bs_ks.insert_raw(BOOTSTRAP_JWT_FINGERPRINT_KEY, fingerprint.as_bytes().to_vec()).await?;
     debug!(fingerprint = %fingerprint, "JWT key fingerprint stored");
     Ok(())
 }
 
 /// Verify the JWT key matches the stored fingerprint.
 async fn verify_jwt_fingerprint(
-    config: &TeeKmsConfig,
-    #[cfg(feature = "vsock-store")]
-    vsock_store: Option<&crate::store::VsockStore>,
+    bs_ks: &crate::store::KeyspaceHandle,
     key: &[u8; 32],
 ) -> Result<(), AppError> {
-    let path = fingerprint_path(config);
-    let exists = pfs_exists(&path, #[cfg(feature = "vsock-store")] vsock_store).await?;
-    if !exists {
-        warn!("no JWT fingerprint file found — storing one now (first boot after upgrade)");
-        return store_jwt_fingerprint(config, #[cfg(feature = "vsock-store")] vsock_store, key).await;
-    }
+    let stored_bytes = match bs_ks.get_raw(BOOTSTRAP_JWT_FINGERPRINT_KEY).await? {
+        Some(bytes) => bytes,
+        None => {
+            warn!("no JWT fingerprint found — storing one now (first boot after upgrade)");
+            return store_jwt_fingerprint(bs_ks, key).await;
+        }
+    };
 
-    let stored_bytes = pfs_read(&path, #[cfg(feature = "vsock-store")] vsock_store)
-        .await?
-        .ok_or_else(|| tee_attestation_error("JWT fingerprint file disappeared"))?;
     let stored = String::from_utf8_lossy(&stored_bytes);
     let computed = jwt_fingerprint(key);
 
@@ -259,21 +189,14 @@ async fn verify_jwt_fingerprint(
         );
         return Err(tee_attestation_error(
             "JWT key fingerprint mismatch — the decrypted JWT key does not match the key \
-             used on first boot. This could indicate tampering with the ciphertext files \
+             used on first boot. This could indicate tampering with the ciphertext \
              or a KMS key change. If this is intentional (e.g., disaster recovery), \
-             delete the jwt.fingerprint file and restart.",
+             clear the bootstrap keyspace and restart.",
         ));
     }
 
     debug!(fingerprint = %computed, "JWT key fingerprint verified");
     Ok(())
-}
-
-fn fingerprint_path(config: &TeeKmsConfig) -> String {
-    let parent = std::path::Path::new(&config.jwt_ciphertext_path)
-        .parent()
-        .unwrap_or(std::path::Path::new("/mnt/vta-data/files"));
-    parent.join(JWT_FINGERPRINT_FILE).to_string_lossy().into_owned()
 }
 
 // ---------------------------------------------------------------------------
