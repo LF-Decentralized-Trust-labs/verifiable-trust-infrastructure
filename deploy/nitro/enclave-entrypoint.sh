@@ -108,12 +108,12 @@ socat TCP-LISTEN:80,reuseaddr,fork,bind=169.254.169.254 \
     VSOCK-CONNECT:${PARENT_CID}:${VSOCK_IMDS_PORT} &
 IMDS_PID=$!
 
-# Set proxy environment variables so HTTP clients route through the proxy.
-# This enables DID resolution (did:web, did:webvh) and WebVH server access
-# from inside the enclave.
+# Set HTTPS_PROXY so that reqwest/hyper route HTTPS traffic (KMS, DID
+# resolution, WebVH) through the CONNECT proxy.
+# Do NOT set HTTP_PROXY — plain HTTP traffic (especially IMDS at
+# 169.254.169.254:80 for AWS credentials) must go directly through the
+# dedicated socat bridges, not through the CONNECT proxy.
 export HTTPS_PROXY="http://127.0.0.1:${LOCAL_HTTPS_PORT}"
-export HTTP_PROXY="http://127.0.0.1:${LOCAL_HTTPS_PORT}"
-# Don't proxy local traffic (VTA REST API, mediator proxy, IMDS)
 export NO_PROXY="127.0.0.1,localhost,169.254.169.254"
 
 echo ""
