@@ -51,8 +51,8 @@ RUN mkdir -p vta-sdk/src vta-service/src vta-cli-common/src vtc-service/src vti-
     echo "fn main() {}" > cnm-cli/src/main.rs && \
     echo "fn main() {}" > pnm-cli/src/main.rs
 
-# Feature flags for the VTA build.
-# Override with: docker build --build-arg FEATURES="didcomm,tee" ...
+# Feature flags for the VTA enclave build.
+# Override with: docker build --build-arg FEATURES="didcomm,vsock-store" ...
 #
 # Profiles (vsock-store is always included for persistent enclave storage):
 #   Hardened (DIDComm only):  didcomm,vsock-store
