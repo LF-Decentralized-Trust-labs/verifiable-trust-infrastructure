@@ -2,6 +2,7 @@ mod bridge;
 mod channels;
 mod config;
 mod detect;
+mod resolve;
 
 use std::path::PathBuf;
 
@@ -100,10 +101,12 @@ async fn main() {
     eprintln!("  Enclave CID: {}", config.enclave_cid);
     eprintln!();
     eprintln!("  [1] Inbound  REST:     0.0.0.0:{} → vsock:{}", config.listen_port, config.vsock_inbound_port);
-    if let Some(ref host) = config.mediator_host {
-        eprintln!("  [2] Outbound Mediator: vsock:{} → {}:{} (TLS)", config.vsock_mediator_port, host, config.mediator_port);
+    if let Some(ref host) = config.mediator_host_override {
+        eprintln!("  [2] Outbound Mediator: vsock:{} → {}:{} (manual override)", config.vsock_mediator_port, host, config.mediator_port_override.unwrap_or(443));
+    } else if let Some(ref did) = config.mediator_did {
+        eprintln!("  [2] Outbound Mediator: vsock:{} → resolve {did}", config.vsock_mediator_port);
     } else {
-        eprintln!("  [2] Outbound Mediator: DISABLED (no mediator configured)");
+        eprintln!("  [2] Outbound Mediator: DISABLED (no mediator_did configured)");
     }
     eprintln!("  [3] Outbound HTTPS:    vsock:{} → {} hosts allowlisted", config.vsock_https_port, allowlist.len());
     for (host, port) in &allowlist {
@@ -123,11 +126,17 @@ async fn main() {
         config.vsock_inbound_port,
     ));
 
-    let mediator = if let Some(host) = config.mediator_host.clone() {
+    let has_mediator = config.mediator_did.is_some() || config.mediator_host_override.is_some();
+    let mediator = if has_mediator {
+        let mediator_config = channels::MediatorConfig {
+            did: config.mediator_did.clone(),
+            host_override: config.mediator_host_override.clone(),
+            port_override: config.mediator_port_override,
+            resolver_url: config.resolver_url.clone(),
+        };
         Some(tokio::spawn(channels::run_mediator(
             config.vsock_mediator_port,
-            host,
-            config.mediator_port,
+            mediator_config,
         )))
     } else {
         None

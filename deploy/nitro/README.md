@@ -560,14 +560,23 @@ mediator, so no public URL is required.
 [messaging]
 mediator_url = "ws://127.0.0.1:4443"
 mediator_did = "did:web:mediator.example.com"
-mediator_host = "mediator.example.com"
 ```
 
 - `mediator_url` is always `ws://127.0.0.1:4443` inside the enclave (vsock-proxied)
-- `mediator_did` is the DID of your mediator service
-- `mediator_host` is the real external hostname — the parent proxy uses this to
-  establish the TLS connection. Supports both HTTPS and WSS mediators (the proxy
-  bridges raw bytes over TLS without interpreting the application protocol)
+- `mediator_did` is the DID of your mediator service — the parent proxy resolves
+  this DID via the DID resolver to discover the mediator's endpoint URL (WSS or
+  HTTPS). If the connection is lost, the proxy re-resolves the DID in case the
+  endpoint has changed.
+
+If the mediator doesn't have a resolvable DID, you can set `mediator_host`
+as a manual override (skips DID resolution):
+
+```toml
+[messaging]
+mediator_url = "ws://127.0.0.1:4443"
+mediator_did = "did:web:mediator.example.com"
+mediator_host = "mediator.example.com"
+```
 
 ### 4e: Rebuild the Enclave Image with Updated Config
 
