@@ -18,6 +18,7 @@ pub struct ProxyConfig {
     pub vsock_inbound_port: u32,
     pub vsock_mediator_port: u32,
     pub vsock_https_port: u32,
+    pub vsock_imds_port: u32,
     /// Extra hosts to allowlist for HTTPS proxy.
     pub allowlist_hosts: Vec<(String, u16)>,
     /// DID resolver URL.
@@ -116,6 +117,7 @@ impl ProxyConfig {
             vsock_inbound_port: cli.vsock_inbound,
             vsock_mediator_port: cli.vsock_mediator,
             vsock_https_port: cli.vsock_https,
+            vsock_imds_port: cli.vsock_imds,
             allowlist_hosts,
             resolver_url,
         }

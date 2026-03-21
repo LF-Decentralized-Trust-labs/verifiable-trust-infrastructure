@@ -36,6 +36,7 @@ PARENT_CID="${PARENT_CID:-3}"          # CID 3 = parent instance
 VSOCK_INBOUND_PORT="${VSOCK_INBOUND_PORT:-5100}"     # Inbound REST (vsock → VTA)
 VSOCK_MEDIATOR_PORT="${VSOCK_MEDIATOR_PORT:-5200}"    # Outbound mediator (VTA → vsock)
 VSOCK_HTTPS_PORT="${VSOCK_HTTPS_PORT:-5300}"           # Outbound HTTPS (VTA → vsock)
+VSOCK_IMDS_PORT="${VSOCK_IMDS_PORT:-5400}"             # Outbound IMDS (AWS credentials)
 
 VTA_PORT="${VTA_PORT:-8100}"
 LOCAL_MEDIATOR_PORT="${LOCAL_MEDIATOR_PORT:-4443}"     # VTA connects here for mediator
@@ -61,6 +62,9 @@ fi
 # ---------------------------------------------------------------------------
 echo "Configuring loopback interface..."
 ip addr add 127.0.0.1/8 dev lo 2>/dev/null || true
+# Add the IMDS link-local address so the AWS SDK can reach 169.254.169.254.
+# Traffic to this address is proxied through vsock to the parent's real IMDS.
+ip addr add 169.254.169.254/32 dev lo 2>/dev/null || true
 ip link set lo up 2>/dev/null || true
 
 # ---------------------------------------------------------------------------
@@ -92,16 +96,28 @@ socat TCP-LISTEN:${LOCAL_HTTPS_PORT},reuseaddr,fork,bind=127.0.0.1 \
     VSOCK-CONNECT:${PARENT_CID}:${VSOCK_HTTPS_PORT} &
 HTTPS_PID=$!
 
+# ---------------------------------------------------------------------------
+# Start IMDS proxy: 169.254.169.254:80 → parent (for AWS IAM credentials)
+# ---------------------------------------------------------------------------
+# The AWS SDK inside the enclave fetches IAM credentials from the Instance
+# Metadata Service (IMDS) at 169.254.169.254:80. Since the enclave has no
+# network, we proxy this through vsock to the parent, which can reach the
+# real IMDS endpoint.
+echo "Starting IMDS proxy: 169.254.169.254:80 → vsock:${PARENT_CID}:${VSOCK_IMDS_PORT}"
+socat TCP-LISTEN:80,reuseaddr,fork,bind=169.254.169.254 \
+    VSOCK-CONNECT:${PARENT_CID}:${VSOCK_IMDS_PORT} &
+IMDS_PID=$!
+
 # Set proxy environment variables so HTTP clients route through the proxy.
 # This enables DID resolution (did:web, did:webvh) and WebVH server access
 # from inside the enclave.
 export HTTPS_PROXY="http://127.0.0.1:${LOCAL_HTTPS_PORT}"
 export HTTP_PROXY="http://127.0.0.1:${LOCAL_HTTPS_PORT}"
-# Don't proxy local traffic (VTA REST API, mediator proxy)
-export NO_PROXY="127.0.0.1,localhost"
+# Don't proxy local traffic (VTA REST API, mediator proxy, IMDS)
+export NO_PROXY="127.0.0.1,localhost,169.254.169.254"
 
 echo ""
-echo "Proxy PIDs: inbound=${INBOUND_PID} mediator=${MEDIATOR_PID} https=${HTTPS_PID}"
+echo "Proxy PIDs: inbound=${INBOUND_PID} mediator=${MEDIATOR_PID} https=${HTTPS_PID} imds=${IMDS_PID}"
 echo "HTTPS_PROXY=http://127.0.0.1:${LOCAL_HTTPS_PORT}"
 
 # ---------------------------------------------------------------------------
@@ -109,7 +125,7 @@ echo "HTTPS_PROXY=http://127.0.0.1:${LOCAL_HTTPS_PORT}"
 # ---------------------------------------------------------------------------
 cleanup() {
     echo "Shutting down proxies..."
-    kill $INBOUND_PID $MEDIATOR_PID $HTTPS_PID 2>/dev/null || true
+    kill $INBOUND_PID $MEDIATOR_PID $HTTPS_PID $IMDS_PID 2>/dev/null || true
     wait 2>/dev/null || true
 }
 trap cleanup EXIT

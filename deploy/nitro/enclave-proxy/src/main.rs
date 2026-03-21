@@ -44,6 +44,10 @@ pub struct Cli {
     #[arg(long, default_value_t = 5300)]
     vsock_https: u32,
 
+    /// Vsock port for IMDS credential proxy (enclave-side)
+    #[arg(long, default_value_t = 5400)]
+    vsock_imds: u32,
+
     /// DID resolver URL (enclave resolves DIDs through this)
     #[arg(long, default_value = "https://dev.uniresolver.io")]
     resolver_url: String,
@@ -99,6 +103,7 @@ async fn main() {
     for (host, port) in &allowlist {
         eprintln!("       - {host}:{port}");
     }
+    eprintln!("  [4] Outbound IMDS:     vsock:{} → 169.254.169.254:80", config.vsock_imds_port);
     eprintln!();
     eprintln!("  Test:");
     eprintln!("    curl http://localhost:{}/health", config.listen_port);
@@ -127,6 +132,10 @@ async fn main() {
         allowlist,
     ));
 
+    let imds = tokio::spawn(channels::run_imds(
+        config.vsock_imds_port,
+    ));
+
     info!("all proxy channels started — press Ctrl+C to stop");
 
     // Wait for shutdown signal
@@ -139,4 +148,5 @@ async fn main() {
         m.abort();
     }
     https.abort();
+    imds.abort();
 }
