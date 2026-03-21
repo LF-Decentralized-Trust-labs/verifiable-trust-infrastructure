@@ -2,6 +2,7 @@ mod bridge;
 mod channels;
 mod config;
 mod detect;
+#[allow(dead_code)] // Protocol functions used by vsock client (different crate)
 mod protocol;
 mod resolve;
 mod storage;
@@ -10,7 +11,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use clap::Parser;
-use tracing::{error, info, warn};
+use tracing::{error, info};
 use tracing_subscriber::EnvFilter;
 
 use config::ProxyConfig;
