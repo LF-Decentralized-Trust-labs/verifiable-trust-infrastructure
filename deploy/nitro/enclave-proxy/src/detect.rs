@@ -1,6 +1,6 @@
 //! Auto-detect enclave CID from nitro-cli.
 
-use tracing::info;
+use tracing::{info, warn};
 
 /// Auto-detect the CID of a running Nitro Enclave.
 ///
