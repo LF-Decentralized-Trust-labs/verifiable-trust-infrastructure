@@ -696,6 +696,7 @@ The proxy starts four channels:
 | Outbound DIDComm | `Enclave → vsock:5200 → TLS → mediator` | VTA DIDComm messaging |
 | Outbound HTTPS | `Enclave → vsock:5300 → allowlisted hosts` | KMS, WebVH, enclave HTTPS |
 | Outbound IMDS | `Enclave → vsock:5400 → 169.254.169.254:80` | AWS IAM credentials |
+| Storage | `Enclave → vsock:5500 → fjall on EBS` | Persistent K/V store + file I/O |
 
 The HTTPS channel implements an **HTTP CONNECT proxy** with an allowlist.
 Inside the enclave, `HTTPS_PROXY=http://127.0.0.1:4444` routes all HTTPS
@@ -1108,6 +1109,7 @@ jobs:
 | 5200 | Enclave → Parent | Outbound DIDComm (mediator WebSocket) |
 | 5300 | Enclave → Parent | Outbound HTTPS (DID resolution, KMS) |
 | 5400 | Enclave → Parent | Outbound IMDS (AWS IAM credentials) |
+| 5500 | Enclave → Parent | Persistent K/V storage + file I/O |
 
 ## Files
 

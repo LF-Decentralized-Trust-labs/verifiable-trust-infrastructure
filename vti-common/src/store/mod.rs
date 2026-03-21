@@ -8,7 +8,7 @@ use serde::de::DeserializeOwned;
 use tracing::info;
 
 #[cfg(feature = "encryption")]
-mod encryption;
+pub(crate) mod encryption;
 
 #[cfg(feature = "vsock-store")]
 pub mod vsock;
@@ -41,39 +41,249 @@ where
 /// A key-value pair of raw bytes from a prefix scan.
 pub type RawKvPair = (Vec<u8>, Vec<u8>);
 
+// ===========================================================================
+// Store — dispatches to local (fjall) or vsock backend
+// ===========================================================================
+
+/// Persistent key-value store.
+///
+/// Wraps either a local fjall database or a vsock-proxied store on the parent
+/// EC2 instance. All consumers use this type uniformly.
 #[derive(Clone)]
-pub struct Store {
+pub enum Store {
+    /// Local fjall database (standard mode).
+    Local(LocalStore),
+    /// Vsock-proxied store on the parent (Nitro Enclave mode).
+    #[cfg(feature = "vsock-store")]
+    Vsock(vsock::VsockStore),
+}
+
+impl Store {
+    /// Open a local fjall-backed store.
+    pub fn open(config: &StoreConfig) -> Result<Self, AppError> {
+        Ok(Store::Local(LocalStore::open(config)?))
+    }
+
+    /// Connect to the parent's vsock storage proxy.
+    #[cfg(feature = "vsock-store")]
+    pub async fn connect_vsock(port: Option<u32>) -> Result<Self, AppError> {
+        Ok(Store::Vsock(vsock::VsockStore::connect(port).await?))
+    }
+
+    pub fn keyspace(&self, name: &str) -> Result<KeyspaceHandle, AppError> {
+        match self {
+            Store::Local(s) => Ok(KeyspaceHandle::Local(s.keyspace(name)?)),
+            #[cfg(feature = "vsock-store")]
+            Store::Vsock(s) => Ok(KeyspaceHandle::Vsock(s.keyspace(name)?)),
+        }
+    }
+
+    pub async fn persist(&self) -> Result<(), AppError> {
+        match self {
+            Store::Local(s) => s.persist().await,
+            #[cfg(feature = "vsock-store")]
+            Store::Vsock(s) => s.persist().await,
+        }
+    }
+
+    /// Read a file from persistent storage.
+    /// In vsock mode, reads from the parent's EBS via the storage proxy.
+    /// In local mode, reads from the local filesystem.
+    pub async fn read_file(&self, path: &str) -> Result<Option<Vec<u8>>, AppError> {
+        match self {
+            Store::Local(_) => {
+                match std::fs::read(path) {
+                    Ok(data) => Ok(Some(data)),
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+                    Err(e) => Err(AppError::Io(e)),
+                }
+            }
+            #[cfg(feature = "vsock-store")]
+            Store::Vsock(s) => vsock::file_read(s, path).await,
+        }
+    }
+
+    /// Write a file to persistent storage.
+    /// In vsock mode, writes to the parent's EBS via the storage proxy.
+    /// In local mode, writes to the local filesystem (creating dirs as needed).
+    pub async fn write_file(&self, path: &str, data: &[u8]) -> Result<(), AppError> {
+        match self {
+            Store::Local(_) => {
+                if let Some(parent) = std::path::Path::new(path).parent() {
+                    std::fs::create_dir_all(parent).map_err(AppError::Io)?;
+                }
+                std::fs::write(path, data).map_err(AppError::Io)
+            }
+            #[cfg(feature = "vsock-store")]
+            Store::Vsock(s) => vsock::file_write(s, path, data).await,
+        }
+    }
+
+    /// Check if a file exists on persistent storage.
+    pub async fn file_exists(&self, path: &str) -> Result<bool, AppError> {
+        match self {
+            Store::Local(_) => Ok(std::path::Path::new(path).exists()),
+            #[cfg(feature = "vsock-store")]
+            Store::Vsock(s) => vsock::file_exists(s, path).await,
+        }
+    }
+}
+
+// ===========================================================================
+// KeyspaceHandle — dispatches to local (fjall) or vsock backend
+// ===========================================================================
+
+/// Handle to a keyspace with optional transparent encryption.
+///
+/// Wraps either a local fjall keyspace or a vsock-proxied keyspace.
+/// Encryption is always applied locally (before data leaves the enclave).
+#[derive(Clone)]
+pub enum KeyspaceHandle {
+    Local(LocalKeyspaceHandle),
+    #[cfg(feature = "vsock-store")]
+    Vsock(vsock::VsockKeyspaceHandle),
+}
+
+impl KeyspaceHandle {
+    #[cfg(feature = "encryption")]
+    pub fn with_encryption(self, key: [u8; 32]) -> Self {
+        match self {
+            KeyspaceHandle::Local(h) => KeyspaceHandle::Local(h.with_encryption(key)),
+            #[cfg(feature = "vsock-store")]
+            KeyspaceHandle::Vsock(h) => KeyspaceHandle::Vsock(h.with_encryption(key)),
+        }
+    }
+
+    pub fn is_encrypted(&self) -> bool {
+        match self {
+            KeyspaceHandle::Local(h) => h.is_encrypted(),
+            #[cfg(feature = "vsock-store")]
+            KeyspaceHandle::Vsock(h) => h.is_encrypted(),
+        }
+    }
+
+    pub async fn insert<V: Serialize>(
+        &self,
+        key: impl Into<Vec<u8>>,
+        value: &V,
+    ) -> Result<(), AppError> {
+        match self {
+            KeyspaceHandle::Local(h) => h.insert(key, value).await,
+            #[cfg(feature = "vsock-store")]
+            KeyspaceHandle::Vsock(h) => h.insert(key, value).await,
+        }
+    }
+
+    pub async fn get<V: DeserializeOwned + Send + 'static>(
+        &self,
+        key: impl Into<Vec<u8>>,
+    ) -> Result<Option<V>, AppError> {
+        match self {
+            KeyspaceHandle::Local(h) => h.get(key).await,
+            #[cfg(feature = "vsock-store")]
+            KeyspaceHandle::Vsock(h) => h.get(key).await,
+        }
+    }
+
+    pub async fn remove(&self, key: impl Into<Vec<u8>>) -> Result<(), AppError> {
+        match self {
+            KeyspaceHandle::Local(h) => h.remove(key).await,
+            #[cfg(feature = "vsock-store")]
+            KeyspaceHandle::Vsock(h) => h.remove(key).await,
+        }
+    }
+
+    pub async fn insert_raw(
+        &self,
+        key: impl Into<Vec<u8>>,
+        value: impl Into<Vec<u8>>,
+    ) -> Result<(), AppError> {
+        match self {
+            KeyspaceHandle::Local(h) => h.insert_raw(key, value).await,
+            #[cfg(feature = "vsock-store")]
+            KeyspaceHandle::Vsock(h) => h.insert_raw(key, value).await,
+        }
+    }
+
+    pub async fn get_raw(&self, key: impl Into<Vec<u8>>) -> Result<Option<Vec<u8>>, AppError> {
+        match self {
+            KeyspaceHandle::Local(h) => h.get_raw(key).await,
+            #[cfg(feature = "vsock-store")]
+            KeyspaceHandle::Vsock(h) => h.get_raw(key).await,
+        }
+    }
+
+    pub async fn prefix_iter_raw(
+        &self,
+        prefix: impl Into<Vec<u8>>,
+    ) -> Result<Vec<RawKvPair>, AppError> {
+        match self {
+            KeyspaceHandle::Local(h) => h.prefix_iter_raw(prefix).await,
+            #[cfg(feature = "vsock-store")]
+            KeyspaceHandle::Vsock(h) => h.prefix_iter_raw(prefix).await,
+        }
+    }
+
+    pub async fn prefix_keys(
+        &self,
+        prefix: impl Into<Vec<u8>>,
+    ) -> Result<Vec<Vec<u8>>, AppError> {
+        match self {
+            KeyspaceHandle::Local(h) => h.prefix_keys(prefix).await,
+            #[cfg(feature = "vsock-store")]
+            KeyspaceHandle::Vsock(h) => h.prefix_keys(prefix).await,
+        }
+    }
+
+    pub async fn approximate_len(&self) -> Result<usize, AppError> {
+        match self {
+            KeyspaceHandle::Local(h) => h.approximate_len().await,
+            #[cfg(feature = "vsock-store")]
+            KeyspaceHandle::Vsock(h) => h.approximate_len().await,
+        }
+    }
+
+    pub async fn swap<V: Serialize>(
+        &self,
+        old_key: impl Into<Vec<u8>>,
+        new_key: impl Into<Vec<u8>>,
+        value: &V,
+    ) -> Result<bool, AppError> {
+        match self {
+            KeyspaceHandle::Local(h) => h.swap(old_key, new_key, value).await,
+            #[cfg(feature = "vsock-store")]
+            KeyspaceHandle::Vsock(h) => h.swap(old_key, new_key, value).await,
+        }
+    }
+}
+
+// ===========================================================================
+// LocalStore — fjall-backed implementation (original code)
+// ===========================================================================
+
+#[derive(Clone)]
+pub struct LocalStore {
     db: fjall::Database,
 }
 
-/// Handle to a fjall keyspace with optional transparent encryption.
-///
-/// When an encryption key is set (via `with_encryption`), all **values**
-/// are AES-256-GCM encrypted before writing and decrypted after reading.
-/// Keys are stored in plaintext so prefix scans still work.
-///
-/// When no encryption key is set, all operations pass through unchanged.
 #[derive(Clone)]
-pub struct KeyspaceHandle {
+pub struct LocalKeyspaceHandle {
     keyspace: fjall::Keyspace,
     #[cfg(feature = "encryption")]
     encryption_key: Option<std::sync::Arc<zeroize::Zeroizing<[u8; 32]>>>,
 }
 
-impl Store {
+impl LocalStore {
     pub fn open(config: &StoreConfig) -> Result<Self, AppError> {
         std::fs::create_dir_all(&config.data_dir).map_err(AppError::Io)?;
-
         info!(path = %config.data_dir.display(), "opening store");
-
         let db = fjall::Database::builder(&config.data_dir).open()?;
-
         Ok(Self { db })
     }
 
-    pub fn keyspace(&self, name: &str) -> Result<KeyspaceHandle, AppError> {
+    pub fn keyspace(&self, name: &str) -> Result<LocalKeyspaceHandle, AppError> {
         let keyspace = self.db.keyspace(name, KeyspaceCreateOptions::default)?;
-        Ok(KeyspaceHandle {
+        Ok(LocalKeyspaceHandle {
             keyspace,
             #[cfg(feature = "encryption")]
             encryption_key: None,
@@ -89,22 +299,13 @@ impl Store {
     }
 }
 
-impl KeyspaceHandle {
-    /// Return a clone of this handle with AES-256-GCM encryption enabled.
-    ///
-    /// All subsequent `insert`/`get`/`insert_raw`/`get_raw`/`prefix_iter_raw`/`swap`
-    /// operations will transparently encrypt values before writing and decrypt
-    /// after reading. Keys remain in plaintext.
-    ///
-    /// Each encrypted value has the format:
-    ///   `[12-byte random nonce][ciphertext][16-byte GCM auth tag]`
+impl LocalKeyspaceHandle {
     #[cfg(feature = "encryption")]
     pub fn with_encryption(mut self, key: [u8; 32]) -> Self {
         self.encryption_key = Some(std::sync::Arc::new(zeroize::Zeroizing::new(key)));
         self
     }
 
-    /// Returns true if this handle has encryption enabled.
     pub fn is_encrypted(&self) -> bool {
         #[cfg(feature = "encryption")]
         { self.encryption_key.is_some() }
@@ -190,7 +391,6 @@ impl KeyspaceHandle {
         .await
     }
 
-    /// Iterate all key-value pairs whose key starts with `prefix`.
     pub async fn prefix_iter_raw(
         &self,
         prefix: impl Into<Vec<u8>>,
@@ -217,7 +417,6 @@ impl KeyspaceHandle {
         .await
     }
 
-    /// Iterate all keys (without values) whose key starts with `prefix`.
     pub async fn prefix_keys(
         &self,
         prefix: impl Into<Vec<u8>>,
@@ -235,14 +434,11 @@ impl KeyspaceHandle {
         .await
     }
 
-    /// Returns the approximate number of items in the keyspace.
     pub async fn approximate_len(&self) -> Result<usize, AppError> {
         let ks = self.keyspace.clone();
         blocking_with_timeout(move || Ok(ks.approximate_len())).await
     }
 
-    /// Atomically check that `new_key` doesn't exist, insert `value` at `new_key`,
-    /// and remove `old_key` in a single blocking operation.
     pub async fn swap<V: Serialize>(
         &self,
         old_key: impl Into<Vec<u8>>,
@@ -265,7 +461,6 @@ impl KeyspaceHandle {
         .await
     }
 
-    /// Encrypt bytes if encryption is enabled, otherwise return unchanged.
     fn maybe_encrypt(&self, plaintext: Vec<u8>) -> Result<Vec<u8>, AppError> {
         #[cfg(feature = "encryption")]
         {
