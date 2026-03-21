@@ -5,6 +5,7 @@ mod detect;
 mod resolve;
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use clap::Parser;
 use tracing::{error, info, warn};
@@ -18,6 +19,7 @@ use config::ProxyConfig;
     about = "VTA Nitro Enclave parent-instance proxy",
     long_about = "Bridges networking between a Nitro Enclave and the outside world.\n\
                   Reads mediator config from the VTA's config.toml automatically.\n\
+                  Resolves mediator DID locally using the embedded Affinidi DID resolver.\n\
                   Run on the parent EC2 instance (not inside the enclave)."
 )]
 pub struct Cli {
@@ -49,10 +51,6 @@ pub struct Cli {
     #[arg(long, default_value_t = 5400)]
     vsock_imds: u32,
 
-    /// Affinidi DID resolver URL
-    #[arg(long, default_value = "https://did.server.affinidi.io")]
-    resolver_url: String,
-
     /// Additional hosts to allowlist for HTTPS proxy (host:port)
     #[arg(trailing_var_arg = true)]
     allowlist: Vec<String>,
@@ -61,8 +59,6 @@ pub struct Cli {
 #[tokio::main]
 async fn main() {
     // Install the ring crypto provider for rustls before any TLS is used.
-    // Both the proxy's direct TLS connections and reqwest (for DID resolution)
-    // need this to be set as the process-level default.
     rustls::crypto::ring::default_provider()
         .install_default()
         .expect("failed to install rustls crypto provider");
@@ -98,6 +94,20 @@ async fn main() {
     let config = ProxyConfig::load(&cli.config, &cli);
     let allowlist = config.build_allowlist();
 
+    // Initialize the embedded DID resolver (used for mediator DID resolution)
+    let resolver = if config.mediator_did.is_some() && config.mediator_host_override.is_none() {
+        match resolve::DIDResolver::new().await {
+            Ok(r) => Some(Arc::new(r)),
+            Err(e) => {
+                error!("failed to initialize DID resolver: {e}");
+                error!("mediator DID resolution will not work — set MEDIATOR_HOST as a fallback");
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     // Print banner
     eprintln!();
     eprintln!("=========================================");
@@ -106,6 +116,7 @@ async fn main() {
     eprintln!();
     eprintln!("  Config:      {}", cli.config.display());
     eprintln!("  Enclave CID: {}", config.enclave_cid);
+    eprintln!("  Resolver:    {}", if resolver.is_some() { "embedded (Affinidi)" } else { "none" });
     eprintln!();
     eprintln!("  [1] Inbound  REST:     0.0.0.0:{} → vsock:{}", config.listen_port, config.vsock_inbound_port);
     if let Some(ref host) = config.mediator_host_override {
@@ -139,7 +150,7 @@ async fn main() {
             did: config.mediator_did.clone(),
             host_override: config.mediator_host_override.clone(),
             port_override: config.mediator_port_override,
-            resolver_url: config.resolver_url.clone(),
+            resolver: resolver.clone(),
         };
         Some(tokio::spawn(channels::run_mediator(
             config.vsock_mediator_port,

@@ -23,8 +23,6 @@ pub struct ProxyConfig {
     pub vsock_imds_port: u32,
     /// Extra hosts to allowlist for HTTPS proxy.
     pub allowlist_hosts: Vec<(String, u16)>,
-    /// DID resolver URL.
-    pub resolver_url: String,
 }
 
 /// Partial VTA config — only the fields we need.
@@ -96,10 +94,6 @@ impl ProxyConfig {
             .and_then(|p| p.parse().ok())
             .unwrap_or(cli.listen_port);
 
-        let resolver_url = std::env::var("RESOLVER_URL")
-            .ok()
-            .unwrap_or_else(|| cli.resolver_url.clone());
-
         // Parse extra allowlisted hosts
         let mut allowlist_hosts: Vec<(String, u16)> = cli
             .allowlist
@@ -128,11 +122,13 @@ impl ProxyConfig {
             vsock_https_port: cli.vsock_https,
             vsock_imds_port: cli.vsock_imds,
             allowlist_hosts,
-            resolver_url,
         }
     }
 
-    /// Build the full allowlist including default + mediator + resolver + extras.
+    /// Build the full allowlist including default + mediator + extras.
+    ///
+    /// DID resolution is handled by the embedded resolver (no external service),
+    /// so no resolver host needs to be allowlisted.
     pub fn build_allowlist(&self) -> Vec<(String, u16)> {
         let mut hosts = vec![
             (format!("kms.{}.amazonaws.com", self.kms_region), 443),
@@ -144,30 +140,9 @@ impl ProxyConfig {
             hosts.push((mh.clone(), port));
         }
 
-        // Add resolver host
-        if let Some(host) = extract_host_from_url(&self.resolver_url) {
-            let port = extract_port_from_url(&self.resolver_url).unwrap_or(443);
-            hosts.push((host, port));
-        }
-
         hosts.extend(self.allowlist_hosts.clone());
         hosts
     }
-}
-
-fn extract_host_from_url(url: &str) -> Option<String> {
-    url.split("://")
-        .nth(1)
-        .map(|rest| rest.split('/').next().unwrap_or(rest))
-        .map(|host_port| host_port.split(':').next().unwrap_or(host_port).to_string())
-}
-
-fn extract_port_from_url(url: &str) -> Option<u16> {
-    url.split("://")
-        .nth(1)
-        .and_then(|rest| rest.split('/').next())
-        .and_then(|host_port| host_port.split(':').nth(1))
-        .and_then(|p| p.parse().ok())
 }
 
 fn parse_host_port(s: &str) -> (String, u16) {

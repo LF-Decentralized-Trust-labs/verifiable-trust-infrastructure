@@ -69,7 +69,7 @@ pub async fn run_inbound(listen_port: u16, enclave_cid: u32, vsock_port: u32) {
 // [2] Outbound: vsock → TLS (enclave DIDComm → mediator)
 // ---------------------------------------------------------------------------
 
-use crate::resolve::{MediatorEndpoint, resolve_mediator_endpoint};
+use crate::resolve::{DIDResolver, MediatorEndpoint};
 
 /// Mediator configuration — either a resolved DID or a manual host override.
 pub struct MediatorConfig {
@@ -79,8 +79,8 @@ pub struct MediatorConfig {
     pub host_override: Option<String>,
     /// Manual port override.
     pub port_override: Option<u16>,
-    /// DID resolver URL.
-    pub resolver_url: String,
+    /// Embedded DID resolver (shared, initialized once at startup).
+    pub resolver: Option<std::sync::Arc<DIDResolver>>,
 }
 
 pub async fn run_mediator(
@@ -243,9 +243,10 @@ async fn resolve_mediator(config: &MediatorConfig) -> Option<MediatorEndpoint> {
         });
     }
 
-    // Resolve from DID
+    // Resolve from DID using the embedded resolver
     let did = config.did.as_ref()?;
-    match resolve_mediator_endpoint(&config.resolver_url, did).await {
+    let resolver = config.resolver.as_ref()?;
+    match resolver.resolve_mediator_endpoint(did).await {
         Ok(mut ep) => {
             // Apply port override if set
             if let Some(port) = config.port_override {
