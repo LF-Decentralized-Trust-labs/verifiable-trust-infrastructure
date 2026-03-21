@@ -1,0 +1,410 @@
+//! Parent-side persistent key-value storage server.
+//!
+//! Listens on a vsock port and serves K/V operations backed by fjall on the
+//! parent EC2 instance's EBS volume. Also handles proxied file I/O for
+//! KMS ciphertexts and did.jsonl.
+//!
+//! All data from the enclave is already encrypted (AES-256-GCM) before it
+//! reaches this server — the parent only stores opaque blobs.
+
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+use fjall::{Database, Keyspace, KeyspaceCreateOptions, PersistMode};
+use tokio::sync::RwLock;
+use tokio_vsock::{VsockAddr, VsockListener, VMADDR_CID_ANY};
+use tracing::{debug, error, info, warn};
+
+use crate::protocol::*;
+
+/// Run the parent-side storage server.
+///
+/// Opens a fjall database at `data_dir` and listens for K/V operations on
+/// the given vsock port. File operations are restricted to `secrets_dir`.
+pub async fn run_storage(vsock_port: u32, data_dir: PathBuf, secrets_dir: PathBuf) {
+    // Open the fjall database on the parent's EBS volume
+    if let Err(e) = std::fs::create_dir_all(&data_dir) {
+        error!("[storage] failed to create data directory {}: {e}", data_dir.display());
+        return;
+    }
+    if let Err(e) = std::fs::create_dir_all(&secrets_dir) {
+        error!("[storage] failed to create secrets directory {}: {e}", secrets_dir.display());
+        return;
+    }
+
+    let db = match Database::builder(&data_dir).open() {
+        Ok(db) => db,
+        Err(e) => {
+            error!("[storage] failed to open fjall database at {}: {e}", data_dir.display());
+            return;
+        }
+    };
+
+    info!(
+        "[storage] opened database at {} (secrets: {})",
+        data_dir.display(),
+        secrets_dir.display()
+    );
+
+    let state = Arc::new(StorageState {
+        db,
+        keyspaces: RwLock::new(HashMap::new()),
+        secrets_dir,
+    });
+
+    let mut listener = match VsockListener::bind(VsockAddr::new(VMADDR_CID_ANY, vsock_port)) {
+        Ok(l) => l,
+        Err(e) => {
+            error!("[storage] failed to bind vsock:{vsock_port}: {e}");
+            return;
+        }
+    };
+
+    info!("[storage] listening on vsock:{vsock_port}");
+
+    loop {
+        let (stream, peer) = match listener.accept().await {
+            Ok(s) => s,
+            Err(e) => {
+                warn!("[storage] accept error: {e}");
+                continue;
+            }
+        };
+        info!("[storage] connection from vsock peer {peer:?}");
+
+        let state = Arc::clone(&state);
+        tokio::spawn(async move {
+            if let Err(e) = handle_connection(stream, &state).await {
+                debug!("[storage] connection ended: {e}");
+            }
+        });
+    }
+}
+
+struct StorageState {
+    db: Database,
+    keyspaces: RwLock<HashMap<String, Keyspace>>,
+    secrets_dir: PathBuf,
+}
+
+impl StorageState {
+    /// Get or create a keyspace by name.
+    async fn get_keyspace(&self, name: &str) -> Result<Keyspace, String> {
+        // Fast path: read lock
+        {
+            let ks_map = self.keyspaces.read().await;
+            if let Some(ks) = ks_map.get(name) {
+                return Ok(ks.clone());
+            }
+        }
+
+        // Slow path: write lock + create
+        let mut ks_map = self.keyspaces.write().await;
+        if let Some(ks) = ks_map.get(name) {
+            return Ok(ks.clone());
+        }
+
+        let ks = self
+            .db
+            .keyspace(name, KeyspaceCreateOptions::default)
+            .map_err(|e| format!("failed to create keyspace '{name}': {e}"))?;
+        ks_map.insert(name.to_string(), ks.clone());
+        debug!("[storage] created keyspace: {name}");
+        Ok(ks)
+    }
+
+    /// Validate a file path is under the secrets directory.
+    fn validate_file_path(&self, path: &str) -> Result<PathBuf, String> {
+        let requested = Path::new(path);
+
+        // Must be absolute
+        if !requested.is_absolute() {
+            return Err(format!("file path must be absolute: {path}"));
+        }
+
+        // Canonicalize the secrets dir (resolve symlinks)
+        let base = self
+            .secrets_dir
+            .canonicalize()
+            .map_err(|e| format!("failed to canonicalize secrets dir: {e}"))?;
+
+        // Check the path is under the secrets dir (prevent traversal)
+        // We can't canonicalize the requested path (file may not exist yet),
+        // so check for ".." components and verify the prefix.
+        for component in requested.components() {
+            if let std::path::Component::ParentDir = component {
+                return Err(format!("path traversal not allowed: {path}"));
+            }
+        }
+
+        if !requested.starts_with(&base) {
+            return Err(format!(
+                "file path must be under {}: {path}",
+                base.display()
+            ));
+        }
+
+        Ok(requested.to_path_buf())
+    }
+}
+
+/// Handle a single client connection (long-lived, multiple requests).
+async fn handle_connection(
+    mut stream: tokio_vsock::VsockStream,
+    state: &StorageState,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    loop {
+        // Read request frame
+        let request = match read_frame(&mut stream).await {
+            Ok(r) => r,
+            Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
+                return Ok(()); // Clean disconnect
+            }
+            Err(e) => return Err(e.into()),
+        };
+
+        if request.is_empty() {
+            write_frame(&mut stream, &build_error("empty request")).await?;
+            continue;
+        }
+
+        let opcode = request[0];
+        let response = match opcode {
+            OP_GET => handle_get(state, &request[1..]).await,
+            OP_INSERT => handle_insert(state, &request[1..]).await,
+            OP_DELETE => handle_delete(state, &request[1..]).await,
+            OP_PREFIX_ITER => handle_prefix_iter(state, &request[1..]).await,
+            OP_PREFIX_KEYS => handle_prefix_keys(state, &request[1..]).await,
+            OP_FILE_READ => handle_file_read(state, &request[1..]).await,
+            OP_FILE_WRITE => handle_file_write(state, &request[1..]).await,
+            OP_FILE_EXISTS => handle_file_exists(state, &request[1..]).await,
+            OP_PERSIST => handle_persist(state).await,
+            _ => build_error(&format!("unknown opcode: {opcode:#04x}")),
+        };
+
+        write_frame(&mut stream, &response).await?;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Operation handlers
+// ---------------------------------------------------------------------------
+
+async fn handle_get(state: &StorageState, data: &[u8]) -> Vec<u8> {
+    let result = (|| {
+        let (ks_name, offset) = decode_keyspace(data, 0)?;
+        let (key, _) = decode_bytes(data, offset)?;
+        Ok((ks_name.to_string(), key.to_vec()))
+    })();
+
+    let (ks_name, key) = match result {
+        Ok(v) => v,
+        Err(e) => return build_error(&format!("invalid get request: {e}")),
+    };
+
+    let ks = match state.get_keyspace(&ks_name).await {
+        Ok(ks) => ks,
+        Err(e) => return build_error(&e),
+    };
+
+    match ks.get(&key) {
+        Ok(Some(value)) => build_ok_value(&value),
+        Ok(None) => build_not_found(),
+        Err(e) => build_error(&format!("get failed: {e}")),
+    }
+}
+
+async fn handle_insert(state: &StorageState, data: &[u8]) -> Vec<u8> {
+    let result = (|| {
+        let (ks_name, offset) = decode_keyspace(data, 0)?;
+        let (key, offset) = decode_bytes(data, offset)?;
+        let (value, _) = decode_bytes(data, offset)?;
+        Ok((ks_name.to_string(), key.to_vec(), value.to_vec()))
+    })();
+
+    let (ks_name, key, value) = match result {
+        Ok(v) => v,
+        Err(e) => return build_error(&format!("invalid insert request: {e}")),
+    };
+
+    let ks = match state.get_keyspace(&ks_name).await {
+        Ok(ks) => ks,
+        Err(e) => return build_error(&e),
+    };
+
+    match ks.insert(&key, &value) {
+        Ok(()) => build_ok_empty(),
+        Err(e) => build_error(&format!("insert failed: {e}")),
+    }
+}
+
+async fn handle_delete(state: &StorageState, data: &[u8]) -> Vec<u8> {
+    let result = (|| {
+        let (ks_name, offset) = decode_keyspace(data, 0)?;
+        let (key, _) = decode_bytes(data, offset)?;
+        Ok((ks_name.to_string(), key.to_vec()))
+    })();
+
+    let (ks_name, key) = match result {
+        Ok(v) => v,
+        Err(e) => return build_error(&format!("invalid delete request: {e}")),
+    };
+
+    let ks = match state.get_keyspace(&ks_name).await {
+        Ok(ks) => ks,
+        Err(e) => return build_error(&e),
+    };
+
+    match ks.remove(&key) {
+        Ok(()) => build_ok_empty(),
+        Err(e) => build_error(&format!("delete failed: {e}")),
+    }
+}
+
+async fn handle_prefix_iter(state: &StorageState, data: &[u8]) -> Vec<u8> {
+    let result = (|| {
+        let (ks_name, offset) = decode_keyspace(data, 0)?;
+        let (prefix, _) = decode_bytes(data, offset)?;
+        Ok((ks_name.to_string(), prefix.to_vec()))
+    })();
+
+    let (ks_name, prefix) = match result {
+        Ok(v) => v,
+        Err(e) => return build_error(&format!("invalid prefix_iter request: {e}")),
+    };
+
+    let ks = match state.get_keyspace(&ks_name).await {
+        Ok(ks) => ks,
+        Err(e) => return build_error(&e),
+    };
+
+    let mut pairs: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
+    for guard in ks.prefix(&prefix) {
+        match guard.into_inner() {
+            Ok((key, value)) => pairs.push((key.to_vec(), value.to_vec())),
+            Err(e) => return build_error(&format!("prefix_iter error: {e}")),
+        }
+    }
+
+    let refs: Vec<(&[u8], &[u8])> = pairs.iter().map(|(k, v)| (k.as_slice(), v.as_slice())).collect();
+    build_ok_kv_list(&refs)
+}
+
+async fn handle_prefix_keys(state: &StorageState, data: &[u8]) -> Vec<u8> {
+    let result = (|| {
+        let (ks_name, offset) = decode_keyspace(data, 0)?;
+        let (prefix, _) = decode_bytes(data, offset)?;
+        Ok((ks_name.to_string(), prefix.to_vec()))
+    })();
+
+    let (ks_name, prefix) = match result {
+        Ok(v) => v,
+        Err(e) => return build_error(&format!("invalid prefix_keys request: {e}")),
+    };
+
+    let ks = match state.get_keyspace(&ks_name).await {
+        Ok(ks) => ks,
+        Err(e) => return build_error(&e),
+    };
+
+    let mut keys: Vec<Vec<u8>> = Vec::new();
+    for guard in ks.prefix(&prefix) {
+        match guard.into_inner() {
+            Ok((key, _)) => keys.push(key.to_vec()),
+            Err(e) => return build_error(&format!("prefix_keys error: {e}")),
+        }
+    }
+
+    let refs: Vec<&[u8]> = keys.iter().map(|k| k.as_slice()).collect();
+    build_ok_key_list(&refs)
+}
+
+async fn handle_file_read(state: &StorageState, data: &[u8]) -> Vec<u8> {
+    let result = (|| {
+        let (path, _) = decode_bytes(data, 0)?;
+        Ok(std::str::from_utf8(path).map_err(|e| format!("invalid path: {e}"))?.to_string())
+    })();
+
+    let path_str = match result {
+        Ok(v) => v,
+        Err(e) => return build_error(&format!("invalid file_read request: {e}")),
+    };
+
+    let path = match state.validate_file_path(&path_str) {
+        Ok(p) => p,
+        Err(e) => return build_error(&e),
+    };
+
+    match std::fs::read(&path) {
+        Ok(data) => {
+            debug!("[storage] file read: {} ({} bytes)", path.display(), data.len());
+            build_ok_value(&data)
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => build_not_found(),
+        Err(e) => build_error(&format!("file read failed: {e}")),
+    }
+}
+
+async fn handle_file_write(state: &StorageState, data: &[u8]) -> Vec<u8> {
+    let result = (|| {
+        let (path, offset) = decode_bytes(data, 0)?;
+        let path_str = std::str::from_utf8(path).map_err(|e| format!("invalid path: {e}"))?;
+        let (content, _) = decode_bytes(data, offset)?;
+        Ok((path_str.to_string(), content.to_vec()))
+    })();
+
+    let (path_str, content) = match result {
+        Ok(v) => v,
+        Err(e) => return build_error(&format!("invalid file_write request: {e}")),
+    };
+
+    let path = match state.validate_file_path(&path_str) {
+        Ok(p) => p,
+        Err(e) => return build_error(&e),
+    };
+
+    // Create parent directories
+    if let Some(parent) = path.parent() {
+        if let Err(e) = std::fs::create_dir_all(parent) {
+            return build_error(&format!("failed to create directory: {e}"));
+        }
+    }
+
+    match std::fs::write(&path, &content) {
+        Ok(()) => {
+            info!("[storage] file written: {} ({} bytes)", path.display(), content.len());
+            build_ok_empty()
+        }
+        Err(e) => build_error(&format!("file write failed: {e}")),
+    }
+}
+
+async fn handle_file_exists(state: &StorageState, data: &[u8]) -> Vec<u8> {
+    let result = (|| {
+        let (path, _) = decode_bytes(data, 0)?;
+        Ok(std::str::from_utf8(path).map_err(|e| format!("invalid path: {e}"))?.to_string())
+    })();
+
+    let path_str = match result {
+        Ok(v) => v,
+        Err(e) => return build_error(&format!("invalid file_exists request: {e}")),
+    };
+
+    let path = match state.validate_file_path(&path_str) {
+        Ok(p) => p,
+        Err(e) => return build_error(&e),
+    };
+
+    build_ok_bool(path.exists())
+}
+
+async fn handle_persist(state: &StorageState) -> Vec<u8> {
+    match state.db.persist(PersistMode::SyncAll) {
+        Ok(()) => {
+            debug!("[storage] persist completed");
+            build_ok_empty()
+        }
+        Err(e) => build_error(&format!("persist failed: {e}")),
+    }
+}

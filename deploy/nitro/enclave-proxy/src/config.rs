@@ -1,5 +1,5 @@
 use serde::Deserialize;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// Proxy configuration, read from the VTA's config.toml.
 #[derive(Debug, Clone)]
@@ -23,6 +23,12 @@ pub struct ProxyConfig {
     pub vsock_imds_port: u32,
     /// Extra hosts to allowlist for HTTPS proxy.
     pub allowlist_hosts: Vec<(String, u16)>,
+    /// Vsock port for persistent storage proxy.
+    pub vsock_storage_port: u32,
+    /// Directory for the persistent key-value store (on parent EBS).
+    pub storage_data_dir: PathBuf,
+    /// Directory for secrets files (on parent EBS).
+    pub storage_secrets_dir: PathBuf,
 }
 
 /// Partial VTA config — only the fields we need.
@@ -122,6 +128,9 @@ impl ProxyConfig {
             vsock_https_port: cli.vsock_https,
             vsock_imds_port: cli.vsock_imds,
             allowlist_hosts,
+            vsock_storage_port: cli.vsock_storage,
+            storage_data_dir: cli.storage_data_dir.clone(),
+            storage_secrets_dir: cli.storage_secrets_dir.clone(),
         }
     }
 

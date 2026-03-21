@@ -10,6 +10,9 @@ use tracing::info;
 #[cfg(feature = "encryption")]
 mod encryption;
 
+#[cfg(feature = "vsock-store")]
+pub mod vsock;
+
 /// Timeout for blocking fjall operations. Prevents indefinite hangs if the
 /// store deadlocks or I/O stalls.
 const STORE_OP_TIMEOUT: Duration = Duration::from_secs(30);

@@ -33,6 +33,7 @@ tee = [
   "dep:rsa",
   "dep:didwebvh-rs",
 ]
+vsock-store = ["vti-common/vsock-store"]
 
 [[bin]]
 name = "vta"
