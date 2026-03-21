@@ -622,13 +622,15 @@ through the parent-side resolver.
 
 ## Step 7: Start the Enclave
 
-With the parent proxy running, start the enclave:
+With the parent proxy running, start the enclave. Use `--enclave-cid 16`
+to match the proxy's default CID:
 
 ```bash
 nitro-cli run-enclave \
     --eif-path ~/vta.eif \
     --cpu-count 1 \
     --memory 512 \
+    --enclave-cid 16 \
     --debug-mode
 
 # Verify it's running
