@@ -167,14 +167,14 @@ echo "Available profiles:"
 echo ""
 echo "  A) Hardened (DIDComm only) — smallest attack surface"
 echo "     REST limited to health, attestation, auth. All key/ACL ops via DIDComm."
-echo "     Features: didcomm,tee"
+echo "     Features: didcomm,vsock-store"
 echo ""
 echo "  B) Full API (REST + DIDComm) — all operations on both transports"
 echo "     For network-controlled environments (VPN, load balancer)."
-echo "     Features: rest,didcomm,tee"
+echo "     Features: rest,didcomm,vsock-store"
 echo ""
 echo "  C) REST only — no DIDComm mediator needed"
-echo "     Features: rest,tee"
+echo "     Features: rest,vsock-store"
 echo ""
 
 DEFAULT_PROFILE="${VTA_PROFILE:-full}"
@@ -192,17 +192,17 @@ fi
 
 case "${PROFILE_CHOICE^^}" in
     A)
-        FEATURES="didcomm,tee"
+        FEATURES="didcomm,vsock-store"
         PROFILE_NAME="Hardened (DIDComm only)"
         NEEDS_MEDIATOR=true
         ;;
     C)
-        FEATURES="rest,tee"
+        FEATURES="rest,vsock-store"
         PROFILE_NAME="REST only"
         NEEDS_MEDIATOR=false
         ;;
     *)
-        FEATURES="rest,didcomm,tee"
+        FEATURES="rest,didcomm,vsock-store"
         PROFILE_NAME="Full API (REST + DIDComm)"
         NEEDS_MEDIATOR=true
         ;;

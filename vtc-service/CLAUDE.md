@@ -10,9 +10,10 @@ Rust workspace for **Verifiable Trust Communities (VTC)**. A VTC manages a commu
 
 This repo lives at `vtc-vta-rs/vtc-service/` within a multi-crate workspace:
 
-- **vti-common** (`../vti-common/`) — Shared library: auth, ACL, store, error types, config
+- **vti-common** (`../vti-common/`) — Shared library: auth, ACL, store (local + vsock), error types, config
 - **vta-sdk** (`../vta-sdk/`) — Shared SDK: types, VTA HTTP client, session/auth logic, and protocol constants
-- **vta-service** (`../vta-service/`) — VTA binary service (key management, audit logging)
+- **vta-service** (`../vta-service/`) — VTA library + local/dev binary (key management, audit logging)
+- **vta-enclave** (`../vta-enclave/`) — VTA binary for Nitro Enclaves (TEE bootstrap, KMS, vsock-store)
 - **vtc-service** (this crate) — VTC binary service (community management, no key management)
 
 All crates share configuration via `workspace.package` in the root `Cargo.toml`.

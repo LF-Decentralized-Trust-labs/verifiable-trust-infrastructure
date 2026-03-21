@@ -252,8 +252,10 @@ Store the private key securely:
 
 ## Step 2: Choose a Build Profile
 
-The VTA supports different feature flag combinations for different security
-postures. Choose the profile that matches your deployment:
+The enclave image uses the `vta-enclave` binary, which has TEE support (KMS
+bootstrap, attestation, encrypted storage) built in — no `tee` feature flag
+needed. The `FEATURES` build arg controls which transport and storage options
+are compiled in.
 
 ### Profile A: Hardened (DIDComm only — recommended for production TEE)
 
@@ -263,7 +265,7 @@ This is the smallest attack surface.
 
 ```bash
 docker build -f Dockerfile.nitro \
-    --build-arg FEATURES="didcomm,tee" \
+    --build-arg FEATURES="didcomm,vsock-store" \
     -t vta-nitro .
 ```
 
@@ -284,7 +286,7 @@ behind a load balancer, VPN, or other network-level access control.
 
 ```bash
 docker build -f Dockerfile.nitro \
-    --build-arg FEATURES="rest,didcomm,tee" \
+    --build-arg FEATURES="rest,didcomm,vsock-store" \
     -t vta-nitro .
 ```
 
@@ -292,38 +294,39 @@ docker build -f Dockerfile.nitro \
 
 ```bash
 docker build -f Dockerfile.nitro \
-    --build-arg FEATURES="rest,tee" \
+    --build-arg FEATURES="rest,vsock-store" \
     -t vta-nitro .
 ```
 
 ### Customizing Feature Flags
 
-The `FEATURES` build arg maps directly to Cargo feature flags. Available features:
+The `FEATURES` build arg maps to Cargo feature flags on the `vta-enclave`
+crate. Available features:
 
-| Feature | Purpose | TEE deployment |
-|---------|---------|----------------|
+| Feature | Purpose | Notes |
+|---------|---------|-------|
 | `rest` | REST API endpoints | Optional (Profile B/C) |
 | `didcomm` | DIDComm v2 messaging | Recommended (Profile A/B) |
-| `tee` | TEE attestation + KMS bootstrap + encrypted storage | **Required** |
-| `keyring` | OS keyring seed storage | **Do not use** (no keyring in enclaves) |
-| `config-seed` | Load seed from config file | **Do not use** (KMS bootstrap provides the seed) |
-| `aws-secrets` | AWS Secrets Manager seed storage | **Do not use** (KMS bootstrap provides the seed) |
+| `vsock-store` | Persistent storage via parent proxy | **Recommended** for data persistence across restarts |
 | `webvh` | did:webvh DID management | Optional |
-| `setup` | Interactive setup wizard (requires TTY) | **Do not use** (no TTY in enclaves) |
+
+TEE support (KMS bootstrap, attestation, encrypted storage) is built into
+`vta-enclave` by default — no feature flag needed.
+
+Features NOT relevant for enclave builds (the VTA handles secrets via KMS):
+`keyring`, `config-seed`, `aws-secrets`, `setup`.
 
 **You do NOT need to edit `[services]` in `config.toml` when switching profiles.**
 The `FEATURES` build arg controls which services are compiled into the binary.
 The `[services]` section in config is a runtime toggle that can only *disable*
 a compiled-in service, never *enable* one that wasn't compiled. For example,
-building with `FEATURES="didcomm,tee"` (Profile A) means REST code is not in
-the binary at all — `services.rest = true` in config has no effect. You can
-use `services.didcomm = false` to disable DIDComm at runtime without rebuilding.
+building with `FEATURES="didcomm,vsock-store"` (Profile A) means REST code is
+not in the binary — `services.rest = true` in config has no effect.
 
-**In TEE mode with KMS bootstrap**, the `tee` feature handles all secret management:
+**KMS bootstrap** handles all secret management in enclave mode:
 - The seed is generated inside the TEE on first boot and encrypted to KMS
 - The JWT signing key is generated inside the TEE and encrypted to KMS
 - On subsequent boots, both are decrypted from KMS with attestation verification
-- No other seed storage backend (`config-seed`, `keyring`, `aws-secrets`) is needed
 
 ## Step 3: Build and Sign the Enclave Image
 
@@ -589,9 +592,9 @@ If you chose Profile B (Full API), the rebuild cycle is:
 
 ```bash
 # 1. Rebuild the Docker image with the SAME profile as Step 2
-#    Profile A (Hardened):       --build-arg FEATURES="didcomm,tee"
-#    Profile B (Full API):       --build-arg FEATURES="rest,didcomm,tee"
-#    Profile C (REST only):      --build-arg FEATURES="rest,tee"
+#    Profile A (Hardened):       --build-arg FEATURES="didcomm,vsock-store"
+#    Profile B (Full API):       --build-arg FEATURES="rest,didcomm,vsock-store"
+#    Profile C (REST only):      --build-arg FEATURES="rest,vsock-store"
 #    Or omit --build-arg to use the Dockerfile default (rest,didcomm,tee)
 docker build -f Dockerfile.nitro -t vta-nitro .
 
@@ -977,7 +980,7 @@ the full rebuild cycle because PCR0 changes:
 
 ```bash
 # 1. Rebuild Docker image
-docker build -f Dockerfile.nitro --build-arg FEATURES="rest,didcomm,tee" -t vta-nitro .
+docker build -f Dockerfile.nitro --build-arg FEATURES="rest,didcomm,vsock-store" -t vta-nitro .
 
 # 2. Rebuild and sign EIF — note the new PCR0
 nitro-cli build-enclave --docker-uri vta-nitro --output-file vta.eif \
