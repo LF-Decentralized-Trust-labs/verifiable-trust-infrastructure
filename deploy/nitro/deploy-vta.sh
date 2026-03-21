@@ -460,9 +460,10 @@ else
     step 7 "EIF build (skipped — nitro-cli not available)"
 
     warn "Cannot build EIF without nitro-cli."
-    warn "Transfer the Docker image to the EC2 instance and build there:"
+    warn "Transfer the Docker image and config to the EC2 instance and build there:"
     echo ""
     echo "  docker save vta-nitro | ssh ec2-user@<instance> docker load"
+    echo "  scp $CONFIG_PATH ec2-user@<instance>:~/deploy/nitro/config.toml"
     echo "  ssh ec2-user@<instance>"
     echo "  nitro-cli build-enclave --docker-uri vta-nitro --output-file vta.eif \\"
     echo "      --signing-certificate signing-cert.pem --private-key signing-key.pem"
