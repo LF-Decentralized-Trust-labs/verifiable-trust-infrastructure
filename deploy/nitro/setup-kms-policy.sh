@@ -17,6 +17,10 @@
 #
 # Options:
 #   --pcr0 <hash>           Enclave image hash (required)
+#   --old-pcr0 <hash>       Previous PCR0 for rolling upgrades. When set, both the
+#                           new and old PCR0 are allowed in the KMS policy. This lets
+#                           a new enclave image decrypt secrets encrypted by the old
+#                           image. Remove --old-pcr0 after verifying the upgrade.
 #   --pcr8 <hash>           Signing certificate hash (optional but recommended)
 #   --role <arn>            EC2 instance IAM role ARN (required)
 #   --key-arn <arn>         Existing KMS key ARN (creates new key if omitted)
@@ -53,6 +57,7 @@ set -euo pipefail
 
 # Parse arguments
 PCR0=""
+OLD_PCR0=""
 PCR8=""
 ROLE_ARN=""
 KEY_ARN=""
@@ -62,6 +67,7 @@ BUILD_ADMIN=""
 while [[ $# -gt 0 ]]; do
     case $1 in
         --pcr0) PCR0="$2"; shift 2;;
+        --old-pcr0) OLD_PCR0="$2"; shift 2;;
         --pcr8) PCR8="$2"; shift 2;;
         --role) ROLE_ARN="$2"; shift 2;;
         --key-arn) KEY_ARN="$2"; shift 2;;
@@ -76,7 +82,7 @@ done
 
 # Validate required args
 if [ -z "$PCR0" ] || [ -z "$ROLE_ARN" ]; then
-    echo "Usage: $0 --pcr0 <hash> --role <iam-role-arn> [--pcr8 <hash>] [--key-arn <existing>] [--region <region>] [--build-admin <arn>]"
+    echo "Usage: $0 --pcr0 <hash> --role <iam-role-arn> [--old-pcr0 <hash>] [--pcr8 <hash>] [--key-arn <existing>] [--region <region>] [--build-admin <arn>]"
     exit 1
 fi
 
@@ -91,20 +97,28 @@ echo "  Account:    $ACCOUNT_ID"
 echo "  Region:     $REGION"
 echo "  Role ARN:   $ROLE_ARN"
 echo "  PCR0:       ${PCR0:0:32}..."
+[ -n "$OLD_PCR0" ] && echo "  Old PCR0:   ${OLD_PCR0:0:32}... (rolling upgrade)"
 [ -n "$PCR8" ] && echo "  PCR8:       ${PCR8:0:32}..."
 [ -n "$BUILD_ADMIN" ] && echo "  Build admin: $BUILD_ADMIN"
 echo ""
 
-# Build the attestation condition block
-ATTESTATION_CONDITIONS=$(cat <<COND
-                    "kms:RecipientAttestation:PCR0": "$PCR0"
-COND
-)
+# Build the PCR0 value — single string or array for rolling upgrades
+if [ -n "$OLD_PCR0" ]; then
+    PCR0_VALUE="[\"$PCR0\", \"$OLD_PCR0\"]"
+else
+    PCR0_VALUE="\"$PCR0\""
+fi
 
+# Build the attestation condition block
 if [ -n "$PCR8" ]; then
     ATTESTATION_CONDITIONS=$(cat <<COND
-                    "kms:RecipientAttestation:PCR0": "$PCR0",
+                    "kms:RecipientAttestation:PCR0": $PCR0_VALUE,
                     "kms:RecipientAttestation:PCR8": "$PCR8"
+COND
+)
+else
+    ATTESTATION_CONDITIONS=$(cat <<COND
+                    "kms:RecipientAttestation:PCR0": $PCR0_VALUE
 COND
 )
 fi
@@ -236,6 +250,10 @@ echo ""
 echo "IMPORTANT: After rebuilding the enclave image, update PCR0:"
 echo "  $0 --pcr0 <new-hash> --role $ROLE_ARN --key-arn $KEY_ARN"
 [ -n "$PCR8" ] && echo "  (PCR8 only changes if you regenerate the signing key)"
+echo ""
+echo "Rolling upgrades (new image decrypts old secrets):"
+echo "  $0 --pcr0 <new-hash> --old-pcr0 <current-hash> --role $ROLE_ARN --key-arn $KEY_ARN"
+echo "  After verifying the upgrade, re-run without --old-pcr0 to remove the old PCR0."
 if [ -n "$BUILD_ADMIN" ]; then
     echo ""
     echo "To remove build admin access later:"
