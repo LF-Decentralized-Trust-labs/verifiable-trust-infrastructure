@@ -1,6 +1,10 @@
 use std::sync::Arc;
 
-use affinidi_tdk::common::TDKSharedState;
+use affinidi_did_resolver_cache_sdk::{DIDCacheClient, config::DIDCacheConfigBuilder};
+use affinidi_tdk::common::{TDKSharedState, create_http_client};
+use affinidi_tdk::common::config::TDKConfig;
+use affinidi_tdk::common::environments::TDKEnvironment;
+use affinidi_tdk::common::tasks::authentication::AuthenticationCache;
 use affinidi_tdk::didcomm::Message;
 use affinidi_tdk::messaging::ATM;
 use affinidi_tdk::messaging::config::ATMConfig;
@@ -14,14 +18,53 @@ use tracing::{info, warn};
 /// Connects over WebSocket and returns the ATM and profile handles needed
 /// for inbound/outbound messaging. The `service_label` is used in log messages
 /// (e.g. `"VTA"` or `"VTC"`).
+///
+/// When `resolver_url` is `Some`, the TDK's DID resolver uses network mode
+/// (WebSocket to a remote resolver server). When `None`, it uses local mode.
 pub async fn init_didcomm_connection(
     mediator_did: &str,
     secrets_resolver: &Arc<ThreadedSecretsResolver>,
     service_did: &str,
     service_label: &str,
+    resolver_url: Option<&str>,
 ) -> Option<(Arc<ATM>, Arc<ATMProfile>)> {
-    // Create TDK shared state and copy secrets from the shared resolver
-    let tdk = TDKSharedState::default().await;
+    // Create TDK shared state with custom DID resolver config
+    let tdk = {
+        let mut resolver_builder = DIDCacheConfigBuilder::default();
+        if let Some(url) = resolver_url {
+            info!(url = %url, "TDK DID resolver using network mode");
+            resolver_builder = resolver_builder.with_network_mode(url);
+        }
+        let did_resolver = match DIDCacheClient::new(resolver_builder.build()).await {
+            Ok(r) => r,
+            Err(e) => {
+                warn!("failed to create DID resolver for TDK: {e} — messaging disabled");
+                return None;
+            }
+        };
+
+        let config = TDKConfig::builder().build().unwrap();
+        let (tdk_secrets, _) = ThreadedSecretsResolver::new(None).await;
+        let client = create_http_client();
+        let environment = TDKEnvironment::default();
+        let (authentication, _) = AuthenticationCache::new(
+            1_000,
+            &did_resolver,
+            tdk_secrets.clone(),
+            &client,
+            None,
+        );
+        authentication.start().await;
+
+        TDKSharedState {
+            config,
+            did_resolver,
+            secrets_resolver: tdk_secrets,
+            client,
+            environment,
+            authentication,
+        }
+    };
 
     let signing_id = format!("{service_did}#key-0");
     let ka_id = format!("{service_did}#key-1");
