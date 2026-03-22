@@ -1020,21 +1020,42 @@ Every time you rebuild the Docker image or change config baked into the EIF,
 the PCR0 (image hash) changes. The KMS policy must be updated to allow the
 new image to decrypt the existing secrets.
 
-### Rolling upgrade (zero downtime)
+### What triggers a PCR0 change
+
+Any of these require a KMS policy update:
+- Code changes in the VTA (Rust source)
+- Dependency updates (Cargo.lock changes)
+- Config changes (config.toml baked into the EIF)
+- Dockerfile changes (base image, packages, build args)
+- Feature flag changes
+
+**PCR8 does NOT change** unless you regenerate the signing key.
+
+### Rolling upgrade (preserves identity and secrets)
+
+This is the standard upgrade procedure. The KMS policy temporarily allows
+both the old and new PCR0, so the new image can decrypt secrets that were
+encrypted by the old image.
 
 ```bash
-# 1. Note the current PCR0 (from the last build or from nitro-cli)
-OLD_PCR0=$(nitro-cli describe-enclaves | jq -r '.[0].Measurements.PCR0 // empty')
+# 1. Record the current PCR0 before building
+OLD_PCR0=$(cat last-build-pcr0.txt)
+# Or from a running enclave:
+# OLD_PCR0=$(nitro-cli describe-enclaves | jq -r '.[0].Measurements.PCR0')
 
 # 2. Build the new image
 docker build -f Dockerfile.nitro --build-arg FEATURES="rest,didcomm,vsock-store" -t vta-nitro .
 nitro-cli build-enclave --docker-uri vta-nitro --output-file vta.eif \
     --signing-certificate signing-cert.pem --private-key signing-key.pem
-# Note the new PCR0 from the output
+# Save the new PCR0 from the output
+NEW_PCR0="<from build output>"
+echo "$NEW_PCR0" > last-build-pcr0.txt
 
 # 3. Update KMS policy to allow BOTH old and new PCR0
+#    Security: PCR8 (signing cert) is still enforced, so only YOUR
+#    signed images can decrypt — not an attacker's custom image.
 ./deploy/nitro/setup-kms-policy.sh \
-    --pcr0 "NEW_PCR0" \
+    --pcr0 "$NEW_PCR0" \
     --old-pcr0 "$OLD_PCR0" \
     --pcr8 "$(cat signing/pcr8.txt)" \
     --role "arn:aws:iam::ACCOUNT:role/ROLE" \
@@ -1044,17 +1065,39 @@ nitro-cli build-enclave --docker-uri vta-nitro --output-file vta.eif \
 nitro-cli terminate-enclave --enclave-id $(nitro-cli describe-enclaves | jq -r '.[0].EnclaveID')
 nitro-cli run-enclave --eif-path vta.eif --cpu-count 1 --memory 512 --enclave-cid 16 --debug-mode
 
-# 5. After verifying the new image works, remove the old PCR0
+# 5. Verify the new image works
+curl http://localhost:8443/health
+curl http://localhost:8443/attestation/status
+
+# 6. Lock down: remove the old PCR0 from the policy
 ./deploy/nitro/setup-kms-policy.sh \
-    --pcr0 "NEW_PCR0" \
+    --pcr0 "$NEW_PCR0" \
     --pcr8 "$(cat signing/pcr8.txt)" \
     --role "arn:aws:iam::ACCOUNT:role/ROLE" \
     --key-arn "arn:aws:kms:REGION:ACCOUNT:key/KEY_ID"
 ```
 
+> **Security note:** During step 3-6, both the old and new PCR0 are
+> authorized. PCR8 (your signing certificate) prevents an attacker from
+> using a custom image during this window. Step 6 removes the old PCR0
+> to close the window completely.
+
+### Auto-recovery (forgot to update KMS policy)
+
+If you deploy a new image without updating the KMS policy, the VTA will:
+1. Find existing ciphertexts in the bootstrap keyspace
+2. Fail to decrypt them (PCR0 mismatch)
+3. Log a warning: *"KMS decrypt failed — clearing stale bootstrap data"*
+4. Clear the old bootstrap data
+5. Do a fresh first boot with a **new identity**
+
+This is safe (denial of service, not privilege escalation) but results in
+a new DID identity. Use the rolling upgrade procedure above to preserve
+the existing identity across image updates.
+
 ### Fresh deployment (new identity)
 
-If you don't need to preserve the existing secrets and DID identity:
+If you intentionally want a clean start:
 
 ```bash
 # 1. Delete the persistent store
@@ -1064,6 +1107,39 @@ rm -rf /mnt/vta-data/store/*
 ./deploy/nitro/setup-kms-policy.sh --pcr0 "NEW_PCR0" ...
 
 # 3. Start the enclave — it will do a fresh first boot
+```
+
+Or simply deploy without updating the KMS policy — the auto-recovery
+will handle it (see above).
+
+### CI/CD upgrade workflow
+
+For automated deployments, the CI/CD pipeline should:
+
+```bash
+# Build + sign
+docker build -f Dockerfile.nitro --build-arg FEATURES="..." -t vta-nitro .
+NEW_PCR0=$(nitro-cli build-enclave --docker-uri vta-nitro --output-file vta.eif \
+    --signing-certificate cert.pem --private-key key.pem | jq -r '.Measurements.PCR0')
+
+# Rolling update: allow both old and new PCR0
+OLD_PCR0=$(cat /opt/vta/last-pcr0.txt)
+./setup-kms-policy.sh --pcr0 "$NEW_PCR0" --old-pcr0 "$OLD_PCR0" \
+    --build-admin "$BUILD_ROLE_ARN" ...
+
+# Deploy new EIF
+nitro-cli terminate-enclave --enclave-id $(nitro-cli describe-enclaves | jq -r '.[0].EnclaveID')
+nitro-cli run-enclave --eif-path vta.eif ...
+
+# Health check
+sleep 10
+curl --fail http://localhost:8443/health || exit 1
+
+# Lock down: remove old PCR0
+./setup-kms-policy.sh --pcr0 "$NEW_PCR0" --build-admin "$BUILD_ROLE_ARN" ...
+
+# Save for next upgrade
+echo "$NEW_PCR0" > /opt/vta/last-pcr0.txt
 ```
 
 ## Disaster Recovery
