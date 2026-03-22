@@ -1014,14 +1014,66 @@ nitro-cli terminate-enclave --enclave-id $(nitro-cli describe-enclaves | jq -r '
 nitro-cli run-enclave --eif-path vta.eif --cpu-count 1 --memory 512 --debug-mode
 ```
 
+## Upgrading the Enclave Image
+
+Every time you rebuild the Docker image or change config baked into the EIF,
+the PCR0 (image hash) changes. The KMS policy must be updated to allow the
+new image to decrypt the existing secrets.
+
+### Rolling upgrade (zero downtime)
+
+```bash
+# 1. Note the current PCR0 (from the last build or from nitro-cli)
+OLD_PCR0=$(nitro-cli describe-enclaves | jq -r '.[0].Measurements.PCR0 // empty')
+
+# 2. Build the new image
+docker build -f Dockerfile.nitro --build-arg FEATURES="rest,didcomm,vsock-store" -t vta-nitro .
+nitro-cli build-enclave --docker-uri vta-nitro --output-file vta.eif \
+    --signing-certificate signing-cert.pem --private-key signing-key.pem
+# Note the new PCR0 from the output
+
+# 3. Update KMS policy to allow BOTH old and new PCR0
+./deploy/nitro/setup-kms-policy.sh \
+    --pcr0 "NEW_PCR0" \
+    --old-pcr0 "$OLD_PCR0" \
+    --pcr8 "$(cat signing/pcr8.txt)" \
+    --role "arn:aws:iam::ACCOUNT:role/ROLE" \
+    --key-arn "arn:aws:kms:REGION:ACCOUNT:key/KEY_ID"
+
+# 4. Terminate old enclave and start new one
+nitro-cli terminate-enclave --enclave-id $(nitro-cli describe-enclaves | jq -r '.[0].EnclaveID')
+nitro-cli run-enclave --eif-path vta.eif --cpu-count 1 --memory 512 --enclave-cid 16 --debug-mode
+
+# 5. After verifying the new image works, remove the old PCR0
+./deploy/nitro/setup-kms-policy.sh \
+    --pcr0 "NEW_PCR0" \
+    --pcr8 "$(cat signing/pcr8.txt)" \
+    --role "arn:aws:iam::ACCOUNT:role/ROLE" \
+    --key-arn "arn:aws:kms:REGION:ACCOUNT:key/KEY_ID"
+```
+
+### Fresh deployment (new identity)
+
+If you don't need to preserve the existing secrets and DID identity:
+
+```bash
+# 1. Delete the persistent store
+rm -rf /mnt/vta-data/store/*
+
+# 2. Update KMS policy with only the new PCR0
+./deploy/nitro/setup-kms-policy.sh --pcr0 "NEW_PCR0" ...
+
+# 3. Start the enclave — it will do a fresh first boot
+```
+
 ## Disaster Recovery
 
 | Scenario | Recovery |
 |----------|----------|
-| Enclave restart | Automatic — KMS Decrypt retrieves seed from ciphertext |
+| Enclave restart | Automatic — KMS Decrypt retrieves seed from bootstrap keyspace |
 | EBS volume lost | Use mnemonic backup with `vta tee recover --mnemonic "..."` |
 | KMS key deleted | Use mnemonic to regenerate seed with a new KMS key |
-| PCR0 mismatch after rebuild | Update KMS policy with `setup-kms-policy.sh --pcr0 <new>` |
+| PCR0 mismatch after rebuild | Rolling upgrade with `--old-pcr0`, or fresh deploy |
 | Signing key lost | Generate new key, rebuild + re-sign EIF, update PCR8 in KMS policy |
 
 ## IAM Role Configuration
