@@ -68,46 +68,70 @@ pub async fn bootstrap_secrets(
     // Bootstrap keyspace — no encryption (ciphertexts are already KMS-encrypted)
     let bs_ks = store.keyspace("bootstrap")?;
 
-    let seed: Vec<u8>;
-    let jwt_key: [u8; 32];
-
     let seed_ct = bs_ks.get_raw(BOOTSTRAP_SEED_CT_KEY).await?;
     let jwt_ct = bs_ks.get_raw(BOOTSTRAP_JWT_CT_KEY).await?;
 
     if let (Some(seed_ciphertext), Some(jwt_ciphertext)) = (seed_ct, jwt_ct) {
-        // ── Subsequent boot: decrypt existing ciphertexts ──
+        // ── Subsequent boot: try to decrypt existing ciphertexts ──
         info!("found existing secret ciphertexts in store — decrypting via KMS");
 
-        seed = kms_decrypt(kms_config, &seed_ciphertext).await?;
-        let jwt_bytes = kms_decrypt(kms_config, &jwt_ciphertext).await?;
-        jwt_key = jwt_bytes.try_into().map_err(|_| {
-            tee_attestation_error("JWT key must be exactly 32 bytes")
-        })?;
+        match kms_decrypt(kms_config, &seed_ciphertext).await {
+            Ok(seed) => {
+                let jwt_bytes = kms_decrypt(kms_config, &jwt_ciphertext).await?;
+                let jwt_key: [u8; 32] = jwt_bytes.try_into().map_err(|_| {
+                    tee_attestation_error("JWT key must be exactly 32 bytes")
+                })?;
 
-        // Verify JWT key fingerprint (tamper detection)
-        verify_jwt_fingerprint(&bs_ks, &jwt_key).await?;
+                verify_jwt_fingerprint(&bs_ks, &jwt_key).await?;
+                info!("secrets decrypted from KMS — subsequent boot");
 
-        info!("secrets decrypted from KMS — subsequent boot");
-    } else {
-        // ── First boot: generate new secrets inside the TEE ──
-        info!("no existing ciphertexts found — first boot, generating new secrets in TEE");
+                let storage_key = derive_storage_key(&seed, storage_key_salt);
+                return Ok(BootstrappedSecrets {
+                    seed,
+                    jwt_signing_key: jwt_key,
+                    storage_key,
+                    entropy: None,
+                    is_first_boot: false,
+                });
+            }
+            Err(e) => {
+                // KMS decrypt failed — likely a PCR0 mismatch after image rebuild.
+                // Clear the stale bootstrap data and fall through to first boot.
+                warn!(
+                    error = %e,
+                    "KMS decrypt of existing ciphertexts failed — clearing stale \
+                     bootstrap data and starting fresh. This is expected after an \
+                     image rebuild with a new PCR0. The VTA will generate a new \
+                     identity."
+                );
+                bs_ks.remove(BOOTSTRAP_SEED_CT_KEY).await?;
+                bs_ks.remove(BOOTSTRAP_JWT_CT_KEY).await?;
+                bs_ks.remove(BOOTSTRAP_JWT_FINGERPRINT_KEY).await?;
+                store.persist().await?;
+                // Fall through to first boot path below
+            }
+        }
+    }
 
-        let mut entropy = [0u8; 32];
-        rand::fill(&mut entropy);
-        let mnemonic = bip39::Mnemonic::from_entropy(&entropy)
-            .map_err(|e| tee_attestation_error(format!("failed to generate mnemonic: {e}")))?;
+    // ── First boot: generate new secrets inside the TEE ──
+    info!("first boot — generating new secrets in TEE");
 
-        info!("first boot — master seed generated inside TEE (mnemonic NOT displayed)");
-        info!("to export the mnemonic, restart with VTA_MNEMONIC_EXPORT_WINDOW=<seconds>");
+    let mut entropy = [0u8; 32];
+    rand::fill(&mut entropy);
+    let mnemonic = bip39::Mnemonic::from_entropy(&entropy)
+        .map_err(|e| tee_attestation_error(format!("failed to generate mnemonic: {e}")))?;
 
-        seed = mnemonic.to_seed("").to_vec();
-        let seed = seed[..32].to_vec();
+    info!("master seed generated inside TEE (mnemonic NOT displayed)");
+    info!("to export the mnemonic, restart with VTA_MNEMONIC_EXPORT_WINDOW=<seconds>");
 
-        let mut jwt_key_bytes = [0u8; 32];
-        rand::fill(&mut jwt_key_bytes);
-        jwt_key = jwt_key_bytes;
+    let full_seed = mnemonic.to_seed("").to_vec();
+    let seed = full_seed[..32].to_vec();
 
-        // Encrypt with KMS and store ciphertexts in the bootstrap keyspace
+    let mut jwt_key_bytes = [0u8; 32];
+    rand::fill(&mut jwt_key_bytes);
+    let jwt_key = jwt_key_bytes;
+
+    // Encrypt with KMS and store ciphertexts in the bootstrap keyspace
         let seed_ciphertext = kms_encrypt(kms_config, &seed).await?;
         let jwt_ciphertext = kms_encrypt(kms_config, &jwt_key).await?;
 
@@ -120,23 +144,12 @@ pub async fn bootstrap_secrets(
 
         info!("secrets generated and encrypted to KMS — ciphertexts stored");
 
-        return Ok(BootstrappedSecrets {
-            storage_key: derive_storage_key(&seed, storage_key_salt),
-            seed,
-            jwt_signing_key: jwt_key,
-            entropy: Some(entropy),
-            is_first_boot: true,
-        });
-    }
-
-    let storage_key = derive_storage_key(&seed, storage_key_salt);
-
     Ok(BootstrappedSecrets {
+        storage_key: derive_storage_key(&seed, storage_key_salt),
         seed,
         jwt_signing_key: jwt_key,
-        storage_key,
-        entropy: None,
-        is_first_boot: false,
+        entropy: Some(entropy),
+        is_first_boot: true,
     })
 }
 
