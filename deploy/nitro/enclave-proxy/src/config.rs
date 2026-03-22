@@ -131,10 +131,10 @@ impl ProxyConfig {
         }
     }
 
-    /// Build the full allowlist including default + mediator + extras.
+    /// Build the full allowlist including default + DID hosts + extras.
     ///
-    /// DID resolution is handled by the embedded resolver (no external service),
-    /// so no resolver host needs to be allowlisted.
+    /// Automatically extracts hostnames from the mediator DID so the
+    /// enclave's TDK can resolve the DID via the HTTPS proxy.
     pub fn build_allowlist(&self) -> Vec<(String, u16)> {
         let mut hosts = vec![
             (format!("kms.{}.amazonaws.com", self.kms_region), 443),
@@ -146,8 +146,38 @@ impl ProxyConfig {
             hosts.push((mh.clone(), port));
         }
 
+        // Auto-add DID hosting servers from the mediator DID.
+        // The enclave's TDK resolves the mediator DID via HTTPS, so
+        // the hosting server must be in the allowlist.
+        if let Some(ref did) = self.mediator_did {
+            if let Some(host) = extract_host_from_did(did) {
+                tracing::info!(did = %did, host = %host, "auto-allowlisting DID host from mediator DID");
+                hosts.push((host, 443));
+            }
+        }
+
         hosts.extend(self.allowlist_hosts.clone());
         hosts
+    }
+}
+
+/// Extract the hosting server hostname from a DID.
+///
+/// Supports did:web and did:webvh:
+///   did:web:example.com → example.com
+///   did:webvh:SCID:example.com:path → example.com
+fn extract_host_from_did(did: &str) -> Option<String> {
+    if let Some(rest) = did.strip_prefix("did:web:") {
+        Some(rest.split('%').next().unwrap_or(rest)
+            .split(':').next().unwrap_or(rest)
+            .to_string())
+    } else if let Some(rest) = did.strip_prefix("did:webvh:") {
+        // did:webvh:SCID:host:path — skip SCID (first segment)
+        rest.split(':').nth(1).map(|segment| {
+            segment.split('%').next().unwrap_or(segment).to_string()
+        })
+    } else {
+        None
     }
 }
 
