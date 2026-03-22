@@ -57,8 +57,14 @@ pub async fn init_didcomm_connection(
             return None;
         }
     };
-    vta_sdk::didcomm_init::init_didcomm_connection(mediator_did, secrets_resolver, vta_did, "VTA")
-        .await
+    vta_sdk::didcomm_init::init_didcomm_connection(
+        mediator_did,
+        secrets_resolver,
+        vta_did,
+        "VTA",
+        config.resolver_url.as_deref(),
+    )
+    .await
 }
 
 /// Run the DIDComm inbound message loop until shutdown is signaled.

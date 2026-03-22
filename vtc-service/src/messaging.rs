@@ -25,8 +25,11 @@ pub async fn init_didcomm_connection(
             return None;
         }
     };
-    vta_sdk::didcomm_init::init_didcomm_connection(mediator_did, secrets_resolver, vtc_did, "VTC")
-        .await
+    // VTC doesn't support network-mode resolver (no TEE/enclave mode)
+    vta_sdk::didcomm_init::init_didcomm_connection(
+        mediator_did, secrets_resolver, vtc_did, "VTC", None,
+    )
+    .await
 }
 
 /// Run the DIDComm inbound message loop until shutdown is signaled.
