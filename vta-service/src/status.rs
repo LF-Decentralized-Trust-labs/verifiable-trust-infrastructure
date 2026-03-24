@@ -248,6 +248,7 @@ pub async fn run_status(config_path: Option<PathBuf>) -> Result<(), Box<dyn std:
     let mut revoked = 0usize;
     let mut ed25519_count = 0usize;
     let mut x25519_count = 0usize;
+    let mut p256_count = 0usize;
 
     for (_key, value) in &raw_keys {
         if let Ok(record) = serde_json::from_slice::<KeyRecord>(value) {
@@ -259,13 +260,14 @@ pub async fn run_status(config_path: Option<PathBuf>) -> Result<(), Box<dyn std:
             match record.key_type {
                 KeyType::Ed25519 => ed25519_count += 1,
                 KeyType::X25519 => x25519_count += 1,
+                KeyType::P256 => p256_count += 1,
             }
         }
     }
 
     section(&format!("Keys ({total_keys})"));
     eprintln!(
-        "  {CYAN}{:<13}{RESET} {active}  Ed25519: {ed25519_count}, X25519: {x25519_count}",
+        "  {CYAN}{:<13}{RESET} {active}  Ed25519: {ed25519_count}, X25519: {x25519_count}, P-256: {p256_count}",
         "Active"
     );
     eprintln!("  {CYAN}{:<13}{RESET} {revoked}", "Revoked");
