@@ -10,6 +10,9 @@
 //! After bootstrapping, it calls vta_service::server::run() with
 //! the TeeContext — the same server code as the local VTA binary.
 
+#[cfg(feature = "vsock-log")]
+mod vsock_log;
+
 use std::sync::Arc;
 
 use base64::Engine;
@@ -47,6 +50,16 @@ async fn main() {
         }
     };
 
+    // Initialize tracing. When vsock-log is enabled, logs are tee'd to both
+    // stderr (visible in debug mode) and a vsock channel on port 5700 (visible
+    // via enclave-proxy in production mode). The initial connection is awaited
+    // (with a 2s timeout) so early boot logs are forwarded before bootstrap.
+    #[cfg(feature = "vsock-log")]
+    {
+        let vsock_writer = vsock_log::start().await;
+        vta_service::init_tracing_with_writer(&config, vsock_writer);
+    }
+    #[cfg(not(feature = "vsock-log"))]
     vta_service::init_tracing(&config);
     print_banner();
 

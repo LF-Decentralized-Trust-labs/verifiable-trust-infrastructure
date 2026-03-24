@@ -1,7 +1,8 @@
-//! Proxy channels: inbound REST, outbound mediator, outbound HTTPS.
+//! Proxy channels: inbound REST, outbound mediator, outbound HTTPS, log receiver.
 
 use std::sync::Arc;
 
+use tokio::io::AsyncBufReadExt;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Semaphore;
 use tokio_rustls::TlsConnector;
@@ -515,6 +516,46 @@ pub async fn run_resolver(vsock_port: u32, resolver_port: u16) {
                 }
             }
         });
+    }
+}
+
+// ---------------------------------------------------------------------------
+// [7] Log receiver: vsock → stdout (enclave logs → parent console)
+// ---------------------------------------------------------------------------
+
+/// Receive log lines from the enclave over vsock and print them to stdout.
+///
+/// Each line is printed with a `[vta]` prefix so enclave logs are clearly
+/// distinguishable from the proxy's own tracing output. The listener
+/// accepts connections in a loop so the enclave can reconnect after restarts.
+pub(crate) async fn run_log_receiver(vsock_port: u32) {
+    let mut listener = match VsockListener::bind(VsockAddr::new(VMADDR_CID_ANY, vsock_port)) {
+        Ok(l) => l,
+        Err(e) => {
+            error!("[logs] failed to bind vsock:{vsock_port}: {e}");
+            return;
+        }
+    };
+    info!("[logs] listening on vsock:{vsock_port} for enclave log stream");
+
+    loop {
+        let (stream, _peer) = match listener.accept().await {
+            Ok(s) => s,
+            Err(e) => {
+                warn!("[logs] accept error: {e}");
+                continue;
+            }
+        };
+        info!("[logs] enclave log stream connected");
+
+        let reader = tokio::io::BufReader::new(stream);
+        let mut lines = reader.lines();
+        while let Ok(Some(line)) = lines.next_line().await {
+            // Print directly to stdout — not through tracing, to avoid
+            // recursive formatting or double-prefixing.
+            println!("[vta] {line}");
+        }
+        warn!("[logs] enclave log stream disconnected — waiting for reconnect");
     }
 }
 
