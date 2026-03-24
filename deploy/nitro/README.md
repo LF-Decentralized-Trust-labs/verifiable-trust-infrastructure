@@ -783,6 +783,16 @@ nitro-cli console \
 > **Tip:** Use `--debug-mode --attach-console` to stream console output
 > directly to your terminal. See the [Troubleshooting](#troubleshooting)
 > section for more details.
+>
+> **Warning:** In debug mode, all PCR values in the NSM attestation document
+> are set to **zeros** by the Nitro hypervisor. This means KMS attestation
+> conditions (PCR0/PCR8) will **never match** your real image hashes, and
+> all attested KMS calls will fail with `AccessDeniedException`. To use KMS
+> in debug mode, temporarily set the policy PCR values to all zeros:
+> ```
+> ./deploy/nitro/setup-kms-policy.sh --pcr0 "0000...96 zeros" --pcr8 "0000...96 zeros" ...
+> ```
+> **Remember to restore the real PCR values before production use.**
 
 ## Step 8: First boot (auto-detected)
 
@@ -944,7 +954,9 @@ nitro-cli console \
 
 > **Note:** `--debug-mode` must be specified at launch time. You cannot
 > attach a console to an enclave that was started without it. Debug mode
-> does not weaken security — it only enables the console output channel.
+> enables the console output channel but also **zeros all PCR values** in
+> attestation documents, which breaks KMS attestation conditions. See the
+> warning in [Step 7](#step-7-launch-the-enclave) for the workaround.
 
 ### Common startup errors
 
@@ -953,7 +965,8 @@ nitro-cli console \
 | `Error loading shared library ...` | Missing runtime library in the Alpine image | Add the library to the `apk add` list in `Dockerfile.nitro` and rebuild |
 | `Error relocating ... symbol not found` | glibc binary uses a function Alpine/musl doesn't provide | Check if the symbol needs a compat stub (see `libresolv_compat.so` in `Dockerfile.nitro`) |
 | Enclave exits immediately (hang-up event) | Process inside crashed — use `--attach-console` to see why | Start with `--debug-mode --attach-console` and read the error output |
-| `KMS Decrypt failed [ACCESS_DENIED]` | PCR0 mismatch — the EIF was rebuilt but KMS policy wasn't updated | Re-run `setup-kms-policy.sh` with the new PCR0 from the build output |
+| `KMS ... failed [ACCESS_DENIED]` | PCR0 mismatch — the EIF was rebuilt but KMS policy wasn't updated | Re-run `setup-kms-policy.sh` with the new PCR0 from the build output |
+| `KMS ... failed [ACCESS_DENIED]` in debug mode | Debug mode zeros all PCR values — KMS attestation conditions can't match | Use all-zeros PCR values in the KMS policy for testing, or launch without `--debug-mode` |
 | `failed to load IMDS session token` | IMDS hop limit too low or HTTP_PROXY interfering | Set IMDS hop limit to 2: `aws ec2 modify-instance-metadata-options --instance-id <id> --http-put-response-hop-limit 2` |
 | `KMS Decrypt failed [NETWORK]` | Can't reach KMS — parent proxy not running or allowlist wrong | Start the enclave-proxy on the parent and verify the KMS endpoint is allowlisted |
 | `KMS Decrypt failed [KEY_NOT_FOUND]` | Wrong KMS key ARN in config.toml | Verify `[tee.kms] key_arn` matches the key created by `setup-kms-policy.sh` |
