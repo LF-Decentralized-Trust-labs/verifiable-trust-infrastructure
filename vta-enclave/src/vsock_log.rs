@@ -9,7 +9,6 @@
 use std::io::Write;
 use std::sync::Arc;
 
-use tokio::io::AsyncWriteExt;
 use tokio::sync::mpsc;
 use tracing_subscriber::fmt::MakeWriter;
 
@@ -84,7 +83,8 @@ async fn vsock_drain_task(
     mut rx: mpsc::Receiver<Vec<u8>>,
     initial_stream: Option<tokio_vsock::VsockStream>,
 ) {
-    use tokio_vsock::{VsockAddr, VsockStream};
+    use tokio::io::AsyncWriteExt;
+    use tokio_vsock::VsockAddr;
 
     let addr = VsockAddr::new(PARENT_CID, VSOCK_LOG_PORT);
 
@@ -98,11 +98,11 @@ async fn vsock_drain_task(
     loop {
         match rx.recv().await {
             Some(buf) => {
-                if stream.write_all(&buf).await.is_err() {
+                if AsyncWriteExt::write_all(&mut stream, &buf).await.is_err() {
                     // Connection lost — reconnect
                     stream = connect_with_backoff(&addr, &mut rx).await;
                     // Retry writing this buffer on the new connection
-                    let _ = stream.write_all(&buf).await;
+                    let _ = AsyncWriteExt::write_all(&mut stream, &buf).await;
                 }
             }
             None => return, // Channel closed — VTA shutting down
