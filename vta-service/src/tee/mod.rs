@@ -1,3 +1,4 @@
+pub mod admin_bootstrap;
 pub mod did_autogen;
 mod detect;
 pub mod kms_bootstrap;

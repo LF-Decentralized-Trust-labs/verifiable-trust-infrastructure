@@ -102,6 +102,11 @@ pub fn router() -> Router<AppState> {
         .route(
             "/attestation/did-log",
             get(attestation::did_log),
+        )
+        // Bootstrapped admin credential (unauthenticated — one-time retrieval)
+        .route(
+            "/attestation/admin-credential",
+            get(attestation::admin_credential),
         );
 
     // WebVH routes (feature-gated)
