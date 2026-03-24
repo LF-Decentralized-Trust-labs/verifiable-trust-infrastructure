@@ -785,7 +785,17 @@ mod cms_der {
         // Parse algorithm to get the GCM nonce
         let nonce = parse_aes_gcm_params(&alg_body)?;
 
-        Ok((nonce, ct_value.to_vec()))
+        // The ciphertext may be wrapped in an inner OCTET STRING if KMS used
+        // EXPLICIT tagging on [0] instead of IMPLICIT. Unwrap if present.
+        let ciphertext = if ct_value.len() > 2 && ct_value[0] == 0x04 {
+            let mut inner_pos = 0;
+            let (_, inner) = read_tlv(ct_value, &mut inner_pos, "inner encryptedContent")?;
+            inner.to_vec()
+        } else {
+            ct_value.to_vec()
+        };
+
+        Ok((nonce, ciphertext))
     }
 
     fn parse_aes_gcm_params(alg_data: &[u8]) -> Result<Vec<u8>, AppError> {
