@@ -25,7 +25,7 @@ storage, and signed enclave images.
 │    → Network MITM can't read the response                           │
 │                                                                     │
 │  Layer 5: IAM separation                                            │
-│    → EC2 role: kms:Decrypt + kms:Encrypt only                       │
+│    → EC2 role: kms:Decrypt + kms:GenerateDataKey only               │
 │    → Admin role (separate account): kms:PutKeyPolicy + MFA          │
 │                                                                     │
 │  Layer 6: Hardware memory isolation                                  │
@@ -170,7 +170,7 @@ The rest of this guide documents each step in detail.
 | AMI | Amazon Linux 2023 or Ubuntu 22.04+ |
 | Enclave support | Enabled at launch: `--enclave-options Enabled=true` |
 | IMDS hop limit | Must be **2** (see below) |
-| IAM role | Minimal: `kms:Decrypt`, `kms:Encrypt` only (see Step 3) |
+| IAM role | Minimal: `kms:Decrypt`, `kms:GenerateDataKey` only (see Step 3) |
 
 ### IMDS Hop Limit
 
@@ -471,8 +471,7 @@ This creates a KMS key with three policy statements:
 | Statement | Principal | Actions | Condition |
 |-----------|-----------|---------|-----------|
 | Key administration | Your IAM user/role | Full management | None (admin only) |
-| Encrypt | EC2 instance role | `kms:Encrypt` | None (for first-boot seed storage) |
-| **Attestation decrypt** | EC2 instance role | `kms:Decrypt`, `kms:GenerateDataKey` | **PCR0 + PCR8 must match** |
+| **Attestation operations** | EC2 instance role | `kms:Decrypt`, `kms:GenerateDataKey` | **PCR0 + PCR8 must match** |
 
 #### Granting build role admin access
 
@@ -1164,7 +1163,7 @@ echo "$NEW_PCR0" > /opt/vta/last-pcr0.txt
             "Effect": "Allow",
             "Action": [
                 "kms:Decrypt",
-                "kms:Encrypt"
+                "kms:GenerateDataKey"
             ],
             "Resource": "arn:aws:kms:REGION:ACCOUNT:key/KEY_ID"
         }

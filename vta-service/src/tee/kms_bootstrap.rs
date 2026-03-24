@@ -820,29 +820,31 @@ mod cms_der {
 
 /// Classify KMS errors for operator diagnostics.
 fn classify_kms_error<E: std::error::Error>(operation: &str, err: E) -> AppError {
-    let err_str = format!("{err}");
+    // Build the full error chain string so classification catches nested causes
+    // (the AWS SDK wraps the actual error type several layers deep).
+    let mut full_msg = format!("{err}");
+    let mut source = std::error::Error::source(&err);
+    while let Some(cause) = source {
+        full_msg.push_str(&format!("\n  caused by: {cause}"));
+        source = cause.source();
+    }
 
     // Classify by error message patterns for clear operator guidance
-    let classification = if err_str.contains("AccessDeniedException") {
-        "ACCESS_DENIED — check KMS key policy PCR conditions and IAM role permissions"
-    } else if err_str.contains("NotFoundException") || err_str.contains("not found") {
+    let classification = if full_msg.contains("AccessDeniedException") {
+        "ACCESS_DENIED — check KMS key policy allows this action and PCR conditions match"
+    } else if full_msg.contains("NotFoundException") || full_msg.contains("not found") {
         "KEY_NOT_FOUND — verify the KMS key ARN in config.toml"
-    } else if err_str.contains("InvalidCiphertextException") {
-        "INVALID_CIPHERTEXT — ciphertext file may be corrupt or encrypted with a different key"
-    } else if err_str.contains("KMSInternalException") {
+    } else if full_msg.contains("InvalidCiphertextException") {
+        "INVALID_CIPHERTEXT — ciphertext may be corrupt or encrypted with a different key"
+    } else if full_msg.contains("KMSInternalException") {
         "KMS_INTERNAL — transient AWS error, retry may help"
-    } else if err_str.contains("connect") || err_str.contains("timeout") {
+    } else if full_msg.contains("connect") || full_msg.contains("timeout") {
         "NETWORK — cannot reach KMS endpoint, check vsock proxy and allowlist"
     } else {
         "UNKNOWN"
     };
 
-    let mut msg = format!("KMS {operation} failed [{classification}]: {err}");
-    let mut source = std::error::Error::source(&err);
-    while let Some(cause) = source {
-        msg.push_str(&format!("\n  caused by: {cause}"));
-        source = cause.source();
-    }
+    let msg = format!("KMS {operation} failed [{classification}]: {full_msg}");
 
     error!(operation, classification, "KMS error");
     tee_attestation_error(msg)

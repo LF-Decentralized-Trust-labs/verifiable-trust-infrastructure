@@ -63,34 +63,44 @@ we need to guarantee that:
 
 ### 1. Zero-Trust Secret Bootstrapping
 
-The VTA never receives plaintext secrets over any network channel. Instead:
+The VTA never receives plaintext secrets over any network channel. Both the
+encrypt path (first boot) and decrypt path (subsequent boots) require Nitro
+attestation, preventing an attacker with IAM role access from either reading
+or overwriting secrets.
 
-1. **At build time**: The seed and JWT key are encrypted with an AWS KMS CMK and
-   stored as ciphertext (in S3, SSM Parameter Store, or baked into the EIF)
-2. **At enclave startup**: The VTA generates an **ephemeral RSA-2048 key pair**
-   inside the enclave using NSM-provided random bytes
-3. **Attestation**: The RSA public key is embedded in an NSM attestation document
-4. **KMS Decrypt**: The enclave calls `kms:Decrypt` with the `Recipient` parameter
-   containing the attestation document. KMS:
-   - Verifies the attestation signature (AWS Nitro PKI root of trust)
-   - Checks PCR values against the key policy conditions
-   - Decrypts the ciphertext with the CMK
-   - **Re-encrypts the plaintext** with the enclave's ephemeral RSA public key
-   - Returns `CiphertextForRecipient` (not `Plaintext`)
-5. **Enclave decrypts locally**: Only the enclave's RSA private key can unwrap
-   the response → plaintext seed + JWT key now exist only in TEE memory
+**First boot** (seed generation):
+
+1. The VTA generates a master seed and JWT signing key inside the enclave
+2. It generates an **ephemeral RSA-2048 key pair** and embeds the public key
+   in an NSM attestation document
+3. **KMS GenerateDataKey** with the `Recipient` parameter: KMS generates a
+   random AES-256 data key, verifies the attestation (PCR0/PCR8), and returns
+   the data key encrypted to the enclave's ephemeral RSA key (CMS envelope)
+   plus a KMS-encrypted copy (CiphertextBlob) for storage
+4. The enclave unwraps the CMS envelope, AES-GCM encrypts the seed and JWT
+   key with the data key, and stores three items: the KMS-encrypted data key,
+   and the two AES-GCM ciphertexts
+
+**Subsequent boots** (seed recovery):
+
+1. The VTA generates a fresh ephemeral RSA-2048 key pair and attestation document
+2. **KMS Decrypt** with the `Recipient` parameter on the stored data key
+   ciphertext: KMS verifies the attestation, decrypts the data key, and
+   re-encrypts it to the ephemeral RSA key (CMS envelope)
+3. The enclave unwraps the CMS envelope and AES-GCM decrypts the seed and
+   JWT key using the recovered data key
 
 **Key property**: Even if the parent EC2 instance is compromised, the attacker
-cannot read the KMS response because it's encrypted to an ephemeral key that
-exists only inside the enclave.
+cannot read KMS responses (encrypted to an ephemeral key inside the enclave)
+and cannot encrypt rogue data (GenerateDataKey also requires attestation).
 
 ### 2. Secrets Never Leave the TEE
 
 | Secret | Created | Stored | Exported |
 |--------|---------|--------|----------|
-| Master seed (32 bytes) | KMS → enclave | TEE memory only | Never |
+| Master seed (32 bytes) | Generated in TEE | TEE memory only | Never |
 | BIP-32 root key | Derived from seed | TEE memory only | Never |
-| JWT signing key (32 bytes) | KMS → enclave | TEE memory only | Never |
+| JWT signing key (32 bytes) | Generated in TEE | TEE memory only | Never |
 | VTA identity keys (Ed25519/X25519) | Derived from root | TEE memory only | Public keys only |
 | Ephemeral RSA key pair | Generated in TEE | TEE memory only | Public key in attestation doc |
 | Storage encryption key (AES-256) | Derived from seed | TEE memory only | Never |
@@ -156,68 +166,64 @@ runtime checks (`tee_state.is_some()`) to switch behavior.
 ### Component 1: KMS Secret Bootstrap (`tee/kms_bootstrap.rs`)
 
 ```rust
-/// Bootstrap secrets from KMS using Nitro attestation.
+/// Bootstrap secrets from KMS.
 ///
-/// Flow:
-/// 1. Generate ephemeral RSA-2048 keypair (using NSM random)
-/// 2. Get NSM attestation document with RSA public key
-/// 3. Call KMS Decrypt for each secret (seed, JWT key)
-/// 4. Decrypt CiphertextForRecipient with RSA private key
-/// 5. Return plaintext secrets (held only in TEE memory)
-pub async fn bootstrap_secrets_from_kms(
-    config: &KmsBootstrapConfig,
+/// First boot: generate seed + JWT key, encrypt via KMS GenerateDataKey
+/// Subsequent boots: decrypt via KMS Decrypt
+/// Both paths use Nitro attestation when /dev/nsm is available.
+pub async fn bootstrap_secrets(
+    kms_config: &TeeKmsConfig,
+    storage_key_salt: &str,
+    store: &Store,
 ) -> Result<BootstrappedSecrets, AppError>;
 
-pub struct KmsBootstrapConfig {
-    /// KMS key ARN used to encrypt the seed
-    pub seed_key_arn: String,
-    /// Base64-encoded ciphertext of the seed (encrypted with the CMK)
-    pub seed_ciphertext: String,
-    /// KMS key ARN used to encrypt the JWT signing key
-    pub jwt_key_arn: String,
-    /// Base64-encoded ciphertext of the JWT key
-    pub jwt_key_ciphertext: String,
-    /// AWS region
+pub struct TeeKmsConfig {
     pub region: String,
+    pub key_arn: String,
+    pub vta_did_template: Option<String>,
 }
 
 pub struct BootstrappedSecrets {
-    pub seed: Vec<u8>,           // 32 bytes, plaintext in TEE memory
-    pub jwt_signing_key: Vec<u8>, // 32 bytes, plaintext in TEE memory
+    pub seed: Vec<u8>,              // 32 bytes, plaintext in TEE memory
+    pub jwt_signing_key: [u8; 32],  // plaintext in TEE memory
+    pub storage_key: [u8; 32],      // derived from seed via HKDF
+    pub entropy: Option<[u8; 32]>,  // only on first boot (for mnemonic export)
+    pub is_first_boot: bool,
 }
 ```
 
-The ephemeral RSA key pair is generated using the NSM random number generator
-(not `/dev/urandom`, which isn't available in Nitro Enclaves):
+**Storage format** — three entries in the `bootstrap` keyspace:
+
+| Key | Value |
+|-----|-------|
+| `bootstrap:data_key_ciphertext` | KMS-encrypted AES-256 data key (from `GenerateDataKey`) |
+| `bootstrap:seed_ciphertext` | `[12-byte nonce][AES-256-GCM ciphertext]` — seed encrypted with data key |
+| `bootstrap:jwt_ciphertext` | `[12-byte nonce][AES-256-GCM ciphertext]` — JWT key encrypted with data key |
+| `bootstrap:jwt_fingerprint` | SHA-256 of JWT key (tamper detection) |
+
+**Attested operations** use a shared helper that generates an ephemeral
+RSA-2048 key pair, obtains an NSM attestation document binding the public
+key, and builds a KMS `RecipientInfo`:
 
 ```rust
-// Generate RSA keypair using NSM-sourced randomness
-let nsm_fd = nsm_lib::nsm_init();
-let random_bytes = nsm_lib::nsm_get_random(nsm_fd, 256);
-// Use random_bytes to seed RSA key generation
+// Shared setup for attested KMS calls (decrypt and generate_data_key)
+let (private_key, recipient) = nsm_attested_recipient()?;
+let client = kms_client(config).await;
 
-// Embed public key in attestation document
-let attestation_doc = nsm_lib::nsm_get_attestation_doc(
-    nsm_fd,
-    /* user_data */ Some(vta_did_bytes),
-    /* nonce */ None,
-    /* public_key */ Some(rsa_public_key_der),
-);
+// First boot: GenerateDataKey with attestation
+let resp = client.generate_data_key()
+    .key_id(&config.key_arn)
+    .key_spec(DataKeySpec::Aes256)
+    .recipient(recipient)
+    .send().await?;
 
-// Call KMS with the attestation document
-let response = kms_client.decrypt()
-    .ciphertext_blob(Blob::new(seed_ciphertext))
-    .key_id(&config.seed_key_arn)
-    .recipient(RecipientInfo::builder()
-        .attestation_document(Blob::new(attestation_doc))
-        .key_encryption_algorithm(KeyEncryptionMechanism::RsaesOaepSha256)
-        .build())
-    .send()
-    .await?;
+let kms_ciphertext = resp.ciphertext_blob();         // store this
+let data_key = unwrap_cms_response(                   // decrypt CMS envelope
+    resp.ciphertext_for_recipient(), &private_key)?;
 
-// Decrypt CiphertextForRecipient (CMS/RFC5652 envelope)
-let cms_bytes = response.ciphertext_for_recipient().unwrap();
-let plaintext_seed = decrypt_cms_envelope(cms_bytes, &rsa_private_key)?;
+// AES-GCM encrypt both secrets with the data key
+let seed_ct = aes_gcm_encrypt(&data_key, &seed)?;
+let jwt_ct = aes_gcm_encrypt(&data_key, &jwt_key)?;
 ```
 
 ### Component 2: Encrypted Store Layer (`tee/encrypted_store.rs`)
@@ -274,11 +280,13 @@ The nonce is randomly generated per write using NSM-sourced entropy.
 
 ### Component 3: KMS Key Policy
 
-The KMS CMK key policy restricts decryption to enclaves with matching measurements:
+The KMS key policy restricts both decrypt and data key generation to enclaves
+with matching PCR measurements. There is no unconditional `kms:Encrypt`
+statement — all data operations require attestation:
 
 ```json
 {
-    "Sid": "AllowVTAEnclaveDecrypt",
+    "Sid": "AllowEnclaveAttestationOperations",
     "Effect": "Allow",
     "Principal": {
         "AWS": "arn:aws:iam::ACCOUNT_ID:role/vta-enclave-role"
@@ -315,21 +323,17 @@ with the new PCR0 value from `nitro-cli build-enclave` output.
 mode = "required"
 embed_in_did = true
 attestation_cache_ttl = 300
-
-# KMS-based secret bootstrap (TEE mode)
-[tee.kms]
-region = "us-east-1"
-seed_key_arn = "arn:aws:kms:us-east-1:123456789012:key/abc-def-123"
-seed_ciphertext = "AQICAHh...base64..."  # Seed encrypted with the CMK
-jwt_key_arn = "arn:aws:kms:us-east-1:123456789012:key/abc-def-123"
-jwt_key_ciphertext = "AQICAHh...base64..."  # JWT key encrypted with the CMK
-
-# Encrypted external storage (TEE mode)
-[tee.storage]
 # Storage key derivation salt (change to invalidate all stored data)
 storage_key_salt = "vta-tee-storage-v1"
-# Path on parent EBS volume (mounted via vsock)
-external_data_dir = "/mnt/vta-data"
+
+# KMS-based secret bootstrap (TEE mode)
+# On first boot, the VTA generates a seed and JWT key inside the enclave
+# and encrypts them via KMS GenerateDataKey. No pre-encrypted ciphertexts needed.
+[tee.kms]
+region = "us-east-1"
+key_arn = "arn:aws:kms:us-east-1:123456789012:key/abc-def-123"
+# Optional: auto-generate a did:webvh identity on first boot
+vta_did_template = "did:webvh:{SCID}:example.com:vta"
 ```
 
 ### Component 5: Startup Sequence (TEE Mode)
@@ -343,15 +347,17 @@ init_tee()
   ├─ Detect /dev/nsm → NitroProvider
   ├─ mode == "required" → fail if no TEE
   ↓
-bootstrap_secrets_from_kms()
-  ├─ Generate ephemeral RSA-2048 (NSM random)
-  ├─ Get NSM attestation doc (embed RSA pub key)
-  ├─ KMS Decrypt(seed_ciphertext, Recipient=attestation_doc)
-  │   └─ KMS verifies PCR0/PCR3/PCR8 → re-encrypts to RSA pub
-  ├─ Decrypt CiphertextForRecipient → plaintext seed (in TEE only)
-  ├─ KMS Decrypt(jwt_ciphertext, Recipient=attestation_doc)
-  │   └─ Same flow → plaintext JWT key (in TEE only)
-  ├─ Derive storage AES key = HKDF(seed, salt, "aes-256-gcm")
+bootstrap_secrets()
+  ├─ First boot:
+  │   ├─ Generate seed + JWT key inside TEE
+  │   ├─ GenerateDataKey(Recipient=attestation_doc) → data key
+  │   ├─ AES-GCM encrypt seed + JWT key with data key
+  │   └─ Store: data_key_ciphertext + seed_ct + jwt_ct
+  ├─ Subsequent boot:
+  │   ├─ KMS Decrypt(data_key_ciphertext, Recipient=attestation_doc)
+  │   ├─ AES-GCM decrypt seed + JWT key with recovered data key
+  │   └─ Verify JWT fingerprint (tamper detection)
+  ├─ Derive storage AES key = HKDF(seed, salt, "aes-256-gcm-storage")
   └─ Return BootstrappedSecrets { seed, jwt_key, storage_key }
   ↓
 Open fjall Store
@@ -373,24 +379,37 @@ is skipped, and the existing SeedStore/config-based key loading is used.
 ```
 ┌─────────── Build Time ───────────┐
 │                                  │
-│  1. Generate seed + JWT key      │
-│  2. Encrypt each with KMS CMK    │
-│  3. Store ciphertext in S3/SSM   │
-│  4. Set KMS policy: PCR0 + PCR3  │
+│  1. Build EIF with config.toml   │
+│  2. Sign EIF → PCR8              │
+│  3. Set KMS policy: PCR0 + PCR8  │
+│  (No pre-encrypted secrets —     │
+│   seed generated inside TEE)     │
 │                                  │
 └──────────────────────────────────┘
               │
               ▼
-┌─────────── Enclave Boot ─────────┐
+┌─────────── First Boot ───────────┐
 │                                  │
-│  5. VTA starts in Nitro Enclave  │
-│  6. Generate ephemeral RSA key   │
-│  7. NSM attestation + RSA pubkey │
-│  8. KMS Decrypt → CipherForRecip │
-│  9. RSA decrypt → plaintext seed │
-│ 10. Derive storage AES key       │
-│ 11. Open fjall with encryption   │
-│ 12. Derive BIP-32 root + VTA keys│
+│  4. VTA starts in Nitro Enclave  │
+│  5. Generate seed + JWT key      │
+│  6. GenerateDataKey (attested)   │
+│     → data key + KMS ciphertext  │
+│  7. AES-GCM encrypt secrets      │
+│  8. Store: dk_ct + seed_ct +     │
+│     jwt_ct + jwt_fingerprint     │
+│  9. Derive storage AES key       │
+│ 10. Auto-generate did:webvh      │
+│                                  │
+└──────────────────────────────────┘
+              │
+              ▼
+┌─────────── Subsequent Boots ─────┐
+│                                  │
+│ 11. Decrypt data key (attested)  │
+│ 12. AES-GCM decrypt seed + JWT   │
+│ 13. Verify JWT fingerprint       │
+│ 14. Derive same storage key      │
+│ 15. Restore DID from store       │
 │                                  │
 │  Secrets in memory:              │
 │  ✓ Seed, root key, JWT key      │
