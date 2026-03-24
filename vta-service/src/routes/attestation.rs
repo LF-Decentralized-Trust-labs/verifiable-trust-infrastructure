@@ -69,6 +69,29 @@ pub async fn did_log(
         .map_err(|e| AppError::Internal(format!("DID log is not valid UTF-8: {e}")))
 }
 
+/// GET /attestation/admin-credential — Return the bootstrapped admin credential (unauthenticated).
+///
+/// Only available when the VTA auto-bootstrapped a super-admin credential
+/// on first boot via `admin_bootstrap::maybe_bootstrap_admin()`.
+pub async fn admin_credential(
+    State(state): State<AppState>,
+) -> Result<String, AppError> {
+    let cred_bytes = state
+        .keys_ks
+        .get_raw("tee:admin_credential")
+        .await?
+        .ok_or_else(|| {
+            AppError::NotFound(
+                "no bootstrapped admin credential found — the VTA may not have \
+                 been configured with KMS bootstrap"
+                    .into(),
+            )
+        })?;
+
+    String::from_utf8(cred_bytes)
+        .map_err(|e| AppError::Internal(format!("admin credential is not valid UTF-8: {e}")))
+}
+
 /// GET /attestation/mnemonic — Check mnemonic export window status (super admin only).
 pub async fn mnemonic_status(
     _auth: SuperAdminAuth,

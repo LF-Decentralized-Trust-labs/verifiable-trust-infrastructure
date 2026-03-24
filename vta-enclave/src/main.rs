@@ -150,6 +150,13 @@ async fn main() {
         tracing::warn!("VTA DID auto-generation failed: {e}");
     }
 
+    // ── Auto-bootstrap super-admin credential on first boot ──
+    if let Err(e) =
+        tee::admin_bootstrap::maybe_bootstrap_admin(&config, &store, storage_encryption_key).await
+    {
+        tracing::warn!("admin credential bootstrap failed: {e}");
+    }
+
     // ── Initialize TEE provider + build context ──
     let tee_context = {
         let tee_state = tee::init_tee(&config.tee).expect("TEE initialization failed");

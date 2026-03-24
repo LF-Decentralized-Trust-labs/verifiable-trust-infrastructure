@@ -185,10 +185,22 @@ pub struct TeeKmsConfig {
     /// Ignored if `vta_did` is already set in config or the store.
     #[serde(default)]
     pub vta_did_template: Option<String>,
+    /// Context ID used for the auto-bootstrapped admin (default: "default").
+    ///
+    /// On first boot, the VTA auto-creates this context, generates a
+    /// super-admin credential, and writes it to the bootstrap keyspace
+    /// for the parent instance to retrieve.
+    #[serde(default = "default_admin_context_id")]
+    pub admin_context_id: String,
 }
 
 // KMS ciphertexts (seed, JWT key, fingerprint) are stored as K/V entries
 // in the "bootstrap" keyspace — no file paths needed.
+
+#[cfg(feature = "tee")]
+fn default_admin_context_id() -> String {
+    "default".to_string()
+}
 
 #[cfg(feature = "tee")]
 fn default_attestation_cache_ttl() -> u64 {
