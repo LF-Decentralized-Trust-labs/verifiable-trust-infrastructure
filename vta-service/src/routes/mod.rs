@@ -97,6 +97,11 @@ pub fn router() -> Router<AppState> {
         .route(
             "/attestation/mnemonic",
             get(attestation::mnemonic_status).post(attestation::mnemonic_export),
+        )
+        // Auto-generated DID log (unauthenticated — public data)
+        .route(
+            "/attestation/did-log",
+            get(attestation::did_log),
         );
 
     // WebVH routes (feature-gated)
