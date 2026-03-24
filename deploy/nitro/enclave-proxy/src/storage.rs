@@ -38,9 +38,18 @@ pub async fn run_storage(vsock_port: u32, data_dir: PathBuf) {
 
     info!("[storage] opened database at {}", data_dir.display());
 
+    // On startup, check if a DID log was previously stored and write it to disk.
+    // This ensures the file is always available even after proxy restarts.
+    if let Ok(ks) = db.keyspace("bootstrap", KeyspaceCreateOptions::default) {
+        if let Ok(Some(value)) = ks.get("tee:did_log") {
+            write_did_log_file(&data_dir, &value);
+        }
+    }
+
     let state = Arc::new(StorageState {
         db,
         keyspaces: RwLock::new(HashMap::new()),
+        data_dir: data_dir.clone(),
     });
 
     let mut listener = match VsockListener::bind(VsockAddr::new(VMADDR_CID_ANY, vsock_port)) {
@@ -75,6 +84,7 @@ pub async fn run_storage(vsock_port: u32, data_dir: PathBuf) {
 struct StorageState {
     db: Database,
     keyspaces: RwLock<HashMap<String, Keyspace>>,
+    data_dir: PathBuf,
 }
 
 impl StorageState {
@@ -167,6 +177,19 @@ async fn handle_get(state: &StorageState, data: &[u8]) -> Vec<u8> {
     }
 }
 
+/// Write the DID log to a file alongside the database for easy operator access.
+fn write_did_log_file(data_dir: &PathBuf, value: &[u8]) {
+    // Write to the parent directory of the store (e.g., /mnt/vta-data/did.jsonl)
+    let output_path = data_dir
+        .parent()
+        .unwrap_or(data_dir.as_path())
+        .join("did.jsonl");
+    match std::fs::write(&output_path, value) {
+        Ok(()) => info!("[storage] wrote DID log to {}", output_path.display()),
+        Err(e) => warn!("[storage] failed to write DID log to {}: {e}", output_path.display()),
+    }
+}
+
 async fn handle_insert(state: &StorageState, data: &[u8]) -> Vec<u8> {
     let result: Result<_, String> = (|| {
         let (ks_name, offset) = decode_keyspace(data, 0)?;
@@ -186,7 +209,15 @@ async fn handle_insert(state: &StorageState, data: &[u8]) -> Vec<u8> {
     };
 
     match ks.insert(&key, &value) {
-        Ok(()) => build_ok_empty(),
+        Ok(()) => {
+            // When the VTA writes its auto-generated DID log to the bootstrap
+            // keyspace, also write it to disk so the operator can retrieve it
+            // without needing REST enabled.
+            if ks_name == "bootstrap" && key == b"tee:did_log" {
+                write_did_log_file(&state.data_dir, &value);
+            }
+            build_ok_empty()
+        }
         Err(e) => build_error(&format!("insert failed: {e}")),
     }
 }
