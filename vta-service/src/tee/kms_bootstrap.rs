@@ -568,7 +568,14 @@ fn decrypt_cms_envelope(
             tee_attestation_error(format!("RSA-OAEP decryption of CEK failed: {e}"))
         })?;
 
-    debug!(cek_len = cek.len(), "decrypted content-encryption key from CMS envelope");
+    debug!(
+        cek_len = cek.len(),
+        nonce_len = fields.nonce.len(),
+        ciphertext_len = fields.ciphertext.len(),
+        encrypted_key_len = fields.encrypted_key.len(),
+        cms_total_len = cms_bytes.len(),
+        "CMS envelope fields extracted"
+    );
 
     // AES-GCM decrypt the content.
     // KMS uses a 16-byte (128-bit) GCM nonce in CiphertextForRecipient,
@@ -592,7 +599,11 @@ fn decrypt_cms_envelope(
             cipher
                 .decrypt(GenericArray::from_slice(&fields.nonce), fields.ciphertext.as_ref())
                 .map_err(|e| {
-                    tee_attestation_error(format!("AES-GCM decryption of CMS content failed: {e}"))
+                    tee_attestation_error(format!(
+                        "AES-GCM decryption of CMS content failed: {e} \
+                         (cek_len={}, nonce_len={}, ct_len={})",
+                        cek.len(), fields.nonce.len(), fields.ciphertext.len()
+                    ))
                 })?
         }
         16 => {
@@ -602,7 +613,11 @@ fn decrypt_cms_envelope(
             cipher
                 .decrypt(GenericArray::from_slice(&fields.nonce), fields.ciphertext.as_ref())
                 .map_err(|e| {
-                    tee_attestation_error(format!("AES-GCM decryption of CMS content failed: {e}"))
+                    tee_attestation_error(format!(
+                        "AES-GCM decryption of CMS content failed: {e} \
+                         (cek_len={}, nonce_len={}, ct_len={})",
+                        cek.len(), fields.nonce.len(), fields.ciphertext.len()
+                    ))
                 })?
         }
         n => {
