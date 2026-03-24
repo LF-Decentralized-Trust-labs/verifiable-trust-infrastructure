@@ -32,6 +32,8 @@ tee = [
   "dep:aws-config",
   "dep:rsa",
   "dep:didwebvh-rs",
+  "dep:cbc",
+  "dep:aes",
 ]
 vsock-store = ["vti-common/vsock-store"]
 
@@ -83,6 +85,8 @@ azure_security_keyvault_secrets = { version = "0.12", optional = true }
 azure_identity = { version = "0.33", optional = true }
 sha1 = "0.10"
 sha2 = { workspace = true }
+cbc = { version = "0.1", optional = true }
+aes = { version = "0.8", optional = true }
 x25519-dalek = { workspace = true }
 multibase = { workspace = true }
 url = { workspace = true, optional = true }
