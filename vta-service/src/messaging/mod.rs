@@ -167,6 +167,9 @@ async fn dispatch_message(
         key_management::GET_KEY_SECRET => {
             handlers::keys::handle_get_key_secret(state, &ctx, msg).await
         }
+        key_management::SIGN_REQUEST => {
+            handlers::keys::handle_sign_request(state, &ctx, msg).await
+        }
 
         // Seed management
         seed_management::LIST_SEEDS => handlers::seeds::handle_list_seeds(state, &ctx, msg).await,

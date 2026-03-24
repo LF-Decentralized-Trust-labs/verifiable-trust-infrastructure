@@ -23,7 +23,9 @@ pub trait Bip32Extension {
     fn derive_x25519(&self, path: &str) -> Result<Secret, AppError>;
     /// Derive a P-256 key pair from a seed and BIP32 derivation path.
     ///
-    /// Uses 32 bytes from the BIP-32 Ed25519 derivation as a P-256 scalar seed.
+    /// Uses HMAC-SHA512 domain separation to produce P-256 key material
+    /// independent from the Ed25519 key at the same path. This avoids
+    /// cross-curve key reuse, Ed25519 clamping artifacts, and group-order bias.
     fn derive_p256(&self, path: &str) -> Result<P256Secret, AppError>;
 }
 
@@ -57,6 +59,9 @@ impl Bip32Extension for ExtendedSigningKey {
     }
 
     fn derive_p256(&self, path: &str) -> Result<P256Secret, AppError> {
+        use hmac::{Hmac, Mac};
+        use sha2::Sha512;
+
         let derivation_path: DerivationPath = path
             .parse()
             .map_err(|e| AppError::KeyDerivation(format!("invalid derivation path: {e}")))?;
@@ -65,9 +70,18 @@ impl Bip32Extension for ExtendedSigningKey {
             .derive(&derivation_path)
             .map_err(|e| AppError::KeyDerivation(format!("derivation failed: {e}")))?;
 
-        // Use the 32-byte Ed25519 seed as P-256 scalar input
+        // Domain-separated derivation via HMAC-SHA512.
+        // Prevents cross-curve key reuse: the same BIP-32 path produces
+        // independent key material for Ed25519 and P-256.
+        let mut mac = Hmac::<Sha512>::new_from_slice(b"p256-key-derivation")
+            .expect("HMAC accepts any key length");
+        mac.update(derived.signing_key.as_bytes());
+        mac.update(&derived.chain_code);
+        let hmac_output = mac.finalize().into_bytes();
+
+        // First 32 bytes → P-256 scalar. from_bytes() reduces mod n automatically.
         let secret_key = p256::SecretKey::from_bytes(
-            p256::FieldBytes::from_slice(derived.signing_key.as_bytes()),
+            p256::FieldBytes::from_slice(&hmac_output[..32]),
         )
         .map_err(|e| AppError::KeyDerivation(format!("P-256 key creation failed: {e}")))?;
 
