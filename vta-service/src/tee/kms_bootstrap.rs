@@ -560,7 +560,7 @@ fn decrypt_cms_envelope(
     // Log first bytes for diagnosing BER structure issues with real KMS responses
     debug!(
         cms_len = cms_bytes.len(),
-        cms_hex_head = %hex::encode(&cms_bytes[..cms_bytes.len().min(128)]),
+        cms_hex_head = %hex::encode(cms_bytes),
         "raw CMS envelope"
     );
 
