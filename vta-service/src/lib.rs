@@ -35,12 +35,25 @@ pub mod webvh_store;
 /// Initialize tracing/logging from config. Call once at startup before any
 /// log output. Shared by all VTA front-end binaries.
 pub fn init_tracing(config: &config::AppConfig) {
+    init_tracing_with_writer(config, std::io::stderr);
+}
+
+/// Initialize tracing with a custom `MakeWriter`.
+///
+/// The enclave binary uses this to tee log output to both stderr and a
+/// vsock connection for forwarding to the parent EC2 instance.
+pub fn init_tracing_with_writer<W>(config: &config::AppConfig, writer: W)
+where
+    W: for<'a> tracing_subscriber::fmt::MakeWriter<'a> + Send + Sync + 'static,
+{
     use tracing_subscriber::EnvFilter;
 
     let filter = EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| EnvFilter::new(&config.log.level));
 
-    let subscriber = tracing_subscriber::fmt().with_env_filter(filter);
+    let subscriber = tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_writer(writer);
 
     match config.log.format {
         config::LogFormat::Json => subscriber.json().init(),

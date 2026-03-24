@@ -62,6 +62,10 @@ pub struct Cli {
     #[arg(long, default_value_t = 5600)]
     vsock_resolver: u32,
 
+    /// Vsock port for enclave log forwarding (enclave → parent stdout)
+    #[arg(long, default_value_t = 5700)]
+    vsock_logs: u32,
+
     /// Local port where affinidi-did-resolver-cache-server sidecar listens
     #[arg(long, default_value_t = 8080)]
     resolver_port: u16,
@@ -152,6 +156,7 @@ async fn main() {
     eprintln!("  [4] Outbound IMDS:     vsock:{} → 169.254.169.254:80", config.vsock_imds_port);
     eprintln!("  [5] Storage:           vsock:{} → {} (fjall)", config.vsock_storage_port, config.storage_data_dir.display());
     eprintln!("  [6] DID Resolver:      vsock:{} → localhost:{} (sidecar)", cli.vsock_resolver, cli.resolver_port);
+    eprintln!("  [7] Enclave Logs:      vsock:{} → stdout (prefixed [vta])", cli.vsock_logs);
     eprintln!();
     eprintln!("  Test:");
     eprintln!("    curl http://localhost:{}/health", config.listen_port);
@@ -200,6 +205,8 @@ async fn main() {
         cli.resolver_port,
     ));
 
+    let log_receiver = tokio::spawn(channels::run_log_receiver(cli.vsock_logs));
+
     info!("all proxy channels started — press Ctrl+C to stop");
 
     // Wait for shutdown signal
@@ -215,4 +222,5 @@ async fn main() {
     imds.abort();
     storage.abort();
     resolver_bridge.abort();
+    log_receiver.abort();
 }
