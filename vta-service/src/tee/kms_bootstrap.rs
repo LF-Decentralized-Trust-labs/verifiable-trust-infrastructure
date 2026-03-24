@@ -557,6 +557,13 @@ fn decrypt_cms_envelope(
     cms_bytes: &[u8],
     private_key: &rsa::RsaPrivateKey,
 ) -> Result<Vec<u8>, AppError> {
+    // Log first bytes for diagnosing BER structure issues with real KMS responses
+    debug!(
+        cms_len = cms_bytes.len(),
+        cms_hex_head = %hex::encode(&cms_bytes[..cms_bytes.len().min(128)]),
+        "raw CMS envelope"
+    );
+
     // Parse the CMS EnvelopedData to extract the three fields we need
     let fields = cms_der::parse_enveloped_data(cms_bytes)?;
 
@@ -578,8 +585,8 @@ fn decrypt_cms_envelope(
 
     debug!(
         cek_len = cek.len(),
-        nonce_len = fields.nonce.len(),
-        ciphertext_len = fields.ciphertext.len(),
+        nonce_hex = %hex::encode(&fields.nonce),
+        ciphertext_hex = %hex::encode(&fields.ciphertext),
         encrypted_key_len = fields.encrypted_key.len(),
         cms_total_len = cms_bytes.len(),
         "CMS envelope fields extracted"
