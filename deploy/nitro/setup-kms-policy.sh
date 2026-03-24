@@ -166,18 +166,7 @@ $ADMIN_PRINCIPAL
             "Resource": "*"
         },
         {
-            "Sid": "AllowEnclaveEncryptDecrypt",
-            "Effect": "Allow",
-            "Principal": {
-                "AWS": "$ROLE_ARN"
-            },
-            "Action": [
-                "kms:Encrypt"
-            ],
-            "Resource": "*"
-        },
-        {
-            "Sid": "AllowEnclaveAttestationDecrypt",
+            "Sid": "AllowEnclaveAttestationOperations",
             "Effect": "Allow",
             "Principal": {
                 "AWS": "$ROLE_ARN"
@@ -234,7 +223,9 @@ echo ""
 echo "=== Policy Summary ==="
 echo ""
 echo "  Key ARN:        $KEY_ARN"
-echo "  Encrypt:        $ROLE_ARN (unconditional — for first-boot seed storage)"
+echo "  GenerateDataKey: $ROLE_ARN (only with attestation matching PCR0"
+[ -n "$PCR8" ] && echo "                   + PCR8) — for first-boot seed storage"
+[ -z "$PCR8" ] && echo "                   ) — for first-boot seed storage"
 echo "  Decrypt:        $ROLE_ARN (only with attestation matching PCR0"
 [ -n "$PCR8" ] && echo "                   + PCR8)"
 [ -z "$PCR8" ] && echo "                   )"

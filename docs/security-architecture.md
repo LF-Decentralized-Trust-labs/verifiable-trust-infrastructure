@@ -146,7 +146,7 @@ Client                          VTA (in enclave)
 - [ ] TEE mode set to `required` (not `optional` or `simulated`)
 - [ ] KMS key policy pinned to PCR0 + PCR8
 - [ ] EIF signed with offline P-384 key
-- [ ] IAM role limited to `kms:Encrypt` + `kms:Decrypt`
+- [ ] IAM role limited to `kms:GenerateDataKey` + `kms:Decrypt` (both attestation-gated)
 - [ ] KMS admin requires MFA for policy changes
 - [ ] DID method whitelist: `["did:key", "did:webvh"]`
 - [ ] Reverse proxy with TLS, rate limiting, CORS policy

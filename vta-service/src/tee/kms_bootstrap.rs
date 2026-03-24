@@ -7,14 +7,28 @@
 //! On subsequent boots, decrypts the ciphertext using KMS, verifies the JWT
 //! key fingerprint, and returns the secrets for use.
 //!
-//! # Attestation Status
+//! # Attestation
 //!
-//! The full Nitro attestation flow (ephemeral RSA + NSM attestation document +
-//! CiphertextForRecipient) requires the `aws-nitro-enclaves-nsm-api` crate
-//! running on real Nitro hardware. When NSM is not available (simulated mode
-//! or development), the VTA falls back to direct KMS Decrypt. This is logged
-//! as a warning — in production, the KMS key policy's PCR conditions provide
-//! the attestation enforcement at the KMS level regardless.
+//! Both encrypt and decrypt paths use Nitro attestation when `/dev/nsm` is
+//! available (real Nitro hardware):
+//!
+//! - **Encrypt** uses `GenerateDataKey` with a `Recipient` parameter. KMS
+//!   generates a random data key and returns it encrypted to an ephemeral RSA
+//!   key bound to the enclave's attestation document (CMS envelope). The
+//!   enclave unwraps the data key locally and uses it to AES-GCM encrypt the
+//!   secret. The stored blob contains the KMS-encrypted data key + AES-GCM
+//!   ciphertext ("sealed blob" format).
+//!
+//! - **Decrypt** uses `Decrypt` with a `Recipient` parameter. KMS re-encrypts
+//!   the plaintext to an ephemeral RSA key bound to the attestation document.
+//!
+//! This ensures the KMS key policy's PCR conditions (PCR0 image hash, PCR8
+//! signing cert hash) are enforced on **both** encrypt and decrypt, preventing
+//! an attacker with IAM role access from encrypting rogue data that could
+//! overwrite legitimate ciphertexts in storage.
+//!
+//! When NSM is not available (simulated mode or development), both paths fall
+//! back to direct KMS calls without attestation.
 
 use sha2::{Digest, Sha256};
 use tracing::{debug, error, info, warn};
@@ -55,7 +69,12 @@ impl Drop for BootstrappedSecrets {
 ///
 /// - If ciphertext files exist: decrypt via KMS, verify JWT fingerprint (subsequent boot)
 /// - If no ciphertext files: generate new secrets, encrypt with KMS, store ciphertext + fingerprint (first boot)
-/// Well-known keys in the bootstrap keyspace (no encryption — data is KMS-encrypted).
+/// Well-known keys in the bootstrap keyspace.
+///
+/// The data key is generated via KMS `GenerateDataKey` (with attestation when
+/// available). Both secrets are AES-GCM encrypted with the same data key but
+/// unique nonces. The nonce is prepended to each ciphertext entry.
+const BOOTSTRAP_DK_CT_KEY: &str = "bootstrap:data_key_ciphertext";
 const BOOTSTRAP_SEED_CT_KEY: &str = "bootstrap:seed_ciphertext";
 const BOOTSTRAP_JWT_CT_KEY: &str = "bootstrap:jwt_ciphertext";
 const BOOTSTRAP_JWT_FINGERPRINT_KEY: &str = "bootstrap:jwt_fingerprint";
@@ -65,19 +84,23 @@ pub async fn bootstrap_secrets(
     storage_key_salt: &str,
     store: &crate::store::Store,
 ) -> Result<BootstrappedSecrets, AppError> {
-    // Bootstrap keyspace — no encryption (ciphertexts are already KMS-encrypted)
+    // Bootstrap keyspace — no encryption (data is KMS-protected)
     let bs_ks = store.keyspace("bootstrap")?;
 
+    let dk_ct = bs_ks.get_raw(BOOTSTRAP_DK_CT_KEY).await?;
     let seed_ct = bs_ks.get_raw(BOOTSTRAP_SEED_CT_KEY).await?;
     let jwt_ct = bs_ks.get_raw(BOOTSTRAP_JWT_CT_KEY).await?;
 
-    if let (Some(seed_ciphertext), Some(jwt_ciphertext)) = (seed_ct, jwt_ct) {
-        // ── Subsequent boot: try to decrypt existing ciphertexts ──
+    if let (Some(dk_ciphertext), Some(seed_ciphertext), Some(jwt_ciphertext)) =
+        (dk_ct, seed_ct, jwt_ct)
+    {
+        // ── Subsequent boot: decrypt existing ciphertexts ──
         info!("found existing secret ciphertexts in store — decrypting via KMS");
 
-        match kms_decrypt(kms_config, &seed_ciphertext).await {
-            Ok(seed) => {
-                let jwt_bytes = kms_decrypt(kms_config, &jwt_ciphertext).await?;
+        match kms_decrypt_data_key(kms_config, &dk_ciphertext).await {
+            Ok(data_key) => {
+                let seed = aes_gcm_decrypt(&data_key, &seed_ciphertext)?;
+                let jwt_bytes = aes_gcm_decrypt(&data_key, &jwt_ciphertext)?;
                 let jwt_key: [u8; 32] = jwt_bytes.try_into().map_err(|_| {
                     tee_attestation_error("JWT key must be exactly 32 bytes")
                 })?;
@@ -104,6 +127,7 @@ pub async fn bootstrap_secrets(
                      image rebuild with a new PCR0. The VTA will generate a new \
                      identity."
                 );
+                bs_ks.remove(BOOTSTRAP_DK_CT_KEY).await?;
                 bs_ks.remove(BOOTSTRAP_SEED_CT_KEY).await?;
                 bs_ks.remove(BOOTSTRAP_JWT_CT_KEY).await?;
                 bs_ks.remove(BOOTSTRAP_JWT_FINGERPRINT_KEY).await?;
@@ -131,18 +155,20 @@ pub async fn bootstrap_secrets(
     rand::fill(&mut jwt_key_bytes);
     let jwt_key = jwt_key_bytes;
 
-    // Encrypt with KMS and store ciphertexts in the bootstrap keyspace
-        let seed_ciphertext = kms_encrypt(kms_config, &seed).await?;
-        let jwt_ciphertext = kms_encrypt(kms_config, &jwt_key).await?;
+    // Generate a data key via KMS, encrypt both secrets with it
+    let (dk_ciphertext, data_key) = kms_generate_data_key(kms_config).await?;
+    let seed_ciphertext = aes_gcm_encrypt(&data_key, &seed)?;
+    let jwt_ciphertext = aes_gcm_encrypt(&data_key, &jwt_key)?;
 
-        bs_ks.insert_raw(BOOTSTRAP_SEED_CT_KEY, seed_ciphertext).await?;
-        bs_ks.insert_raw(BOOTSTRAP_JWT_CT_KEY, jwt_ciphertext).await?;
-        store_jwt_fingerprint(&bs_ks, &jwt_key).await?;
+    bs_ks.insert_raw(BOOTSTRAP_DK_CT_KEY, dk_ciphertext).await?;
+    bs_ks.insert_raw(BOOTSTRAP_SEED_CT_KEY, seed_ciphertext).await?;
+    bs_ks.insert_raw(BOOTSTRAP_JWT_CT_KEY, jwt_ciphertext).await?;
+    store_jwt_fingerprint(&bs_ks, &jwt_key).await?;
 
-        // Flush to ensure ciphertexts survive if the enclave crashes during startup
-        store.persist().await?;
+    // Flush to ensure ciphertexts survive if the enclave crashes during startup
+    store.persist().await?;
 
-        info!("secrets generated and encrypted to KMS — ciphertexts stored");
+    info!("secrets generated and encrypted to KMS — ciphertexts stored");
 
     Ok(BootstrappedSecrets {
         storage_key: derive_storage_key(&seed, storage_key_salt),
@@ -247,16 +273,12 @@ pub(crate) fn derive_storage_key(seed: &[u8], salt: &str) -> [u8; 32] {
 // KMS operations
 // ---------------------------------------------------------------------------
 
-/// Decrypt ciphertext using KMS.
+/// Decrypt a KMS data key ciphertext (the `CiphertextBlob` from `GenerateDataKey`).
 ///
 /// On real Nitro hardware (`/dev/nsm` available), uses attestation-based
-/// KMS Decrypt with the `Recipient` parameter: KMS re-encrypts the
-/// plaintext to an ephemeral RSA key bound to the enclave's NSM attestation
-/// document, preventing even the parent EC2 instance from reading the
-/// response on the vsock channel.
-///
-/// Falls back to direct KMS Decrypt if attestation fails (with a warning).
-async fn kms_decrypt(
+/// KMS Decrypt with the `Recipient` parameter. Falls back to direct KMS
+/// Decrypt if attestation fails.
+async fn kms_decrypt_data_key(
     config: &TeeKmsConfig,
     ciphertext: &[u8],
 ) -> Result<Vec<u8>, AppError> {
@@ -390,11 +412,109 @@ async fn kms_decrypt_direct(
         .ok_or_else(|| tee_attestation_error("KMS Decrypt returned no plaintext"))
 }
 
-/// Encrypt plaintext with KMS (for first-boot secret storage).
-async fn kms_encrypt(
+/// Generate a KMS data key, returning (kms_ciphertext, plaintext_key).
+///
+/// On real Nitro hardware, uses the `Recipient` parameter so KMS enforces
+/// PCR conditions on `kms:GenerateDataKey`. The plaintext key is returned
+/// via a CMS envelope decrypted with an ephemeral RSA key inside the enclave.
+///
+/// Without NSM, calls `GenerateDataKey` directly (KMS returns plaintext in
+/// the response — suitable for development/simulated mode only).
+async fn kms_generate_data_key(
     config: &TeeKmsConfig,
-    plaintext: &[u8],
-) -> Result<Vec<u8>, AppError> {
+) -> Result<(Vec<u8>, [u8; 32]), AppError> {
+    if std::path::Path::new("/dev/nsm").exists() {
+        match kms_generate_data_key_attested(config).await {
+            Ok(result) => {
+                info!("KMS GenerateDataKey succeeded with Nitro attestation");
+                return Ok(result);
+            }
+            Err(e) => {
+                warn!(
+                    error = %e,
+                    "attestation-based GenerateDataKey failed — falling back to direct"
+                );
+            }
+        }
+    }
+
+    kms_generate_data_key_direct(config).await
+}
+
+/// `GenerateDataKey` with Nitro attestation via the `Recipient` parameter.
+async fn kms_generate_data_key_attested(
+    config: &TeeKmsConfig,
+) -> Result<(Vec<u8>, [u8; 32]), AppError> {
+    use rsa::pkcs8::EncodePublicKey;
+
+    // Generate ephemeral RSA-2048 keypair
+    let mut rng = rsa::rand_core::OsRng;
+    let private_key = rsa::RsaPrivateKey::new(&mut rng, 2048).map_err(|e| {
+        tee_attestation_error(format!("RSA key generation failed: {e}"))
+    })?;
+
+    let public_key_der = private_key
+        .to_public_key()
+        .to_public_key_der()
+        .map_err(|e| {
+            tee_attestation_error(format!("RSA public key DER encoding failed: {e}"))
+        })?;
+
+    // Get NSM attestation document with the RSA public key embedded
+    let attestation_doc =
+        super::nitro::request_nsm_attestation_for_kms(public_key_der.as_ref())?;
+
+    // Call GenerateDataKey with Recipient parameter
+    let sdk_config = aws_config::defaults(aws_config::BehaviorVersion::latest())
+        .region(aws_config::Region::new(config.region.clone()))
+        .load()
+        .await;
+
+    let client = aws_sdk_kms::Client::new(&sdk_config);
+
+    let recipient = aws_sdk_kms::types::RecipientInfo::builder()
+        .attestation_document(aws_sdk_kms::primitives::Blob::new(attestation_doc))
+        .key_encryption_algorithm(
+            aws_sdk_kms::types::KeyEncryptionMechanism::RsaesOaepSha256,
+        )
+        .build();
+
+    let resp = client
+        .generate_data_key()
+        .key_id(&config.key_arn)
+        .key_spec(aws_sdk_kms::types::DataKeySpec::Aes256)
+        .recipient(recipient)
+        .send()
+        .await
+        .map_err(|e| classify_kms_error("GenerateDataKey(attested)", e))?;
+
+    // Extract KMS-encrypted data key
+    let kms_ciphertext = resp
+        .ciphertext_blob()
+        .ok_or_else(|| tee_attestation_error("GenerateDataKey returned no CiphertextBlob"))?
+        .as_ref()
+        .to_vec();
+
+    // Decrypt CMS envelope to recover plaintext data key
+    let cms_bytes = resp.ciphertext_for_recipient().ok_or_else(|| {
+        tee_attestation_error(
+            "GenerateDataKey returned no CiphertextForRecipient — \
+             the KMS key may not support attestation-based operations",
+        )
+    })?;
+    let data_key_vec = decrypt_cms_envelope(cms_bytes.as_ref(), &private_key)?;
+    let data_key: [u8; 32] = data_key_vec.try_into().map_err(|_| {
+        tee_attestation_error("data key is not 32 bytes")
+    })?;
+
+    debug!(kms_ct_len = kms_ciphertext.len(), "obtained attested data key");
+    Ok((kms_ciphertext, data_key))
+}
+
+/// `GenerateDataKey` without attestation (development/simulated mode).
+async fn kms_generate_data_key_direct(
+    config: &TeeKmsConfig,
+) -> Result<(Vec<u8>, [u8; 32]), AppError> {
     let sdk_config = aws_config::defaults(aws_config::BehaviorVersion::latest())
         .region(aws_config::Region::new(config.region.clone()))
         .load()
@@ -403,16 +523,73 @@ async fn kms_encrypt(
     let client = aws_sdk_kms::Client::new(&sdk_config);
 
     let resp = client
-        .encrypt()
+        .generate_data_key()
         .key_id(&config.key_arn)
-        .plaintext(aws_sdk_kms::primitives::Blob::new(plaintext))
+        .key_spec(aws_sdk_kms::types::DataKeySpec::Aes256)
         .send()
         .await
-        .map_err(|e| classify_kms_error("Encrypt", e))?;
+        .map_err(|e| classify_kms_error("GenerateDataKey", e))?;
 
-    resp.ciphertext_blob()
-        .map(|b| b.as_ref().to_vec())
-        .ok_or_else(|| tee_attestation_error("KMS Encrypt returned no ciphertext"))
+    let kms_ciphertext = resp
+        .ciphertext_blob()
+        .ok_or_else(|| tee_attestation_error("GenerateDataKey returned no CiphertextBlob"))?
+        .as_ref()
+        .to_vec();
+
+    let plaintext = resp
+        .plaintext()
+        .ok_or_else(|| tee_attestation_error("GenerateDataKey returned no Plaintext"))?;
+    let data_key: [u8; 32] = plaintext.as_ref().try_into().map_err(|_| {
+        tee_attestation_error("data key is not 32 bytes")
+    })?;
+
+    Ok((kms_ciphertext, data_key))
+}
+
+// ---------------------------------------------------------------------------
+// Local AES-GCM envelope (nonce-prepended)
+// ---------------------------------------------------------------------------
+
+/// AES-256-GCM encrypt, returning `[nonce: 12 bytes][ciphertext]`.
+fn aes_gcm_encrypt(key: &[u8; 32], plaintext: &[u8]) -> Result<Vec<u8>, AppError> {
+    use aes_gcm::{Aes256Gcm, KeyInit, aead::Aead};
+    use aes_gcm::aead::generic_array::GenericArray;
+
+    let cipher = Aes256Gcm::new(GenericArray::from_slice(key));
+    let mut nonce_bytes = [0u8; 12];
+    rand::fill(&mut nonce_bytes);
+    let nonce = GenericArray::from_slice(&nonce_bytes);
+    let ciphertext = cipher.encrypt(nonce, plaintext).map_err(|e| {
+        tee_attestation_error(format!("AES-GCM encryption failed: {e}"))
+    })?;
+
+    let mut out = Vec::with_capacity(12 + ciphertext.len());
+    out.extend_from_slice(&nonce_bytes);
+    out.extend_from_slice(&ciphertext);
+    Ok(out)
+}
+
+/// AES-256-GCM decrypt a `[nonce: 12 bytes][ciphertext]` blob.
+fn aes_gcm_decrypt(key: &[u8], blob: &[u8]) -> Result<Vec<u8>, AppError> {
+    use aes_gcm::{Aes256Gcm, KeyInit, aead::Aead};
+    use aes_gcm::aead::generic_array::GenericArray;
+
+    if key.len() != 32 {
+        return Err(tee_attestation_error(format!(
+            "data key is {} bytes, expected 32",
+            key.len()
+        )));
+    }
+    if blob.len() < 12 + 1 {
+        return Err(tee_attestation_error("AES-GCM blob too short"));
+    }
+
+    let nonce = GenericArray::from_slice(&blob[..12]);
+    let ciphertext = &blob[12..];
+    let cipher = Aes256Gcm::new(GenericArray::from_slice(key));
+    cipher.decrypt(nonce, ciphertext).map_err(|e| {
+        tee_attestation_error(format!("AES-GCM decryption failed: {e}"))
+    })
 }
 
 // ---------------------------------------------------------------------------

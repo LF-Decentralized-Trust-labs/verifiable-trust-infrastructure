@@ -432,7 +432,7 @@ is skipped, and the existing SeedStore/config-based key loading is used.
 |--------|-----------|
 | Parent EC2 host compromise | Enclave memory isolated by Nitro hypervisor; KMS responses encrypted to ephemeral key; disk data encrypted with AES-256-GCM |
 | Attacker builds malicious enclave | KMS policy checks PCR0 (image hash) — different image = KMS refuses to decrypt. PCR8 (signing cert) — unsigned image = KMS refuses. Signing key not on EC2. |
-| Attacker modifies KMS policy | EC2 role only has `kms:Decrypt`/`kms:Encrypt`, not `kms:PutKeyPolicy`. Admin role requires MFA + separate account. CloudTrail logs all policy changes. |
+| Attacker modifies KMS policy | EC2 role only has `kms:Decrypt`/`kms:GenerateDataKey` (both attestation-gated), not `kms:PutKeyPolicy`. Admin role requires MFA + separate account. CloudTrail logs all policy changes. |
 | Network MITM on vsock | KMS re-encrypts to enclave's ephemeral RSA key (even if TLS broken, attacker can't read response); DIDComm messages E2E encrypted |
 | Disk theft / EBS snapshot | All fjall data AES-256-GCM encrypted; key derived from seed via HKDF; seed exists only in TEE memory |
 | Cold boot attack | Nitro Enclaves use dedicated memory that's hardware-isolated; not accessible to parent; no DMA path |
