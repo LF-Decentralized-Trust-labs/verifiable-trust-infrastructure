@@ -265,7 +265,7 @@ This is the smallest attack surface.
 
 ```bash
 docker build -f Dockerfile.nitro \
-    --build-arg FEATURES="didcomm,vsock-store" \
+    --build-arg FEATURES="didcomm,vsock-store,vsock-log" \
     -t vta-nitro .
 ```
 
@@ -286,7 +286,7 @@ behind a load balancer, VPN, or other network-level access control.
 
 ```bash
 docker build -f Dockerfile.nitro \
-    --build-arg FEATURES="rest,didcomm,vsock-store" \
+    --build-arg FEATURES="rest,didcomm,vsock-store,vsock-log" \
     -t vta-nitro .
 ```
 
@@ -294,7 +294,7 @@ docker build -f Dockerfile.nitro \
 
 ```bash
 docker build -f Dockerfile.nitro \
-    --build-arg FEATURES="rest,vsock-store" \
+    --build-arg FEATURES="rest,vsock-store,vsock-log" \
     -t vta-nitro .
 ```
 
@@ -308,6 +308,7 @@ crate. Available features:
 | `rest` | REST API endpoints | Optional (Profile B/C) |
 | `didcomm` | DIDComm v2 messaging | Recommended (Profile A/B) |
 | `vsock-store` | Persistent storage via parent proxy | **Recommended** for data persistence across restarts |
+| `vsock-log` | Forward enclave logs to parent proxy via vsock | **Recommended** — required for production log visibility |
 | `webvh` | did:webvh DID management | Optional |
 
 TEE support (KMS bootstrap, attestation, encrypted storage) is built into
@@ -320,7 +321,7 @@ Features NOT relevant for enclave builds (the VTA handles secrets via KMS):
 The `FEATURES` build arg controls which services are compiled into the binary.
 The `[services]` section in config is a runtime toggle that can only *disable*
 a compiled-in service, never *enable* one that wasn't compiled. For example,
-building with `FEATURES="didcomm,vsock-store"` (Profile A) means REST code is
+building with `FEATURES="didcomm,vsock-store,vsock-log"` (Profile A) means REST code is
 not in the binary — `services.rest = true` in config has no effect.
 
 **KMS bootstrap** handles all secret management in enclave mode:
@@ -591,9 +592,9 @@ If you chose Profile B (Full API), the rebuild cycle is:
 
 ```bash
 # 1. Rebuild the Docker image with the SAME profile as Step 2
-#    Profile A (Hardened):       --build-arg FEATURES="didcomm,vsock-store"
-#    Profile B (Full API):       --build-arg FEATURES="rest,didcomm,vsock-store"
-#    Profile C (REST only):      --build-arg FEATURES="rest,vsock-store"
+#    Profile A (Hardened):       --build-arg FEATURES="didcomm,vsock-store,vsock-log"
+#    Profile B (Full API):       --build-arg FEATURES="rest,didcomm,vsock-store,vsock-log"
+#    Profile C (REST only):      --build-arg FEATURES="rest,vsock-store,vsock-log"
 #    Or omit --build-arg to use the Dockerfile default (rest,didcomm,tee)
 docker build -f Dockerfile.nitro -t vta-nitro .
 
@@ -1015,7 +1016,7 @@ the full rebuild cycle because PCR0 changes:
 
 ```bash
 # 1. Rebuild Docker image
-docker build -f Dockerfile.nitro --build-arg FEATURES="rest,didcomm,vsock-store" -t vta-nitro .
+docker build -f Dockerfile.nitro --build-arg FEATURES="rest,didcomm,vsock-store,vsock-log" -t vta-nitro .
 
 # 2. Rebuild and sign EIF — note the new PCR0
 nitro-cli build-enclave --docker-uri vta-nitro --output-file vta.eif \
@@ -1062,7 +1063,7 @@ OLD_PCR0=$(cat last-build-pcr0.txt)
 # OLD_PCR0=$(nitro-cli describe-enclaves | jq -r '.[0].Measurements.PCR0')
 
 # 2. Build the new image
-docker build -f Dockerfile.nitro --build-arg FEATURES="rest,didcomm,vsock-store" -t vta-nitro .
+docker build -f Dockerfile.nitro --build-arg FEATURES="rest,didcomm,vsock-store,vsock-log" -t vta-nitro .
 nitro-cli build-enclave --docker-uri vta-nitro --output-file vta.eif \
     --signing-certificate signing-cert.pem --private-key signing-key.pem
 # Save the new PCR0 from the output
