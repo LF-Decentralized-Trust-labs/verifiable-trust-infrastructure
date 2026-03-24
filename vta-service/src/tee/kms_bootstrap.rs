@@ -570,8 +570,11 @@ fn decrypt_cms_envelope(
 
     debug!(cek_len = cek.len(), "decrypted content-encryption key from CMS envelope");
 
-    // AES-GCM decrypt the content
-    use aes_gcm::{Aes256Gcm, KeyInit, aead::Aead};
+    // AES-GCM decrypt the content.
+    // KMS uses a 16-byte (128-bit) GCM nonce in CiphertextForRecipient,
+    // so we use AesGcm with a runtime nonce size via typenum.
+    use aes_gcm::{AesGcm, KeyInit, aead::Aead};
+    use aes_gcm::aes::Aes256;
     use aes_gcm::aead::generic_array::GenericArray;
 
     if cek.len() != 32 {
@@ -581,22 +584,34 @@ fn decrypt_cms_envelope(
         )));
     }
 
-    if fields.nonce.len() != 12 {
-        return Err(tee_attestation_error(format!(
-            "unexpected GCM nonce length: {} (expected 12) — CMS structure may \
-             differ from expected format, nonce bytes: {:02x?}",
-            fields.nonce.len(),
-            fields.nonce,
-        )));
-    }
-
-    let cipher = Aes256Gcm::new(GenericArray::from_slice(&cek));
-    let nonce = GenericArray::from_slice(&fields.nonce);
-    let plaintext = cipher
-        .decrypt(nonce, fields.ciphertext.as_ref())
-        .map_err(|e| {
-            tee_attestation_error(format!("AES-GCM decryption of CMS content failed: {e}"))
-        })?;
+    let plaintext = match fields.nonce.len() {
+        12 => {
+            let cipher = AesGcm::<Aes256, aes_gcm::aead::consts::U12>::new(
+                GenericArray::from_slice(&cek),
+            );
+            cipher
+                .decrypt(GenericArray::from_slice(&fields.nonce), fields.ciphertext.as_ref())
+                .map_err(|e| {
+                    tee_attestation_error(format!("AES-GCM decryption of CMS content failed: {e}"))
+                })?
+        }
+        16 => {
+            let cipher = AesGcm::<Aes256, aes_gcm::aead::consts::U16>::new(
+                GenericArray::from_slice(&cek),
+            );
+            cipher
+                .decrypt(GenericArray::from_slice(&fields.nonce), fields.ciphertext.as_ref())
+                .map_err(|e| {
+                    tee_attestation_error(format!("AES-GCM decryption of CMS content failed: {e}"))
+                })?
+        }
+        n => {
+            return Err(tee_attestation_error(format!(
+                "unsupported GCM nonce length: {n} (expected 12 or 16), nonce: {:02x?}",
+                fields.nonce,
+            )));
+        }
+    };
 
     debug!(plaintext_len = plaintext.len(), "CMS envelope decrypted successfully");
     Ok(plaintext)
