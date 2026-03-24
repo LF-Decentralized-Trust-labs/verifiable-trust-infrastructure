@@ -750,9 +750,25 @@ mod cms_der {
             // Short form: length in single byte
             first_len as usize
         } else if first_len == 0x80 {
-            return Err(tee_attestation_error(format!(
-                "CMS: indefinite length not supported for {context}"
-            )));
+            // Indefinite length (BER): content runs until 0x00 0x00 EOC marker.
+            // KMS sometimes returns CMS envelopes with BER encoding on the
+            // outer ContentInfo. Find the EOC or use all remaining data.
+            let remaining = &data[*pos..];
+            let content_len = if let Some(eoc_pos) = remaining
+                .windows(2)
+                .rposition(|w| w == [0x00, 0x00])
+            {
+                eoc_pos
+            } else {
+                remaining.len()
+            };
+            let value = &data[*pos..*pos + content_len];
+            // Skip past content + EOC marker (if present)
+            *pos += content_len;
+            if *pos + 2 <= data.len() && data[*pos] == 0x00 && data[*pos + 1] == 0x00 {
+                *pos += 2;
+            }
+            return Ok((tag, value));
         } else {
             // Long form: first_len & 0x7F = number of length bytes
             let num_bytes = (first_len & 0x7F) as usize;
