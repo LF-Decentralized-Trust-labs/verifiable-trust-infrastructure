@@ -11,7 +11,7 @@ license.workspace = true
 repository.workspace = true
 
 [features]
-didcomm = ["dep:affinidi-tdk", "dep:tracing", "dep:uuid", "dep:tokio"]
+didcomm = ["dep:affinidi-tdk", "dep:affinidi-did-resolver-cache-sdk", "dep:tracing", "dep:uuid", "dep:tokio"]
 client = ["dep:reqwest", "dep:tracing", "dep:uuid", "dep:affinidi-tdk"]
 session = [
   "client",
