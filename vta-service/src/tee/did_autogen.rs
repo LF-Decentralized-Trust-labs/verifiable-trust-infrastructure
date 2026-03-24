@@ -160,8 +160,15 @@ pub async fn maybe_generate_vta_did(
         .insert_raw(VTA_DID_STORE_KEY, final_did.as_bytes().to_vec())
         .await?;
 
-    // Store did.jsonl as a K/V entry for retrieval
+    // Store did.jsonl in encrypted keyspace for REST API access
     keys_ks
+        .insert_raw("tee:did_log", log_content.as_bytes().to_vec())
+        .await?;
+
+    // Also store in bootstrap keyspace (no encryption) so the parent proxy
+    // can read it and write did.jsonl to disk for the operator.
+    let bootstrap_ks = store.keyspace("bootstrap")?;
+    bootstrap_ks
         .insert_raw("tee:did_log", log_content.as_bytes().to_vec())
         .await?;
 
