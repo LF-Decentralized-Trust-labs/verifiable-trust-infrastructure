@@ -581,6 +581,15 @@ fn decrypt_cms_envelope(
         )));
     }
 
+    if fields.nonce.len() != 12 {
+        return Err(tee_attestation_error(format!(
+            "unexpected GCM nonce length: {} (expected 12) — CMS structure may \
+             differ from expected format, nonce bytes: {:02x?}",
+            fields.nonce.len(),
+            fields.nonce,
+        )));
+    }
+
     let cipher = Aes256Gcm::new(GenericArray::from_slice(&cek));
     let nonce = GenericArray::from_slice(&fields.nonce);
     let plaintext = cipher
@@ -708,12 +717,17 @@ mod cms_der {
         let mut pos = 0;
         // algorithm OID — skip
         let _ = read_tlv(alg_data, &mut pos, "algorithm OID")?;
-        // parameters: GCMParameters SEQUENCE
-        let (_, params_body) = read_tlv(alg_data, &mut pos, "GCM parameters")?;
+        // parameters: GCMParameters SEQUENCE or OCTET STRING
+        let (param_tag, params_body) = read_tlv(alg_data, &mut pos, "GCM parameters")?;
 
+        if param_tag == 0x04 {
+            // Parameters encoded directly as OCTET STRING (the nonce itself)
+            return Ok(params_body.to_vec());
+        }
+
+        // SEQUENCE wrapper: GCMParameters ::= SEQUENCE { nonce OCTET STRING, icvLen INTEGER OPTIONAL }
         let mut pp = 0;
-        // nonce OCTET STRING
-        let (_, nonce_value) = read_tlv(&params_body, &mut pp, "GCM nonce")?;
+        let (_, nonce_value) = read_tlv(params_body, &mut pp, "GCM nonce")?;
 
         Ok(nonce_value.to_vec())
     }
