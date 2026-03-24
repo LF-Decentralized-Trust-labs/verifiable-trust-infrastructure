@@ -585,19 +585,12 @@ fn decrypt_cms_envelope(
 
     debug!(
         cek_len = cek.len(),
-        nonce_hex = %hex::encode(&fields.nonce),
-        ciphertext_hex = %hex::encode(&fields.ciphertext),
+        oid_hex = %hex::encode(&fields.content_encryption_oid),
+        iv_hex = %hex::encode(&fields.iv),
+        ciphertext_len = fields.ciphertext.len(),
         encrypted_key_len = fields.encrypted_key.len(),
-        cms_total_len = cms_bytes.len(),
         "CMS envelope fields extracted"
     );
-
-    // AES-GCM decrypt the content.
-    // KMS uses a 16-byte (128-bit) GCM nonce in CiphertextForRecipient,
-    // so we use AesGcm with a runtime nonce size via typenum.
-    use aes_gcm::{AesGcm, KeyInit, aead::Aead};
-    use aes_gcm::aes::Aes256;
-    use aes_gcm::aead::generic_array::GenericArray;
 
     if cek.len() != 32 {
         return Err(tee_attestation_error(format!(
@@ -606,41 +599,71 @@ fn decrypt_cms_envelope(
         )));
     }
 
-    let plaintext = match fields.nonce.len() {
-        12 => {
-            let cipher = AesGcm::<Aes256, aes_gcm::aead::consts::U12>::new(
-                GenericArray::from_slice(&cek),
-            );
-            cipher
-                .decrypt(GenericArray::from_slice(&fields.nonce), fields.ciphertext.as_ref())
-                .map_err(|e| {
-                    tee_attestation_error(format!(
-                        "AES-GCM decryption of CMS content failed: {e} \
-                         (cek_len={}, nonce_len={}, ct_len={})",
-                        cek.len(), fields.nonce.len(), fields.ciphertext.len()
-                    ))
-                })?
-        }
-        16 => {
-            let cipher = AesGcm::<Aes256, aes_gcm::aead::consts::U16>::new(
-                GenericArray::from_slice(&cek),
-            );
-            cipher
-                .decrypt(GenericArray::from_slice(&fields.nonce), fields.ciphertext.as_ref())
-                .map_err(|e| {
-                    tee_attestation_error(format!(
-                        "AES-GCM decryption of CMS content failed: {e} \
-                         (cek_len={}, nonce_len={}, ct_len={})",
-                        cek.len(), fields.nonce.len(), fields.ciphertext.len()
-                    ))
-                })?
-        }
-        n => {
+    // KMS uses AES-256-CBC for CMS CiphertextForRecipient content encryption.
+    // OID 2.16.840.1.101.3.4.1.42 = AES-256-CBC
+    // OID 2.16.840.1.101.3.4.1.46 = AES-256-GCM (also supported)
+    let aes_256_cbc_oid: &[u8] = &[0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x01, 0x2a];
+    let aes_256_gcm_oid: &[u8] = &[0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x01, 0x2e];
+
+    let plaintext = if fields.content_encryption_oid == aes_256_cbc_oid {
+        // AES-256-CBC with PKCS#7 padding
+        use cbc::cipher::{BlockDecryptMut, KeyIvInit};
+        type Aes256CbcDec = cbc::Decryptor<aes::Aes256>;
+
+        if fields.iv.len() != 16 {
             return Err(tee_attestation_error(format!(
-                "unsupported GCM nonce length: {n} (expected 12 or 16), nonce: {:02x?}",
-                fields.nonce,
+                "AES-256-CBC IV must be 16 bytes, got {}",
+                fields.iv.len()
             )));
         }
+
+        let mut buf = fields.ciphertext.clone();
+        let decryptor = Aes256CbcDec::new_from_slices(&cek, &fields.iv).map_err(|e| {
+            tee_attestation_error(format!("AES-256-CBC init failed: {e}"))
+        })?;
+        let plaintext = decryptor
+            .decrypt_padded_mut::<cbc::cipher::block_padding::Pkcs7>(&mut buf)
+            .map_err(|e| {
+                tee_attestation_error(format!("AES-256-CBC decryption of CMS content failed: {e}"))
+            })?;
+        plaintext.to_vec()
+    } else if fields.content_encryption_oid == aes_256_gcm_oid {
+        // AES-256-GCM
+        use aes_gcm::{AesGcm, KeyInit, aead::Aead};
+        use aes_gcm::aead::generic_array::GenericArray;
+
+        match fields.iv.len() {
+            12 => {
+                let cipher = AesGcm::<aes_gcm::aes::Aes256, aes_gcm::aead::consts::U12>::new(
+                    GenericArray::from_slice(&cek),
+                );
+                cipher
+                    .decrypt(GenericArray::from_slice(&fields.iv), fields.ciphertext.as_ref())
+                    .map_err(|e| {
+                        tee_attestation_error(format!("AES-GCM decryption failed: {e}"))
+                    })?
+            }
+            16 => {
+                let cipher = AesGcm::<aes_gcm::aes::Aes256, aes_gcm::aead::consts::U16>::new(
+                    GenericArray::from_slice(&cek),
+                );
+                cipher
+                    .decrypt(GenericArray::from_slice(&fields.iv), fields.ciphertext.as_ref())
+                    .map_err(|e| {
+                        tee_attestation_error(format!("AES-GCM decryption failed: {e}"))
+                    })?
+            }
+            n => {
+                return Err(tee_attestation_error(format!(
+                    "unsupported GCM nonce length: {n}"
+                )));
+            }
+        }
+    } else {
+        return Err(tee_attestation_error(format!(
+            "unsupported content encryption algorithm OID: {}",
+            hex::encode(&fields.content_encryption_oid)
+        )));
     };
 
     debug!(plaintext_len = plaintext.len(), "CMS envelope decrypted successfully");
@@ -658,7 +681,10 @@ mod cms_der {
     /// Parsed fields from a CMS EnvelopedData needed for decryption.
     pub(super) struct CmsFields {
         pub encrypted_key: Vec<u8>,
-        pub nonce: Vec<u8>,
+        /// Algorithm OID bytes (e.g., AES-256-CBC or AES-256-GCM).
+        pub content_encryption_oid: Vec<u8>,
+        /// IV (for CBC) or nonce (for GCM).
+        pub iv: Vec<u8>,
         pub ciphertext: Vec<u8>,
     }
 
@@ -714,11 +740,12 @@ mod cms_der {
         let encrypted_key = parse_key_trans_ri(&ri_set)?;
 
         // Parse EncryptedContentInfo
-        let (nonce, ciphertext) = parse_encrypted_content_info(&eci_body)?;
+        let (oid, iv, ciphertext) = parse_encrypted_content_info(&eci_body)?;
 
         Ok(CmsFields {
             encrypted_key,
-            nonce,
+            content_encryption_oid: oid,
+            iv,
             ciphertext,
         })
     }
@@ -741,9 +768,10 @@ mod cms_der {
         Ok(ek_value.to_vec())
     }
 
+    /// Returns (algorithm_oid, iv_or_nonce, ciphertext).
     fn parse_encrypted_content_info(
         eci_data: &[u8],
-    ) -> Result<(Vec<u8>, Vec<u8>), AppError> {
+    ) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>), AppError> {
         let mut pos = 0;
         // contentType OID — skip
         let _ = read_tlv(eci_data, &mut pos, "ECI contentType")?;
@@ -797,8 +825,8 @@ mod cms_der {
             &eci_data[pos..pos + len]
         };
 
-        // Parse algorithm to get the GCM nonce
-        let nonce = parse_aes_gcm_params(&alg_body)?;
+        // Parse algorithm to get the OID and IV/nonce
+        let (oid, iv) = parse_content_encryption_params(&alg_body)?;
 
         // The ciphertext may be wrapped in an inner OCTET STRING if KMS used
         // EXPLICIT tagging on [0] instead of IMPLICIT. Unwrap if present.
@@ -810,26 +838,29 @@ mod cms_der {
             ct_value.to_vec()
         };
 
-        Ok((nonce, ciphertext))
+        Ok((oid, iv, ciphertext))
     }
 
-    fn parse_aes_gcm_params(alg_data: &[u8]) -> Result<Vec<u8>, AppError> {
+    /// Parse the AlgorithmIdentifier to extract the OID and IV/nonce.
+    /// Returns (algorithm_oid_bytes, iv_or_nonce).
+    fn parse_content_encryption_params(alg_data: &[u8]) -> Result<(Vec<u8>, Vec<u8>), AppError> {
         let mut pos = 0;
-        // algorithm OID — skip
-        let _ = read_tlv(alg_data, &mut pos, "algorithm OID")?;
-        // parameters: GCMParameters SEQUENCE or OCTET STRING
-        let (param_tag, params_body) = read_tlv(alg_data, &mut pos, "GCM parameters")?;
+        // algorithm OID
+        let (_, oid_bytes) = read_tlv(alg_data, &mut pos, "algorithm OID")?;
+        // parameters: OCTET STRING (CBC IV) or SEQUENCE (GCM params)
+        let (param_tag, params_body) = read_tlv(alg_data, &mut pos, "algorithm parameters")?;
 
-        if param_tag == 0x04 {
-            // Parameters encoded directly as OCTET STRING (the nonce itself)
-            return Ok(params_body.to_vec());
-        }
+        let iv = if param_tag == 0x04 {
+            // OCTET STRING — direct IV (CBC) or bare nonce (some GCM encodings)
+            params_body.to_vec()
+        } else {
+            // SEQUENCE wrapper (GCMParameters): first child is nonce OCTET STRING
+            let mut pp = 0;
+            let (_, nonce_value) = read_tlv(params_body, &mut pp, "GCM nonce")?;
+            nonce_value.to_vec()
+        };
 
-        // SEQUENCE wrapper: GCMParameters ::= SEQUENCE { nonce OCTET STRING, icvLen INTEGER OPTIONAL }
-        let mut pp = 0;
-        let (_, nonce_value) = read_tlv(params_body, &mut pp, "GCM nonce")?;
-
-        Ok(nonce_value.to_vec())
+        Ok((oid_bytes.to_vec(), iv))
     }
 
     /// Read a BER/DER TLV (tag-length-value) at the given position.

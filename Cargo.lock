@@ -7660,6 +7660,7 @@ dependencies = [
 name = "vta-service"
 version = "0.1.2"
 dependencies = [
+ "aes",
  "aes-gcm",
  "affinidi-did-resolver-cache-sdk",
  "affinidi-tdk",
@@ -7673,6 +7674,7 @@ dependencies = [
  "base64 0.22.1",
  "bip39",
  "bytes",
+ "cbc",
  "chrono",
  "clap",
  "dialoguer",
