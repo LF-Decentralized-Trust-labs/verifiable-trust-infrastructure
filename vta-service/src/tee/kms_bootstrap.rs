@@ -560,10 +560,18 @@ fn decrypt_cms_envelope(
     // Parse the CMS EnvelopedData to extract the three fields we need
     let fields = cms_der::parse_enveloped_data(cms_bytes)?;
 
-    // RSA-OAEP-SHA256 decrypt the content-encryption key (CEK)
+    // RSA-OAEP decrypt the content-encryption key (CEK).
+    // We request RSAES_OAEP_SHA_256 in the Recipient parameter, but KMS may
+    // use SHA-256 for the hash and SHA-1 for the MGF1 mask generation function.
+    // Try SHA-256 first, then fall back to the mixed SHA-256/SHA-1 variant.
     use rsa::Oaep;
     let cek = private_key
         .decrypt(Oaep::new::<sha2::Sha256>(), &fields.encrypted_key)
+        .or_else(|_| {
+            // KMS may use SHA-256 hash + SHA-1 MGF1 (common in PKCS#11 implementations)
+            let padding = Oaep::new_with_mgf_hash::<sha2::Sha256, sha1::Sha1>();
+            private_key.decrypt(padding, &fields.encrypted_key)
+        })
         .map_err(|e| {
             tee_attestation_error(format!("RSA-OAEP decryption of CEK failed: {e}"))
         })?;
