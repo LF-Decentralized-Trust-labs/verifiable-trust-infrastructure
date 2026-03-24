@@ -784,13 +784,19 @@ nitro-cli console \
 > directly to your terminal. See the [Troubleshooting](#troubleshooting)
 > section for more details.
 >
-> **Warning:** In debug mode, all PCR values in the NSM attestation document
-> are set to **zeros** by the Nitro hypervisor. This means KMS attestation
-> conditions (PCR0/PCR8) will **never match** your real image hashes, and
-> all attested KMS calls will fail with `AccessDeniedException`. To use KMS
-> in debug mode, temporarily set the policy PCR values to all zeros:
-> ```
-> ./deploy/nitro/setup-kms-policy.sh --pcr0 "0000...96 zeros" --pcr8 "0000...96 zeros" ...
+> **Warning:** In debug mode, the Nitro hypervisor sets **all PCR values
+> to zeros** in attestation documents. KMS attestation conditions (PCR0/PCR8)
+> will never match your real image hashes, and all attested KMS calls will
+> fail with `AccessDeniedException`. To use KMS in debug mode, temporarily
+> set the policy to all-zeros PCR values:
+> ```bash
+> ZEROS="000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+> ./deploy/nitro/setup-kms-policy.sh \
+>     --pcr0 "$ZEROS" \
+>     --pcr8 "$ZEROS" \
+>     --role "arn:aws:iam::ACCOUNT:role/YOUR_ROLE" \
+>     --key-arn "arn:aws:kms:REGION:ACCOUNT:key/KEY_ID" \
+>     --region REGION
 > ```
 > **Remember to restore the real PCR values before production use.**
 
