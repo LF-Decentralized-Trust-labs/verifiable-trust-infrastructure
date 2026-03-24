@@ -1,4 +1,5 @@
 pub mod acl;
+pub mod cache;
 pub mod config;
 pub mod contexts;
 pub mod credentials;

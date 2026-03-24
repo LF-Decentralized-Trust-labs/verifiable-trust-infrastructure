@@ -1,5 +1,6 @@
 mod acl;
 mod auth;
+mod cache;
 mod config;
 mod contexts;
 #[cfg(feature = "webvh")]
@@ -41,6 +42,7 @@ pub fn router() -> Router<AppState> {
                 .patch(keys::rename_key),
         )
         .route("/keys/{key_id}/secret", get(keys::get_key_secret))
+        .route("/keys/{key_id}/sign", post(keys::sign_with_key))
         .route("/keys/seeds", get(keys::list_seeds))
         .route("/keys/seeds/rotate", post(keys::rotate_seed))
         // Context routes
@@ -65,6 +67,13 @@ pub fn router() -> Router<AppState> {
             get(acl::get_acl)
                 .patch(acl::update_acl)
                 .delete(acl::delete_acl),
+        )
+        // Cache routes (token caching / key-value store)
+        .route(
+            "/cache/{key}",
+            get(cache::get_cached)
+                .put(cache::put_cached)
+                .delete(cache::delete_cached),
         );
 
     // WebVH routes (feature-gated)

@@ -1,4 +1,5 @@
 use crate::keys::{KeyRecord, KeyStatus, KeyType};
+use crate::protocols::key_management::sign::SignAlgorithm;
 use chrono::{DateTime, Utc};
 use reqwest::{Client, RequestBuilder};
 use serde::{Deserialize, Serialize};
@@ -142,6 +143,14 @@ pub struct GetKeySecretResponse {
     pub key_type: KeyType,
     pub public_key_multibase: String,
     pub private_key_multibase: String,
+}
+
+/// Response from `POST /keys/{key_id}/sign`.
+#[derive(Debug, Deserialize)]
+pub struct SignResponse {
+    pub key_id: String,
+    pub signature: String,
+    pub algorithm: SignAlgorithm,
 }
 
 #[derive(Debug, Deserialize)]
@@ -600,6 +609,38 @@ impl VtaClient {
             key_management::GET_KEY_SECRET_RESULT,
             30,
             |c, url| c.get(format!("{url}/keys/{}/secret", encode_path_segment(key_id))),
+        )
+        .await
+    }
+
+    /// Sign a payload using a VTA-managed key.
+    ///
+    /// Sends the base64url-encoded payload to the VTA, which derives the key,
+    /// signs in memory, and returns the signature. Key material never leaves VTA.
+    pub async fn sign(
+        &self,
+        key_id: &str,
+        payload: &[u8],
+        algorithm: SignAlgorithm,
+    ) -> Result<SignResponse, Box<dyn std::error::Error>> {
+        use base64::Engine;
+        let payload_b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(payload);
+        self.rpc(
+            key_management::SIGN_REQUEST,
+            serde_json::json!({
+                "key_id": key_id,
+                "payload": payload_b64,
+                "algorithm": algorithm,
+            }),
+            key_management::SIGN_RESULT,
+            30,
+            |c, url| {
+                c.post(format!("{url}/keys/{}/sign", encode_path_segment(key_id)))
+                    .json(&serde_json::json!({
+                        "payload": payload_b64,
+                        "algorithm": algorithm,
+                    }))
+            },
         )
         .await
     }

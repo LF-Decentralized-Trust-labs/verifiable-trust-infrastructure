@@ -70,6 +70,7 @@ azure_identity = { version = "0.33", optional = true }
 sha2 = { workspace = true }
 x25519-dalek = { workspace = true }
 multibase = { workspace = true }
+p256 = "0.13"
 url = { workspace = true, optional = true }
 reqwest = { workspace = true, optional = true }
 tempfile = { version = "3", optional = true }

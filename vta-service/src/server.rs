@@ -35,6 +35,7 @@ pub struct AppState {
     pub sessions_ks: KeyspaceHandle,
     pub acl_ks: KeyspaceHandle,
     pub contexts_ks: KeyspaceHandle,
+    pub cache_ks: KeyspaceHandle,
     #[cfg(feature = "webvh")]
     pub webvh_ks: KeyspaceHandle,
     pub config: Arc<RwLock<AppConfig>>,
@@ -68,6 +69,7 @@ pub async fn run(
     let sessions_ks = store.keyspace("sessions")?;
     let acl_ks = store.keyspace("acl")?;
     let contexts_ks = store.keyspace("contexts")?;
+    let cache_ks = store.keyspace("cache")?;
     #[cfg(feature = "webvh")]
     let webvh_ks = store.keyspace("webvh")?;
 
@@ -135,6 +137,7 @@ pub async fn run(
             sessions_ks,
             acl_ks,
             contexts_ks,
+            cache_ks,
             #[cfg(feature = "webvh")]
             webvh_ks,
             config: Arc::new(RwLock::new(config.clone())),
