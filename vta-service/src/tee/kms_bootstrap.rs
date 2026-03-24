@@ -270,6 +270,71 @@ pub(crate) fn derive_storage_key(seed: &[u8], salt: &str) -> [u8; 32] {
 }
 
 // ---------------------------------------------------------------------------
+// KMS helpers
+// ---------------------------------------------------------------------------
+
+/// Create a KMS client for the configured region.
+async fn kms_client(config: &TeeKmsConfig) -> aws_sdk_kms::Client {
+    let sdk_config = aws_config::defaults(aws_config::BehaviorVersion::latest())
+        .region(aws_config::Region::new(config.region.clone()))
+        .load()
+        .await;
+    aws_sdk_kms::Client::new(&sdk_config)
+}
+
+/// Generate an ephemeral RSA-2048 keypair and obtain an NSM attestation
+/// document binding the public key. Returns `(private_key, recipient_info)`
+/// for use with KMS attested operations.
+fn nsm_attested_recipient() -> Result<
+    (rsa::RsaPrivateKey, aws_sdk_kms::types::RecipientInfo),
+    AppError,
+> {
+    use rsa::pkcs8::EncodePublicKey;
+
+    let mut rng = rsa::rand_core::OsRng;
+    let private_key = rsa::RsaPrivateKey::new(&mut rng, 2048).map_err(|e| {
+        tee_attestation_error(format!("RSA key generation failed: {e}"))
+    })?;
+
+    let public_key_der = private_key
+        .to_public_key()
+        .to_public_key_der()
+        .map_err(|e| {
+            tee_attestation_error(format!("RSA public key DER encoding failed: {e}"))
+        })?;
+
+    let attestation_doc =
+        super::nitro::request_nsm_attestation_for_kms(public_key_der.as_ref())?;
+
+    let recipient = aws_sdk_kms::types::RecipientInfo::builder()
+        .attestation_document(aws_sdk_kms::primitives::Blob::new(attestation_doc))
+        .key_encryption_algorithm(
+            aws_sdk_kms::types::KeyEncryptionMechanism::RsaesOaepSha256,
+        )
+        .build();
+
+    Ok((private_key, recipient))
+}
+
+/// Extract the plaintext from an attested KMS response's CMS envelope.
+///
+/// When a `Recipient` is provided, KMS returns `CiphertextForRecipient`
+/// (CMS EnvelopedData, RFC 5652) instead of `Plaintext`. This function
+/// unwraps that envelope using the ephemeral RSA private key.
+fn unwrap_cms_response(
+    cms_blob: Option<&aws_sdk_kms::primitives::Blob>,
+    private_key: &rsa::RsaPrivateKey,
+) -> Result<Vec<u8>, AppError> {
+    let cms_bytes = cms_blob.ok_or_else(|| {
+        tee_attestation_error(
+            "KMS response missing CiphertextForRecipient — \
+             the KMS key may not support attestation-based operations",
+        )
+    })?;
+    decrypt_cms_envelope(cms_bytes.as_ref(), private_key)
+}
+
+// ---------------------------------------------------------------------------
 // KMS operations
 // ---------------------------------------------------------------------------
 
@@ -285,7 +350,7 @@ async fn kms_decrypt_data_key(
     if std::path::Path::new("/dev/nsm").exists() {
         match kms_decrypt_attested(config, ciphertext).await {
             Ok(plaintext) => {
-                info!("KMS Decrypt succeeded with Nitro attestation (Recipient parameter)");
+                info!("KMS Decrypt succeeded with Nitro attestation");
                 return Ok(plaintext);
             }
             Err(e) => {
@@ -301,61 +366,12 @@ async fn kms_decrypt_data_key(
 }
 
 /// KMS Decrypt with Nitro attestation via the Recipient parameter.
-///
-/// Flow:
-/// 1. Generate ephemeral RSA-2048 keypair
-/// 2. Get NSM attestation document binding the RSA public key
-/// 3. Call KMS Decrypt with Recipient (attestation doc + key algorithm)
-/// 4. KMS returns CiphertextForRecipient (CMS EnvelopedData, RFC 5652)
-/// 5. Unwrap CMS envelope: RSA-OAEP-SHA256 decrypt the CEK, AES-GCM decrypt the content
 async fn kms_decrypt_attested(
     config: &TeeKmsConfig,
     ciphertext: &[u8],
 ) -> Result<Vec<u8>, AppError> {
-    use rsa::pkcs8::EncodePublicKey;
-
-    // 1. Generate ephemeral RSA-2048 keypair
-    //    rsa 0.9 re-exports rand_core 0.6; use its OsRng for compatibility
-    let mut rng = rsa::rand_core::OsRng;
-    let private_key = rsa::RsaPrivateKey::new(&mut rng, 2048).map_err(|e| {
-        tee_attestation_error(format!("RSA key generation failed: {e}"))
-    })?;
-
-    let public_key_der = private_key
-        .to_public_key()
-        .to_public_key_der()
-        .map_err(|e| {
-            tee_attestation_error(format!("RSA public key DER encoding failed: {e}"))
-        })?;
-
-    debug!(
-        pubkey_der_len = public_key_der.as_ref().len(),
-        "generated ephemeral RSA-2048 keypair for KMS Recipient"
-    );
-
-    // 2. Get NSM attestation document with the RSA public key embedded
-    let attestation_doc =
-        super::nitro::request_nsm_attestation_for_kms(public_key_der.as_ref())?;
-
-    debug!(
-        attestation_doc_len = attestation_doc.len(),
-        "obtained NSM attestation document with embedded public key"
-    );
-
-    // 3. Call KMS Decrypt with Recipient parameter
-    let sdk_config = aws_config::defaults(aws_config::BehaviorVersion::latest())
-        .region(aws_config::Region::new(config.region.clone()))
-        .load()
-        .await;
-
-    let client = aws_sdk_kms::Client::new(&sdk_config);
-
-    let recipient = aws_sdk_kms::types::RecipientInfo::builder()
-        .attestation_document(aws_sdk_kms::primitives::Blob::new(attestation_doc))
-        .key_encryption_algorithm(
-            aws_sdk_kms::types::KeyEncryptionMechanism::RsaesOaepSha256,
-        )
-        .build();
+    let (private_key, recipient) = nsm_attested_recipient()?;
+    let client = kms_client(config).await;
 
     let resp = client
         .decrypt()
@@ -366,38 +382,15 @@ async fn kms_decrypt_attested(
         .await
         .map_err(|e| classify_kms_error("Decrypt(attested)", e))?;
 
-    // 4. Extract CiphertextForRecipient (CMS envelope)
-    //    When Recipient is provided, KMS returns CiphertextForRecipient instead of Plaintext
-    let cms_bytes = resp
-        .ciphertext_for_recipient()
-        .ok_or_else(|| {
-            tee_attestation_error(
-                "KMS response missing CiphertextForRecipient — \
-                 the KMS key may not support attestation-based decryption",
-            )
-        })?;
-
-    debug!(
-        cms_len = cms_bytes.as_ref().len(),
-        "received CMS envelope from KMS"
-    );
-
-    // 5. Unwrap the CMS EnvelopedData to recover the plaintext
-    decrypt_cms_envelope(cms_bytes.as_ref(), &private_key)
+    unwrap_cms_response(resp.ciphertext_for_recipient(), &private_key)
 }
-
 
 /// Direct KMS Decrypt without the Recipient parameter.
 async fn kms_decrypt_direct(
     config: &TeeKmsConfig,
     ciphertext: &[u8],
 ) -> Result<Vec<u8>, AppError> {
-    let sdk_config = aws_config::defaults(aws_config::BehaviorVersion::latest())
-        .region(aws_config::Region::new(config.region.clone()))
-        .load()
-        .await;
-
-    let client = aws_sdk_kms::Client::new(&sdk_config);
+    let client = kms_client(config).await;
 
     let resp = client
         .decrypt()
@@ -445,39 +438,8 @@ async fn kms_generate_data_key(
 async fn kms_generate_data_key_attested(
     config: &TeeKmsConfig,
 ) -> Result<(Vec<u8>, [u8; 32]), AppError> {
-    use rsa::pkcs8::EncodePublicKey;
-
-    // Generate ephemeral RSA-2048 keypair
-    let mut rng = rsa::rand_core::OsRng;
-    let private_key = rsa::RsaPrivateKey::new(&mut rng, 2048).map_err(|e| {
-        tee_attestation_error(format!("RSA key generation failed: {e}"))
-    })?;
-
-    let public_key_der = private_key
-        .to_public_key()
-        .to_public_key_der()
-        .map_err(|e| {
-            tee_attestation_error(format!("RSA public key DER encoding failed: {e}"))
-        })?;
-
-    // Get NSM attestation document with the RSA public key embedded
-    let attestation_doc =
-        super::nitro::request_nsm_attestation_for_kms(public_key_der.as_ref())?;
-
-    // Call GenerateDataKey with Recipient parameter
-    let sdk_config = aws_config::defaults(aws_config::BehaviorVersion::latest())
-        .region(aws_config::Region::new(config.region.clone()))
-        .load()
-        .await;
-
-    let client = aws_sdk_kms::Client::new(&sdk_config);
-
-    let recipient = aws_sdk_kms::types::RecipientInfo::builder()
-        .attestation_document(aws_sdk_kms::primitives::Blob::new(attestation_doc))
-        .key_encryption_algorithm(
-            aws_sdk_kms::types::KeyEncryptionMechanism::RsaesOaepSha256,
-        )
-        .build();
+    let (private_key, recipient) = nsm_attested_recipient()?;
+    let client = kms_client(config).await;
 
     let resp = client
         .generate_data_key()
@@ -488,21 +450,13 @@ async fn kms_generate_data_key_attested(
         .await
         .map_err(|e| classify_kms_error("GenerateDataKey(attested)", e))?;
 
-    // Extract KMS-encrypted data key
     let kms_ciphertext = resp
         .ciphertext_blob()
         .ok_or_else(|| tee_attestation_error("GenerateDataKey returned no CiphertextBlob"))?
         .as_ref()
         .to_vec();
 
-    // Decrypt CMS envelope to recover plaintext data key
-    let cms_bytes = resp.ciphertext_for_recipient().ok_or_else(|| {
-        tee_attestation_error(
-            "GenerateDataKey returned no CiphertextForRecipient — \
-             the KMS key may not support attestation-based operations",
-        )
-    })?;
-    let data_key_vec = decrypt_cms_envelope(cms_bytes.as_ref(), &private_key)?;
+    let data_key_vec = unwrap_cms_response(resp.ciphertext_for_recipient(), &private_key)?;
     let data_key: [u8; 32] = data_key_vec.try_into().map_err(|_| {
         tee_attestation_error("data key is not 32 bytes")
     })?;
@@ -515,12 +469,7 @@ async fn kms_generate_data_key_attested(
 async fn kms_generate_data_key_direct(
     config: &TeeKmsConfig,
 ) -> Result<(Vec<u8>, [u8; 32]), AppError> {
-    let sdk_config = aws_config::defaults(aws_config::BehaviorVersion::latest())
-        .region(aws_config::Region::new(config.region.clone()))
-        .load()
-        .await;
-
-    let client = aws_sdk_kms::Client::new(&sdk_config);
+    let client = kms_client(config).await;
 
     let resp = client
         .generate_data_key()
