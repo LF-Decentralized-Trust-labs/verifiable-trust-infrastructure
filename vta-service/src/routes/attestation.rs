@@ -46,6 +46,29 @@ pub async fn cached_report(
     Ok(Json(response))
 }
 
+/// GET /attestation/did-log — Return the auto-generated did.jsonl (unauthenticated).
+///
+/// The DID log is public data (it's published to a web server). This endpoint
+/// is only available when the VTA auto-generated a did:webvh identity on first boot.
+pub async fn did_log(
+    State(state): State<AppState>,
+) -> Result<String, AppError> {
+    let log_bytes = state
+        .keys_ks
+        .get_raw("tee:did_log")
+        .await?
+        .ok_or_else(|| {
+            AppError::NotFound(
+                "no auto-generated DID log found — the VTA may not have \
+                 been configured with a vta_did_template"
+                    .into(),
+            )
+        })?;
+
+    String::from_utf8(log_bytes)
+        .map_err(|e| AppError::Internal(format!("DID log is not valid UTF-8: {e}")))
+}
+
 /// GET /attestation/mnemonic — Check mnemonic export window status (super admin only).
 pub async fn mnemonic_status(
     _auth: SuperAdminAuth,
