@@ -734,8 +734,53 @@ mod cms_der {
         let _ = read_tlv(eci_data, &mut pos, "ECI contentType")?;
         // contentEncryptionAlgorithm SEQUENCE
         let (_, alg_body) = read_tlv(eci_data, &mut pos, "ECI algorithm")?;
+
         // encryptedContent [0] IMPLICIT OCTET STRING
-        let (_, ct_value) = read_tlv(eci_data, &mut pos, "encryptedContent")?;
+        //
+        // This is raw ciphertext, not structured ASN.1. If it uses BER
+        // indefinite-length (tag 0xA0, length 0x80), the generic read_tlv
+        // would try to walk TLV children inside raw bytes and fail.
+        //
+        // Handle it directly: read the tag+length, and for indefinite-length
+        // take all remaining data (stripping trailing EOC if present).
+        if pos >= eci_data.len() {
+            return Err(tee_attestation_error(
+                "CMS: missing encryptedContent in EncryptedContentInfo",
+            ));
+        }
+        let _tag = eci_data[pos];
+        pos += 1;
+
+        if pos >= eci_data.len() {
+            return Err(tee_attestation_error("CMS: truncated encryptedContent length"));
+        }
+        let first_len = eci_data[pos];
+        pos += 1;
+
+        let ct_value = if first_len < 0x80 {
+            let len = first_len as usize;
+            &eci_data[pos..pos + len]
+        } else if first_len == 0x80 {
+            // Indefinite length on raw octets — take everything remaining,
+            // strip trailing 0x00 0x00 EOC if present.
+            let remaining = &eci_data[pos..];
+            if remaining.len() >= 2
+                && remaining[remaining.len() - 2] == 0x00
+                && remaining[remaining.len() - 1] == 0x00
+            {
+                &remaining[..remaining.len() - 2]
+            } else {
+                remaining
+            }
+        } else {
+            let num_bytes = (first_len & 0x7F) as usize;
+            let mut len = 0usize;
+            for i in 0..num_bytes {
+                len = (len << 8) | (eci_data[pos + i] as usize);
+            }
+            pos += num_bytes;
+            &eci_data[pos..pos + len]
+        };
 
         // Parse algorithm to get the GCM nonce
         let nonce = parse_aes_gcm_params(&alg_body)?;
