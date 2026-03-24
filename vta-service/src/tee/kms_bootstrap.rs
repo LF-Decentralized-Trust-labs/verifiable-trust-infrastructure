@@ -718,10 +718,12 @@ mod cms_der {
         Ok(nonce_value.to_vec())
     }
 
-    /// Read a DER TLV (tag-length-value) at the given position.
+    /// Read a BER/DER TLV (tag-length-value) at the given position.
     ///
     /// Returns (tag_byte, value_bytes) and advances `pos` past the TLV.
-    /// The value_bytes is the content after the tag+length header.
+    /// Handles both definite-length (DER) and indefinite-length (BER)
+    /// encoding — KMS CiphertextForRecipient uses BER with indefinite
+    /// length on multiple constructed elements.
     fn read_tlv<'a>(
         data: &'a [u8],
         pos: &mut usize,
@@ -750,26 +752,27 @@ mod cms_der {
             // Short form: length in single byte
             first_len as usize
         } else if first_len == 0x80 {
-            // Indefinite length (BER): content runs until a 0x00 0x00 EOC
-            // marker at the end of the buffer. KMS sometimes returns CMS
-            // envelopes with BER encoding on constructed elements.
-            //
-            // We treat the content as all remaining data, stripping a
-            // trailing EOC if present. This is safe because our parser only
-            // encounters indefinite length on the outermost SEQUENCE whose
-            // content spans the rest of the buffer.
-            let remaining = &data[*pos..];
-            let content_len = if remaining.len() >= 2
-                && remaining[remaining.len() - 2] == 0x00
-                && remaining[remaining.len() - 1] == 0x00
-            {
-                remaining.len() - 2
-            } else {
-                remaining.len()
-            };
-            let value = &data[*pos..*pos + content_len];
-            *pos = data.len(); // consumed everything
-            return Ok((tag, value));
+            // BER indefinite length: content ends at a matching EOC (0x00 0x00).
+            // Walk through child TLVs to find it (0x00 0x00 can appear inside
+            // primitive values like ciphertext, so we can't just scan for it).
+            let content_start = *pos;
+            while *pos + 1 < data.len() {
+                // Check for EOC marker
+                if data[*pos] == 0x00 && data[*pos + 1] == 0x00 {
+                    let value = &data[content_start..*pos];
+                    *pos += 2; // skip EOC
+                    return Ok((tag, value));
+                }
+                // Skip one child TLV
+                skip_ber_tlv(data, pos).map_err(|_| {
+                    tee_attestation_error(format!(
+                        "CMS: malformed BER child element inside {context}"
+                    ))
+                })?;
+            }
+            return Err(tee_attestation_error(format!(
+                "CMS: no EOC marker found for indefinite-length {context}"
+            )));
         } else {
             // Long form: first_len & 0x7F = number of length bytes
             let num_bytes = (first_len & 0x7F) as usize;
@@ -797,6 +800,57 @@ mod cms_der {
         *pos += len;
 
         Ok((tag, value))
+    }
+
+    /// Skip one complete BER/DER TLV element, advancing `pos` past it.
+    /// Handles indefinite-length by recursively skipping child elements.
+    fn skip_ber_tlv(data: &[u8], pos: &mut usize) -> Result<(), ()> {
+        if *pos + 1 >= data.len() {
+            return Err(());
+        }
+
+        // Skip tag
+        *pos += 1;
+
+        // Read length
+        let first_len = data[*pos];
+        *pos += 1;
+
+        if first_len < 0x80 {
+            // Definite short form
+            let len = first_len as usize;
+            if *pos + len > data.len() {
+                return Err(());
+            }
+            *pos += len;
+        } else if first_len == 0x80 {
+            // Indefinite length — skip children until EOC
+            while *pos + 1 < data.len() {
+                if data[*pos] == 0x00 && data[*pos + 1] == 0x00 {
+                    *pos += 2; // skip EOC
+                    return Ok(());
+                }
+                skip_ber_tlv(data, pos)?;
+            }
+            return Err(());
+        } else {
+            // Definite long form
+            let num_bytes = (first_len & 0x7F) as usize;
+            if *pos + num_bytes > data.len() {
+                return Err(());
+            }
+            let mut len: usize = 0;
+            for i in 0..num_bytes {
+                len = (len << 8) | (data[*pos + i] as usize);
+            }
+            *pos += num_bytes;
+            if *pos + len > data.len() {
+                return Err(());
+            }
+            *pos += len;
+        }
+
+        Ok(())
     }
 
     #[cfg(test)]
