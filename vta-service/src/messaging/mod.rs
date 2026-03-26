@@ -146,11 +146,11 @@ async fn dispatch_message(
     state: &DidcommState,
     msg: &Message,
 ) {
-    if msg.type_ != protocols::TRUST_PING_TYPE && msg.type_ != protocols::MESSAGE_PICKUP_STATUS_TYPE
+    if msg.typ != protocols::TRUST_PING_TYPE && msg.typ != protocols::MESSAGE_PICKUP_STATUS_TYPE
     {
         info!(
             channel = "didcomm",
-            msg_type = %msg.type_,
+            msg_type = %msg.typ,
             from = msg.from.as_deref().unwrap_or("unknown"),
             msg_id = %msg.id,
             "inbound request"
@@ -163,7 +163,7 @@ async fn dispatch_message(
         vta_did,
     };
 
-    let result = match msg.type_.as_str() {
+    let result = match msg.typ.as_str() {
         protocols::TRUST_PING_TYPE => {
             vta_sdk::didcomm_init::handle_trust_ping(atm, profile, vta_did, msg).await
         }
@@ -287,7 +287,7 @@ async fn dispatch_message(
     };
 
     if let Err(e) = result {
-        warn!(msg_type = %msg.type_, error = %e, "handler error");
+        warn!(msg_type = %msg.typ, error = %e, "handler error");
         if let Some(sender) = msg.from.as_deref() {
             let sender = sender.split('#').next().unwrap_or(sender);
             let _ = ctx

@@ -2,6 +2,10 @@ use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use affinidi_did_resolver_cache_sdk::{DIDCacheClient, config::DIDCacheConfigBuilder};
+use affinidi_tdk::common::TDKSharedState;
+use affinidi_tdk::common::config::TDKConfig;
+use affinidi_tdk::messaging::ATM;
+use affinidi_tdk::messaging::config::ATMConfig;
 use affinidi_tdk::secrets_resolver::{SecretsResolver, ThreadedSecretsResolver};
 use ed25519_dalek_bip32::ExtendedSigningKey;
 
@@ -64,6 +68,7 @@ pub struct AppState {
     #[cfg(feature = "didcomm")]
     pub didcomm_bridge: Arc<OnceLock<DIDCommBridge>>,
     pub jwt_keys: Option<Arc<JwtKeys>>,
+    pub atm: Option<ATM>,
     pub tee: Option<TeeContext>,
 }
 
@@ -104,7 +109,7 @@ pub async fn build_app_state(
     #[cfg(feature = "webvh")]
     let webvh_ks = apply_encryption(store.keyspace("webvh")?);
 
-    let (did_resolver, secrets_resolver, jwt_keys) =
+    let (did_resolver, secrets_resolver, jwt_keys, atm) =
         init_auth(&config, &*seed_store, &keys_ks).await;
 
     Ok(AppState {
@@ -122,6 +127,7 @@ pub async fn build_app_state(
         #[cfg(feature = "didcomm")]
         didcomm_bridge: Arc::new(OnceLock::new()),
         jwt_keys,
+        atm,
         tee: tee_context,
     })
 }
@@ -165,7 +171,7 @@ pub async fn run(
     let webvh_ks = apply_encryption(store.keyspace("webvh")?);
 
     // Initialize auth infrastructure
-    let (did_resolver, secrets_resolver, jwt_keys) =
+    let (did_resolver, secrets_resolver, jwt_keys, atm) =
         init_auth(&config, &*seed_store, &keys_ks).await;
 
     // In TEE required mode, warn if auth isn't initialized.
@@ -253,6 +259,7 @@ pub async fn run(
             #[cfg(feature = "didcomm")]
             didcomm_bridge: didcomm_bridge.clone(),
             jwt_keys,
+            atm,
             tee: tee_context.clone(),
         };
         let mut rest_shutdown_rx = shutdown_rx.clone();
@@ -528,12 +535,13 @@ async fn init_auth(
     Option<DIDCacheClient>,
     Option<Arc<ThreadedSecretsResolver>>,
     Option<Arc<JwtKeys>>,
+    Option<ATM>,
 ) {
     let vta_did = match &config.vta_did {
         Some(did) => did.clone(),
         None => {
             warn!("vta_did not configured — auth endpoints will not work (run setup first)");
-            return (None, None, None);
+            return (None, None, None, None);
         }
     };
 
@@ -544,7 +552,7 @@ async fn init_auth(
             warn!(
                 "failed to find VTA key records: {e} — auth endpoints will not work (run setup first)"
             );
-            return (None, None, None);
+            return (None, None, None, None);
         }
     };
 
@@ -553,7 +561,7 @@ async fn init_auth(
         Ok(s) => s,
         Err(e) => {
             warn!("failed to load seed: {e} — auth endpoints will not work");
-            return (None, None, None);
+            return (None, None, None, None);
         }
     };
 
@@ -561,7 +569,7 @@ async fn init_auth(
         Ok(r) => r,
         Err(e) => {
             warn!("failed to create BIP-32 root key: {e} — auth endpoints will not work");
-            return (None, None, None);
+            return (None, None, None, None);
         }
     };
 
@@ -580,7 +588,7 @@ async fn init_auth(
         Ok(r) => r,
         Err(e) => {
             warn!("failed to create DID resolver: {e} — auth endpoints will not work");
-            return (None, None, None);
+            return (None, None, None, None);
         }
     };
 
@@ -611,14 +619,43 @@ async fn init_auth(
             Ok(k) => k,
             Err(e) => {
                 warn!("failed to load JWT signing key: {e} — auth endpoints will not work");
-                return (Some(did_resolver), Some(Arc::new(secrets_resolver)), None);
+                return (Some(did_resolver), Some(Arc::new(secrets_resolver)), None, None);
             }
         },
         None => {
             warn!(
                 "auth.jwt_signing_key not configured — auth endpoints will not work (run setup first)"
             );
-            return (Some(did_resolver), Some(Arc::new(secrets_resolver)), None);
+            return (Some(did_resolver), Some(Arc::new(secrets_resolver)), None, None);
+        }
+    };
+
+    // 4. Build ATM for DIDComm message unpacking (used by auth endpoints)
+    let secrets_resolver = Arc::new(secrets_resolver);
+    let atm = {
+        let tdk_config = TDKConfig::builder()
+            .with_did_resolver(did_resolver.clone())
+            .with_secrets_resolver((*secrets_resolver).clone())
+            .with_load_environment(false)
+            .build();
+        match tdk_config {
+            Ok(cfg) => match TDKSharedState::new(cfg).await {
+                Ok(tdk) => match ATM::new(ATMConfig::builder().build().unwrap(), Arc::new(tdk)).await {
+                    Ok(a) => Some(a),
+                    Err(e) => {
+                        warn!("failed to create ATM for auth unpack: {e}");
+                        None
+                    }
+                },
+                Err(e) => {
+                    warn!("failed to create TDK shared state: {e}");
+                    None
+                }
+            },
+            Err(e) => {
+                warn!("failed to build TDK config: {e}");
+                None
+            }
         }
     };
 
@@ -626,8 +663,9 @@ async fn init_auth(
 
     (
         Some(did_resolver),
-        Some(Arc::new(secrets_resolver)),
+        Some(secrets_resolver),
         Some(Arc::new(jwt_keys)),
+        atm,
     )
 }
 

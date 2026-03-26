@@ -42,7 +42,7 @@ pub async fn send_and_wait_raw(
 
     // Pack encrypted
     let (packed, _) = atm
-        .pack_encrypted(&msg, to_did, Some(from_did), Some(from_did), None)
+        .pack_encrypted(&msg, to_did, Some(from_did), Some(from_did))
         .await
         .map_err(|e| {
             pending.lock().unwrap().remove(&msg_id);
@@ -69,19 +69,19 @@ pub async fn send_and_wait_raw(
         .map_err(|_| "pending request channel dropped".to_string())?;
 
     // Check for problem report
-    if response.type_ == problem_report_type || response.type_ == PROBLEM_REPORT_TYPE {
+    if response.typ == problem_report_type || response.typ == PROBLEM_REPORT_TYPE {
         let (code, comment) = extract_problem_report(&response.body);
         return Err(format!("{code}: {comment}"));
     }
 
     // Verify expected type
-    if response.type_ != expected_type {
+    if response.typ != expected_type {
         return Err(format!(
             "unexpected response type: expected {expected_type}, got {}",
-            response.type_
+            response.typ
         ));
     }
 
-    debug!(response_type = %response.type_, "received DIDComm response");
+    debug!(response_type = %response.typ, "received DIDComm response");
     Ok(response)
 }

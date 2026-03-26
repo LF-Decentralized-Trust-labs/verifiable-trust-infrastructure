@@ -45,7 +45,6 @@ impl DIDCommCtx<'_> {
                 recipient_did,
                 Some(self.vta_did),
                 Some(self.vta_did),
-                None,
             )
             .await?;
 
@@ -90,7 +89,6 @@ impl DIDCommCtx<'_> {
                 recipient_did,
                 Some(self.vta_did),
                 Some(self.vta_did),
-                None,
             )
             .await?;
 
