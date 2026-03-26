@@ -19,6 +19,11 @@ use tracing::{info, warn};
 ///
 /// When `resolver_url` is `Some`, the TDK's DID resolver uses network mode
 /// (WebSocket to a remote resolver server). When `None`, it uses local mode.
+///
+/// WebSocket proxy: the TDK automatically routes WebSocket connections through
+/// an HTTP CONNECT proxy when `HTTPS_PROXY` or `ALL_PROXY` is set (with
+/// `NO_PROXY` exclusions). Inside TEE enclaves, the entrypoint sets these
+/// env vars to route traffic through the vsock CONNECT proxy.
 pub async fn init_didcomm_connection(
     mediator_did: &str,
     secrets_resolver: &Arc<ThreadedSecretsResolver>,
@@ -139,7 +144,6 @@ pub async fn handle_trust_ping(
             sender_did,
             Some(service_did),
             Some(service_did),
-            None,
         )
         .await?;
 

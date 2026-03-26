@@ -2,8 +2,8 @@ use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use affinidi_did_resolver_cache_sdk::{DIDCacheClient, config::DIDCacheConfigBuilder};
-use affinidi_tdk::didcomm::{Message, PackEncryptedOptions};
-use affinidi_tdk::secrets_resolver::{SecretsResolver, ThreadedSecretsResolver};
+use affinidi_tdk::didcomm::Message;
+use affinidi_tdk::secrets_resolver::SecretsResolver;
 use serde::{Deserialize, Serialize};
 use serde_json;
 use tracing::debug;
@@ -622,24 +622,37 @@ pub async fn challenge_response(
     );
 
     // Step 2: Build DIDComm message
-    debug!("initializing DID resolver");
-    let did_resolver = DIDCacheClient::new(DIDCacheConfigBuilder::default().build())
+    debug!("initializing DID resolver and ATM for message packing");
+
+    use std::sync::Arc;
+    use affinidi_tdk::common::TDKSharedState;
+    use affinidi_tdk::common::config::TDKConfig;
+    use affinidi_tdk::messaging::ATM;
+    use affinidi_tdk::messaging::config::ATMConfig;
+
+    let tdk = TDKSharedState::new(TDKConfig::builder().build()
+        .map_err(|e| format!("TDK config build failed: {e}"))?)
         .await
-        .map_err(|e| format!("DID resolver init failed: {e}"))?;
-    let (secrets_resolver, _handle) = ThreadedSecretsResolver::new(None).await;
+        .map_err(|e| format!("TDK init failed: {e}"))?;
 
     // Build DIDComm secrets from the private key
     let seed = crate::did_key::decode_private_key_multibase(private_key_multibase)?;
     let secrets = crate::did_key::secrets_from_did_key(client_did, &seed)?;
     debug!(signing_id = %secrets.signing.id, ka_id = %secrets.key_agreement.id, "inserting DIDComm secrets");
-    secrets_resolver.insert(secrets.signing).await;
-    secrets_resolver.insert(secrets.key_agreement).await;
+    tdk.secrets_resolver.insert(secrets.signing).await;
+    tdk.secrets_resolver.insert(secrets.key_agreement).await;
+
+    let atm = ATM::new(ATMConfig::builder().build()
+        .map_err(|e| format!("ATM config build failed: {e}"))?,
+        Arc::new(tdk),
+    ).await
+    .map_err(|e| format!("ATM init failed: {e}"))?;
 
     // Build the authenticate message
     debug!(
         from = client_did,
         to = vta_did,
-        "building DIDComm authenticate message (forward=false)"
+        "building DIDComm authenticate message"
     );
     let msg = Message::build(
         uuid::Uuid::new_v4().to_string(),
@@ -654,28 +667,12 @@ pub async fn challenge_response(
     .finalize();
 
     // Pack the message (encrypted)
-    let (packed, metadata) = msg
-        .pack_encrypted(
-            vta_did,
-            Some(client_did),
-            None,
-            &did_resolver,
-            &secrets_resolver,
-            &PackEncryptedOptions {
-                forward: false,
-                ..PackEncryptedOptions::default()
-            },
-        )
+    let (packed, _metadata) = atm
+        .pack_encrypted(&msg, vta_did, Some(client_did), None)
         .await
         .map_err(|e| format!("DIDComm pack failed: {e}"))?;
 
-    debug!(
-        from_kid = ?metadata.from_kid,
-        to_kids = ?metadata.to_kids,
-        messaging_service = ?metadata.messaging_service,
-        packed_len = packed.len(),
-        "message packed"
-    );
+    debug!(packed_len = packed.len(), "message packed");
 
     // Step 3: Authenticate
     let auth_url = format!("{base_url}/auth/");

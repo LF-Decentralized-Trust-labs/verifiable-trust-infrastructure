@@ -102,6 +102,13 @@ ratatui = "0.30"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 
+# Use local TDK with WebSocket proxy support for DIDComm messaging
+# inside TEE enclaves. Remove this once the proxy support is published.
+[patch.crates-io]
+affinidi-tdk = { path = "/Users/glenngore/devel/affinidi/affinidi-tdk-rs/crates/tdk/affinidi-tdk" }
+affinidi-messaging-sdk = { path = "/Users/glenngore/devel/affinidi/affinidi-tdk-rs/crates/messaging/affinidi-messaging-sdk" }
+affinidi-messaging-didcomm = { path = "/Users/glenngore/devel/affinidi/affinidi-tdk-rs/crates/messaging/affinidi-messaging-didcomm" }
+
 [profile.release]
 lto = "thin"
 codegen-units = 1

@@ -186,15 +186,16 @@ TOML
 
     # Add messaging section if mediator is configured
     if [ -n "$MEDIATOR_URL" ] && [ -n "$MEDIATOR_DID" ]; then
-        # Rewrite the mediator URL to go through our local proxy
-        # e.g., wss://mediator.example.com → ws://127.0.0.1:4443
+        # The TDK resolves mediator_did to discover the WebSocket endpoint,
+        # then routes the connection through HTTPS_PROXY (set below) which
+        # tunnels via vsock to the parent's HTTPS CONNECT proxy.
         cat >> "$CONFIG_PATH" <<TOML
 
 [messaging]
-mediator_url = "ws://127.0.0.1:${LOCAL_MEDIATOR_PORT}"
+mediator_url = "${MEDIATOR_URL}"
 mediator_did = "${MEDIATOR_DID}"
 TOML
-        echo "DIDComm enabled: mediator=${MEDIATOR_URL} (proxied via localhost:${LOCAL_MEDIATOR_PORT})"
+        echo "DIDComm enabled: mediator=${MEDIATOR_URL} (WebSocket proxied via HTTPS_PROXY)"
     else
         echo "WARNING: VTA_MEDIATOR_URL / VTA_MEDIATOR_DID not set — DIDComm disabled"
         # Disable DIDComm if no mediator configured

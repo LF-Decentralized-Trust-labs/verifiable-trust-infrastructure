@@ -14,8 +14,8 @@
 #
 # Port mapping (inside enclave):
 #   VTA REST API     → 127.0.0.1:8100  (served directly)
-#   DIDComm mediator → 127.0.0.1:4443  (proxied to parent → mediator)
-#   HTTPS traffic    → 127.0.0.1:4444  (proxied to parent → internet)
+#   HTTPS/WSS proxy  → 127.0.0.1:4444  (CONNECT proxy → parent → internet + mediator)
+#   DID resolver     → 127.0.0.1:4445  (proxied to parent → resolver sidecar)
 #   IMDS credentials → 169.254.169.254  (proxied to parent → IMDS)
 # =============================================================================
 
@@ -69,18 +69,24 @@ data_dir = "/var/lib/vta/data"
 # ── DIDComm mediator ────────────────────────────────────────────────────────
 # Required for Profiles A (Hardened) and B (Full API).
 #
-# mediator_url: Always ws://127.0.0.1:4443 inside the enclave (vsock-proxied).
-# mediator_did: The DID of your mediator service. The parent proxy resolves
-#               this DID via the DID resolver to discover the mediator's
-#               endpoint URL (WSS or HTTPS). If the mediator moves, the proxy
-#               re-resolves the DID after connection failures.
+# mediator_url: The real mediator URL (e.g., wss://mediator.example.com/ws).
+#               The TDK resolves mediator_did to discover this automatically,
+#               but it can be set explicitly as a fallback.
+# mediator_did: The DID of your mediator service.
 #
-# mediator_host: Optional manual override — skips DID resolution. Use this
-#                if the mediator doesn't have a resolvable DID or for testing.
+# websocket_proxy: HTTP CONNECT proxy for WebSocket traffic. Inside the
+#                  enclave, this is set to http://127.0.0.1:4444 — the local
+#                  socat bridge to the parent's HTTPS CONNECT proxy (channel 3).
+#                  The TDK routes mediator WebSocket connections through this
+#                  proxy since the enclave has no direct network access.
+#
+# mediator_host: Optional manual override for the parent proxy's mediator
+#                channel — skips DID resolution for the parent-side TLS
+#                connection. Not needed when using websocket_proxy.
 #
 # [messaging]
-# mediator_url = "ws://127.0.0.1:4443"
 # mediator_did = "did:web:mediator.example.com"
+# websocket_proxy = "http://127.0.0.1:4444"
 
 # ── TEE attestation ─────────────────────────────────────────────────────────
 [tee]
