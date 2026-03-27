@@ -550,10 +550,50 @@ pub(crate) async fn run_log_receiver(vsock_port: u32) {
 
         let reader = tokio::io::BufReader::new(stream);
         let mut lines = reader.lines();
-        while let Ok(Some(line)) = lines.next_line().await {
-            // Print directly to stdout — not through tracing, to avoid
-            // recursive formatting or double-prefixing.
-            println!("[vta] {line}");
+        loop {
+            // Use a timeout to detect dead connections. When the enclave
+            // terminates, the vsock stream may not EOF cleanly — it can
+            // hang indefinitely. A 30-second timeout breaks out of the
+            // read loop so we can accept the next enclave's connection.
+            match tokio::time::timeout(
+                std::time::Duration::from_secs(30),
+                lines.next_line(),
+            )
+            .await
+            {
+                Ok(Ok(Some(line))) => {
+                    println!("[vta] {line}");
+                }
+                Ok(Ok(None)) => {
+                    // Clean EOF
+                    break;
+                }
+                Ok(Err(e)) => {
+                    warn!("[logs] read error: {e}");
+                    break;
+                }
+                Err(_) => {
+                    // Timeout — check if the enclave is still alive by
+                    // trying to read again. If it times out twice in a row
+                    // with no data, assume the connection is dead.
+                    warn!("[logs] no log data for 30s — checking connection");
+                    match tokio::time::timeout(
+                        std::time::Duration::from_secs(5),
+                        lines.next_line(),
+                    )
+                    .await
+                    {
+                        Ok(Ok(Some(line))) => {
+                            // Still alive, just quiet
+                            println!("[vta] {line}");
+                        }
+                        _ => {
+                            warn!("[logs] connection appears dead — closing");
+                            break;
+                        }
+                    }
+                }
+            }
         }
         warn!("[logs] enclave log stream disconnected — waiting for reconnect");
     }
