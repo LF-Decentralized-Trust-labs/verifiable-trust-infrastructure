@@ -1,4 +1,4 @@
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 use std::time::Duration;
 
 use affinidi_did_resolver_cache_sdk::{DIDCacheClient, config::DIDCacheConfigBuilder};
@@ -66,7 +66,7 @@ pub struct AppState {
     pub did_resolver: Option<DIDCacheClient>,
     pub secrets_resolver: Option<Arc<ThreadedSecretsResolver>>,
     #[cfg(feature = "didcomm")]
-    pub didcomm_bridge: Arc<OnceLock<DIDCommBridge>>,
+    pub didcomm_bridge: Arc<tokio::sync::RwLock<Option<DIDCommBridge>>>,
     pub jwt_keys: Option<Arc<JwtKeys>>,
     pub atm: Option<ATM>,
     pub tee: Option<TeeContext>,
@@ -125,7 +125,7 @@ pub async fn build_app_state(
         did_resolver,
         secrets_resolver,
         #[cfg(feature = "didcomm")]
-        didcomm_bridge: Arc::new(OnceLock::new()),
+        didcomm_bridge: Arc::new(tokio::sync::RwLock::new(None)),
         jwt_keys,
         atm,
         tee: tee_context,
@@ -217,7 +217,7 @@ pub async fn run(
 
     // Shared DIDComm bridge (set by the DIDComm thread once ATM is ready)
     #[cfg(feature = "didcomm")]
-    let didcomm_bridge: Arc<OnceLock<DIDCommBridge>> = Arc::new(OnceLock::new());
+    let didcomm_bridge: Arc<tokio::sync::RwLock<Option<DIDCommBridge>>> = Arc::new(tokio::sync::RwLock::new(None));
 
     // Clone handles for DIDComm before REST takes ownership
     #[cfg(feature = "didcomm")]
@@ -468,13 +468,17 @@ fn run_rest_thread(
 }
 
 /// DIDComm thread: connects to the mediator and processes inbound messages.
+///
+/// Retries with exponential backoff (5 s -> 60 s cap) when the mediator
+/// connection fails or drops. The bridge is cleared while reconnecting so
+/// REST handlers can report the correct status.
 #[cfg(feature = "didcomm")]
 fn run_didcomm_thread(
     secrets_resolver: Option<Arc<ThreadedSecretsResolver>>,
     vta_did: Option<String>,
     state: messaging::DidcommState,
     shutdown_rx: &mut watch::Receiver<bool>,
-    bridge_lock: Arc<OnceLock<DIDCommBridge>>,
+    bridge_lock: Arc<tokio::sync::RwLock<Option<DIDCommBridge>>>,
 ) {
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -494,32 +498,86 @@ fn run_didcomm_thread(
             }
         };
 
-        // Build a temporary AppConfig for init_didcomm_connection
-        let config = state.config.read().await;
-        let init_config = config.clone();
-        drop(config);
+        let state = Arc::new(state);
+        let mut delay_secs: u64 = 5;
+        let max_delay_secs: u64 = 60;
+        let mut attempt: u32 = 0;
 
-        // Initialize ATM connection
-        let (atm, profile) = match messaging::init_didcomm_connection(&init_config, sr, did).await {
-            Some(handles) => handles,
-            None => {
-                let _ = shutdown_rx.changed().await;
-                info!("DIDComm thread shutting down (init failed)");
+        loop {
+            // Read fresh config each attempt (in case it changed)
+            let config = state.config.read().await.clone();
+
+            // Try to initialize the DIDComm connection
+            let (atm, profile) = match messaging::init_didcomm_connection(&config, sr, did).await {
+                Some(handles) => {
+                    if attempt > 0 {
+                        info!("DIDComm connection established after {attempt} retries");
+                    } else {
+                        info!("DIDComm connection established");
+                    }
+                    delay_secs = 5; // Reset backoff on success
+                    attempt = 0;
+                    handles
+                }
+                None => {
+                    attempt += 1;
+                    warn!(
+                        attempt,
+                        retry_in_secs = delay_secs,
+                        "DIDComm connection failed — retrying"
+                    );
+                    tokio::select! {
+                        _ = tokio::time::sleep(std::time::Duration::from_secs(delay_secs)) => {
+                            delay_secs = (delay_secs * 2).min(max_delay_secs);
+                            continue;
+                        }
+                        _ = shutdown_rx.changed() => {
+                            info!("DIDComm thread shutting down");
+                            return;
+                        }
+                    }
+                }
+            };
+
+            // Publish bridge for REST/WebVH handlers
+            let bridge = DIDCommBridge::new(atm.clone(), profile.clone());
+            *bridge_lock.write().await = Some(bridge);
+
+            // Run the message loop — get a fresh reference from the lock
+            {
+                let guard = bridge_lock.read().await;
+                let bridge = guard.as_ref().unwrap();
+                messaging::run_didcomm_loop(bridge, did, Arc::clone(&state), shutdown_rx).await;
+            }
+
+            // Message loop exited — connection lost
+            // Clear bridge so REST handlers know we're reconnecting
+            *bridge_lock.write().await = None;
+
+            // Graceful ATM shutdown
+            atm.graceful_shutdown().await;
+
+            // Check if this is a shutdown or a reconnect
+            if *shutdown_rx.borrow() {
+                info!("DIDComm thread shutting down");
                 return;
             }
-        };
 
-        // Create and publish bridge for REST handlers
-        let bridge = DIDCommBridge::new(atm, profile);
-        let _ = bridge_lock.set(bridge);
-
-        // Run message loop until shutdown
-        let bridge = bridge_lock.get().unwrap();
-        let state = Arc::new(state);
-        messaging::run_didcomm_loop(bridge, did, state, shutdown_rx).await;
-
-        // Graceful ATM shutdown
-        info!("DIDComm thread shutting down");
+            attempt += 1;
+            warn!(
+                retry_in_secs = delay_secs,
+                "DIDComm connection lost — reconnecting"
+            );
+            tokio::select! {
+                _ = tokio::time::sleep(std::time::Duration::from_secs(delay_secs)) => {
+                    delay_secs = (delay_secs * 2).min(max_delay_secs);
+                }
+                _ = shutdown_rx.changed() => {
+                    info!("DIDComm thread shutting down");
+                    return;
+                }
+            }
+        }
     });
 }
 
