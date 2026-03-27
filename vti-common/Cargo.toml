@@ -35,7 +35,7 @@ zeroize = { version = "1", features = ["derive"], optional = true }
 rand = { workspace = true, optional = true }
 
 # Vsock storage proxy client (feature-gated, Linux only)
-tokio-vsock = { version = "0.5", optional = true }
+tokio-vsock = { version = "0.7", optional = true }
 libc = { version = "0.2", optional = true }
 
 [dev-dependencies]
