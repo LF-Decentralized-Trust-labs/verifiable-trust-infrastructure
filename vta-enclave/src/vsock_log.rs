@@ -23,7 +23,7 @@ const CHANNEL_CAPACITY: usize = 2048;
 
 /// Max time to wait for the initial vsock connection before proceeding.
 /// The background task will keep retrying if this times out.
-const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// Start the vsock log forwarder.
 ///
@@ -42,16 +42,27 @@ pub async fn start() -> TeeMakeWriter {
     // Try to establish the initial connection synchronously (with timeout)
     // so early boot logs aren't lost.
     let addr = VsockAddr::new(PARENT_CID, VSOCK_LOG_PORT);
+    eprintln!("[vsock-log] connecting to parent CID {PARENT_CID} port {VSOCK_LOG_PORT}...");
     let initial_stream = match tokio::time::timeout(
         CONNECT_TIMEOUT,
         VsockStream::connect(addr),
     )
     .await
     {
-        Ok(Ok(stream)) => Some(stream),
-        _ => {
+        Ok(Ok(stream)) => {
+            eprintln!("[vsock-log] connected to parent vsock:{VSOCK_LOG_PORT}");
+            Some(stream)
+        }
+        Ok(Err(e)) => {
             eprintln!(
-                "[vsock-log] could not connect to parent vsock:{VSOCK_LOG_PORT} within {}s — \
+                "[vsock-log] failed to connect to parent vsock:{VSOCK_LOG_PORT}: {e} — \
+                 will retry in background"
+            );
+            None
+        }
+        Err(_) => {
+            eprintln!(
+                "[vsock-log] connection to parent vsock:{VSOCK_LOG_PORT} timed out after {}s — \
                  will retry in background",
                 CONNECT_TIMEOUT.as_secs()
             );
@@ -117,10 +128,20 @@ async fn connect_with_backoff(
     rx: &mut mpsc::Receiver<Vec<u8>>,
 ) -> tokio_vsock::VsockStream {
     let mut backoff_ms = 100u64;
+    let mut attempts = 0u32;
     loop {
         match tokio_vsock::VsockStream::connect(*addr).await {
-            Ok(s) => return s,
-            Err(_) => {
+            Ok(s) => {
+                eprintln!("[vsock-log] reconnected after {attempts} attempts");
+                return s;
+            }
+            Err(e) => {
+                attempts += 1;
+                if attempts <= 3 || attempts % 10 == 0 {
+                    eprintln!(
+                        "[vsock-log] connect attempt {attempts} failed: {e} (retry in {backoff_ms}ms)"
+                    );
+                }
                 // Drain queued messages to avoid memory growth
                 while rx.try_recv().is_ok() {}
                 tokio::time::sleep(std::time::Duration::from_millis(backoff_ms)).await;
