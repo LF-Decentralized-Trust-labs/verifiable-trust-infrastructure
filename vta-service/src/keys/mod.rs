@@ -221,3 +221,231 @@ pub async fn save_entity_key_records(
     .await?;
     Ok(())
 }
+
+// ===========================================================================
+// Integration tests: full create → store → recover cycle
+// ===========================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::keys::derivation::Bip32Extension;
+    use crate::store::Store;
+    use vti_common::config::StoreConfig;
+
+    fn test_seed() -> Vec<u8> {
+        vec![
+            7, 26, 142, 230, 65, 85, 188, 182, 29, 129, 52, 229, 217, 159, 243, 182,
+            73, 89, 196, 246, 58, 28, 100, 144, 187, 21, 157, 39, 4, 188, 154, 180,
+        ]
+    }
+
+    fn temp_store() -> (Store, tempfile::TempDir) {
+        let dir = tempfile::tempdir().expect("failed to create temp dir");
+        let config = StoreConfig {
+            data_dir: dir.path().to_path_buf(),
+        };
+        let store = Store::open(&config).expect("failed to open store");
+        (store, dir)
+    }
+
+    /// Full lifecycle test: derive_entity_keys → save_entity_key_records →
+    /// load key records → re-derive from stored paths → verify public keys match.
+    ///
+    /// This simulates first-boot DID creation followed by a VTA restart.
+    #[tokio::test]
+    async fn test_create_store_recover_cycle() {
+        let seed = test_seed();
+        let (store, _dir) = temp_store();
+        let keys_ks = store.keyspace("keys").unwrap();
+        let did = "did:webvh:abc123:example.com:vta";
+
+        // === CREATION (first boot — derive_entity_keys + save) ===
+        let derived = derive_entity_keys(
+            &seed, "m/44'/0'", "signing", "key-agreement", &keys_ks,
+        )
+        .await
+        .unwrap();
+
+        save_entity_key_records(did, &derived, &keys_ks, Some("vta"), Some(0))
+            .await
+            .unwrap();
+
+        let created_signing_pub = derived.signing_pub.clone();
+        let created_ka_pub = derived.ka_pub.clone();
+
+        // === RECOVERY (restart — load key records, re-derive from seed + path) ===
+        // This mirrors what init_auth() does in server.rs
+
+        let signing_record: KeyRecord = keys_ks
+            .get(store_key(&format!("{did}#key-0")))
+            .await
+            .unwrap()
+            .expect("signing key record not found");
+        let ka_record: KeyRecord = keys_ks
+            .get(store_key(&format!("{did}#key-1")))
+            .await
+            .unwrap()
+            .expect("KA key record not found");
+
+        assert_eq!(signing_record.key_type, KeyType::Ed25519);
+        assert_eq!(ka_record.key_type, KeyType::X25519);
+        assert_eq!(signing_record.seed_id, Some(0));
+
+        let root = ExtendedSigningKey::from_seed(&seed).unwrap();
+
+        let recovered_signing = root.derive_ed25519(&signing_record.derivation_path).unwrap();
+        let recovered_ka = root.derive_x25519(&ka_record.derivation_path).unwrap();
+
+        let recovered_signing_pub = recovered_signing.get_public_keymultibase().unwrap();
+        let recovered_ka_pub = recovered_ka.get_public_keymultibase().unwrap();
+
+        // === ASSERTIONS ===
+
+        // Public keys from recovery must match what was stored in the key records
+        assert_eq!(
+            signing_record.public_key, recovered_signing_pub,
+            "stored signing public key does not match recovered key"
+        );
+        assert_eq!(
+            ka_record.public_key, recovered_ka_pub,
+            "stored KA public key does not match recovered key"
+        );
+
+        // Public keys from recovery must match what DID creation produced
+        assert_eq!(
+            created_signing_pub, recovered_signing_pub,
+            "created signing public key does not match recovered key — \
+             DID document would have wrong signing key"
+        );
+        assert_eq!(
+            created_ka_pub, recovered_ka_pub,
+            "created KA public key does not match recovered key — \
+             DID document would have wrong key-agreement key, \
+             DIDComm encryption/decryption will fail"
+        );
+    }
+
+    /// Test that key records survive store persistence (write → close → reopen → read).
+    #[tokio::test]
+    async fn test_key_records_survive_store_reopen() {
+        let seed = test_seed();
+        let dir = tempfile::tempdir().unwrap();
+        let did = "did:webvh:abc123:example.com:vta";
+
+        // Create and save
+        {
+            let config = StoreConfig { data_dir: dir.path().to_path_buf() };
+            let store = Store::open(&config).unwrap();
+            let keys_ks = store.keyspace("keys").unwrap();
+
+            let derived = derive_entity_keys(
+                &seed, "m/44'/0'", "signing", "ka", &keys_ks,
+            )
+            .await
+            .unwrap();
+
+            save_entity_key_records(did, &derived, &keys_ks, Some("vta"), Some(0))
+                .await
+                .unwrap();
+
+            store.persist().await.unwrap();
+        }
+
+        // Reopen and verify
+        {
+            let config = StoreConfig { data_dir: dir.path().to_path_buf() };
+            let store = Store::open(&config).unwrap();
+            let keys_ks = store.keyspace("keys").unwrap();
+
+            let signing: KeyRecord = keys_ks
+                .get(store_key(&format!("{did}#key-0")))
+                .await
+                .unwrap()
+                .expect("signing key not found after reopen");
+            let ka: KeyRecord = keys_ks
+                .get(store_key(&format!("{did}#key-1")))
+                .await
+                .unwrap()
+                .expect("KA key not found after reopen");
+
+            // Re-derive and compare
+            let root = ExtendedSigningKey::from_seed(&seed).unwrap();
+            let recovered_sign_pub = root
+                .derive_ed25519(&signing.derivation_path)
+                .unwrap()
+                .get_public_keymultibase()
+                .unwrap();
+            let recovered_ka_pub = root
+                .derive_x25519(&ka.derivation_path)
+                .unwrap()
+                .get_public_keymultibase()
+                .unwrap();
+
+            assert_eq!(signing.public_key, recovered_sign_pub);
+            assert_eq!(ka.public_key, recovered_ka_pub);
+        }
+    }
+
+    /// Test that the derivation path counter allocates unique paths and
+    /// each path produces a different key.
+    #[tokio::test]
+    async fn test_path_allocation_produces_unique_keys() {
+        let seed = test_seed();
+        let (store, _dir) = temp_store();
+        let keys_ks = store.keyspace("keys").unwrap();
+
+        let base = "m/44'/0'";
+        let mut pub_keys = Vec::new();
+
+        for _ in 0..5 {
+            let path = paths::allocate_path(&keys_ks, base).await.unwrap();
+            let root = ExtendedSigningKey::from_seed(&seed).unwrap();
+            let secret = root.derive_ed25519(&path).unwrap();
+            pub_keys.push(secret.get_public_keymultibase().unwrap());
+        }
+
+        // All keys must be distinct
+        for i in 0..pub_keys.len() {
+            for j in (i + 1)..pub_keys.len() {
+                assert_ne!(
+                    pub_keys[i], pub_keys[j],
+                    "path allocation produced duplicate keys at indices {i} and {j}"
+                );
+            }
+        }
+    }
+
+    /// Seed stored as hex (retired seed archival) must produce identical keys
+    /// when decoded and used for re-derivation.
+    #[tokio::test]
+    async fn test_hex_seed_roundtrip() {
+        let seed = test_seed();
+        let path = "m/44'/0'/0'";
+
+        // Simulate archival: hex-encode and decode
+        let hex_seed = hex::encode(&seed);
+        let recovered_seed = hex::decode(&hex_seed).unwrap();
+
+        let root_original = ExtendedSigningKey::from_seed(&seed).unwrap();
+        let root_recovered = ExtendedSigningKey::from_seed(&recovered_seed).unwrap();
+
+        let sign_orig = root_original.derive_ed25519(path).unwrap();
+        let sign_recv = root_recovered.derive_ed25519(path).unwrap();
+
+        assert_eq!(
+            sign_orig.get_public_keymultibase().unwrap(),
+            sign_recv.get_public_keymultibase().unwrap(),
+            "hex-encoded seed round-trip produced different keys"
+        );
+
+        let ka_orig = root_original.derive_x25519(path).unwrap();
+        let ka_recv = root_recovered.derive_x25519(path).unwrap();
+
+        assert_eq!(
+            ka_orig.get_public_keymultibase().unwrap(),
+            ka_recv.get_public_keymultibase().unwrap(),
+            "hex-encoded seed round-trip produced different X25519 keys"
+        );
+    }
+}
