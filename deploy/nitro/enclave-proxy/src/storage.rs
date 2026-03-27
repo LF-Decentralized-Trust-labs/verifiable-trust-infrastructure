@@ -52,7 +52,7 @@ pub async fn run_storage(vsock_port: u32, data_dir: PathBuf) {
         data_dir: data_dir.clone(),
     });
 
-    let mut listener = match VsockListener::bind(VsockAddr::new(VMADDR_CID_ANY, vsock_port)) {
+    let listener = match VsockListener::bind(VsockAddr::new(VMADDR_CID_ANY, vsock_port)) {
         Ok(l) => l,
         Err(e) => {
             error!("[storage] failed to bind vsock:{vsock_port}: {e}");

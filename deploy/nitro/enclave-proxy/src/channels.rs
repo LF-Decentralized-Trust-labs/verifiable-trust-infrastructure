@@ -96,7 +96,7 @@ pub async fn run_mediator(
         }
     };
 
-    let mut listener = match VsockListener::bind(VsockAddr::new(VMADDR_CID_ANY, vsock_port)) {
+    let listener = match VsockListener::bind(VsockAddr::new(VMADDR_CID_ANY, vsock_port)) {
         Ok(l) => l,
         Err(e) => {
             error!("[mediator] failed to bind vsock:{vsock_port}: {e}");
@@ -276,7 +276,7 @@ pub async fn run_https_proxy(
     let allowlist = Arc::new(allowlist);
     let semaphore = Arc::new(Semaphore::new(MAX_CONCURRENT_CONNECTIONS));
 
-    let mut listener = match VsockListener::bind(VsockAddr::new(VMADDR_CID_ANY, vsock_port)) {
+    let listener = match VsockListener::bind(VsockAddr::new(VMADDR_CID_ANY, vsock_port)) {
         Ok(l) => l,
         Err(e) => {
             error!("[https] failed to bind vsock:{vsock_port}: {e}");
@@ -418,7 +418,7 @@ async fn handle_connect_request(
 pub async fn run_imds(vsock_port: u32) {
     let semaphore = Arc::new(Semaphore::new(MAX_CONCURRENT_CONNECTIONS));
 
-    let mut listener = match VsockListener::bind(VsockAddr::new(VMADDR_CID_ANY, vsock_port)) {
+    let listener = match VsockListener::bind(VsockAddr::new(VMADDR_CID_ANY, vsock_port)) {
         Ok(l) => l,
         Err(e) => {
             error!("[imds] failed to bind vsock:{vsock_port}: {e}");
@@ -475,7 +475,7 @@ pub async fn run_imds(vsock_port: u32) {
 pub async fn run_resolver(vsock_port: u32, resolver_port: u16) {
     let semaphore = Arc::new(Semaphore::new(MAX_CONCURRENT_CONNECTIONS));
 
-    let mut listener = match VsockListener::bind(VsockAddr::new(VMADDR_CID_ANY, vsock_port)) {
+    let listener = match VsockListener::bind(VsockAddr::new(VMADDR_CID_ANY, vsock_port)) {
         Ok(l) => l,
         Err(e) => {
             error!("[resolver] failed to bind vsock:{vsock_port}: {e}");
@@ -529,7 +529,7 @@ pub async fn run_resolver(vsock_port: u32, resolver_port: u16) {
 /// distinguishable from the proxy's own tracing output. The listener
 /// accepts connections in a loop so the enclave can reconnect after restarts.
 pub(crate) async fn run_log_receiver(vsock_port: u32) {
-    let mut listener = match VsockListener::bind(VsockAddr::new(VMADDR_CID_ANY, vsock_port)) {
+    let listener = match VsockListener::bind(VsockAddr::new(VMADDR_CID_ANY, vsock_port)) {
         Ok(l) => l,
         Err(e) => {
             error!("[logs] failed to bind vsock:{vsock_port}: {e}");
