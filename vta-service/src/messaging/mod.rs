@@ -97,7 +97,10 @@ pub async fn run_didcomm_loop(
                         match bridge.atm.unpack(&packed).await {
                             Ok((msg, _metadata)) => msg,
                             Err(e) => {
-                                warn!("failed to unpack inbound message: {e}");
+                                // Stale message encrypted with a previous key (e.g., after
+                                // TEE reboot with new identity). Logged once per message;
+                                // the mediator clears it after live delivery.
+                                warn!("skipping undecryptable message (stale key?): {e}");
                                 continue;
                             }
                         }
