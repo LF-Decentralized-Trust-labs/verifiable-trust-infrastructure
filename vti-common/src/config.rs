@@ -41,6 +41,9 @@ pub struct AuthConfig {
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct MessagingConfig {
+    /// Mediator URL. Optional — the TDK resolves the endpoint from mediator_did.
+    /// Kept for display/status purposes and backward compatibility.
+    #[serde(default)]
     pub mediator_url: String,
     pub mediator_did: String,
     /// Real external hostname of the mediator (e.g., "mediator.example.com").
