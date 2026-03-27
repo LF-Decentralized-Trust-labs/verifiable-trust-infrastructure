@@ -7,6 +7,11 @@ use ed25519_dalek_bip32::{DerivationPath, ExtendedSigningKey};
 use rand::Rng;
 use tracing::{debug, info};
 
+/// Wrapper holding a derived P-256 secret key.
+pub struct P256Secret {
+    pub secret_key: p256::SecretKey,
+}
+
 pub trait Bip32Extension {
     /// Derive an Ed25519 key pair from a seed and BIP32 derivation path.
     ///
@@ -16,6 +21,12 @@ pub trait Bip32Extension {
     ///
     /// Returns `Secret`.
     fn derive_x25519(&self, path: &str) -> Result<Secret, AppError>;
+    /// Derive a P-256 key pair from a seed and BIP32 derivation path.
+    ///
+    /// Uses HMAC-SHA512 domain separation to produce P-256 key material
+    /// independent from the Ed25519 key at the same path. This avoids
+    /// cross-curve key reuse, Ed25519 clamping artifacts, and group-order bias.
+    fn derive_p256(&self, path: &str) -> Result<P256Secret, AppError>;
 }
 
 impl Bip32Extension for ExtendedSigningKey {
@@ -45,6 +56,36 @@ impl Bip32Extension for ExtendedSigningKey {
 
         let x25519_seed = ed25519_private_to_x25519(derived.signing_key.as_bytes());
         Ok(Secret::generate_x25519(None, Some(&x25519_seed))?)
+    }
+
+    fn derive_p256(&self, path: &str) -> Result<P256Secret, AppError> {
+        use hmac::{Hmac, Mac};
+        use sha2::Sha512;
+
+        let derivation_path: DerivationPath = path
+            .parse()
+            .map_err(|e| AppError::KeyDerivation(format!("invalid derivation path: {e}")))?;
+
+        let derived = self
+            .derive(&derivation_path)
+            .map_err(|e| AppError::KeyDerivation(format!("derivation failed: {e}")))?;
+
+        // Domain-separated derivation via HMAC-SHA512.
+        // Prevents cross-curve key reuse: the same BIP-32 path produces
+        // independent key material for Ed25519 and P-256.
+        let mut mac = Hmac::<Sha512>::new_from_slice(b"p256-key-derivation")
+            .expect("HMAC accepts any key length");
+        mac.update(derived.signing_key.as_bytes());
+        mac.update(&derived.chain_code);
+        let hmac_output = mac.finalize().into_bytes();
+
+        // First 32 bytes → P-256 scalar. from_bytes() reduces mod n automatically.
+        let secret_key = p256::SecretKey::from_bytes(
+            p256::FieldBytes::from_slice(&hmac_output[..32]),
+        )
+        .map_err(|e| AppError::KeyDerivation(format!("P-256 key creation failed: {e}")))?;
+
+        Ok(P256Secret { secret_key })
     }
 }
 
@@ -95,6 +136,7 @@ pub async fn load_or_generate_seed(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use p256::elliptic_curve::sec1::ToEncodedPoint;
 
     fn get_bip32() -> ExtendedSigningKey {
         ExtendedSigningKey::from_seed(&[
@@ -197,6 +239,62 @@ mod tests {
     #[test]
     fn test_bip39_invalid_mnemonic() {
         let result = bip39::Mnemonic::parse("not a valid mnemonic");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_derive_p256_deterministic() {
+        let bip32 = get_bip32();
+        let path = "m/44'/0'/0'";
+
+        let p256_1 = bip32.derive_p256(path).unwrap();
+        let p256_2 = bip32.derive_p256(path).unwrap();
+
+        // Same seed + path must produce the same key
+        assert_eq!(
+            p256_1.secret_key.to_bytes(),
+            p256_2.secret_key.to_bytes()
+        );
+
+        // Public key must be derivable
+        let pk = p256_1.secret_key.public_key();
+        let encoded = pk.to_encoded_point(true);
+        assert_eq!(encoded.len(), 33, "compressed P-256 pubkey should be 33 bytes");
+    }
+
+    #[test]
+    fn test_derive_p256_different_paths() {
+        let bip32 = get_bip32();
+
+        let p256_1 = bip32.derive_p256("m/44'/0'/0'").unwrap();
+        let p256_2 = bip32.derive_p256("m/44'/0'/1'").unwrap();
+
+        assert_ne!(
+            p256_1.secret_key.to_bytes(),
+            p256_2.secret_key.to_bytes(),
+            "different paths must produce different keys"
+        );
+    }
+
+    #[test]
+    fn test_derive_p256_sign_verify() {
+        let bip32 = get_bip32();
+        let p256_secret = bip32.derive_p256("m/44'/0'/0'").unwrap();
+
+        let signing_key = p256::ecdsa::SigningKey::from(&p256_secret.secret_key);
+        let verifying_key = p256::ecdsa::VerifyingKey::from(&signing_key);
+
+        use p256::ecdsa::signature::{Signer, Verifier};
+        let message = b"hello VTA signing oracle";
+        let sig: p256::ecdsa::Signature = signing_key.sign(message);
+
+        assert!(verifying_key.verify(message, &sig).is_ok());
+    }
+
+    #[test]
+    fn test_derive_p256_invalid_path() {
+        let bip32 = get_bip32();
+        let result = bip32.derive_p256("not/a/valid/path");
         assert!(result.is_err());
     }
 }

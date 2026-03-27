@@ -6,6 +6,7 @@ use serde::Deserialize;
 use vta_sdk::protocols::key_management::{
     create::CreateKeyResultBody, list::ListKeysResultBody, rename::RenameKeyResultBody,
     revoke::RevokeKeyResultBody, secret::GetKeySecretResultBody,
+    sign::{SignAlgorithm, SignResultBody},
 };
 use vta_sdk::protocols::seed_management::{
     list::ListSeedsResultBody, rotate::RotateSeedResultBody,
@@ -155,6 +156,38 @@ pub async fn rotate_seed(
         &state.keys_ks,
         &state.seed_store,
         req.mnemonic.as_deref(),
+        "rest",
+    )
+    .await?;
+    Ok(Json(result))
+}
+
+// ── Sign endpoint ─────────────────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+pub struct SignRequest {
+    pub payload: String,
+    pub algorithm: SignAlgorithm,
+}
+
+pub async fn sign_with_key(
+    auth: AuthClaims,
+    State(state): State<AppState>,
+    Path(key_id): Path<String>,
+    Json(req): Json<SignRequest>,
+) -> Result<Json<SignResultBody>, AppError> {
+    use base64::Engine;
+    let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(&req.payload)
+        .map_err(|e| AppError::Validation(format!("invalid base64url payload: {e}")))?;
+
+    let result = operations::keys::sign_payload(
+        &state.keys_ks,
+        &state.seed_store,
+        &auth,
+        &key_id,
+        &payload,
+        &req.algorithm,
         "rest",
     )
     .await?;

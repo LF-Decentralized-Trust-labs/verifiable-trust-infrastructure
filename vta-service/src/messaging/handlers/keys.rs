@@ -1,5 +1,7 @@
 use affinidi_tdk::didcomm::Message;
 
+use base64::Engine;
+
 use vta_sdk::protocols::key_management;
 
 use crate::messaging::DidcommState;
@@ -84,3 +86,35 @@ didcomm_handler!(handle_get_key_secret,
         &state.keys_ks, &state.seed_store, &auth, &body.key_id, "didcomm",
     )
 );
+
+/// DIDComm handler for sign-request. Written manually (not via macro)
+/// because the base64url payload decode must outlive the sign future.
+pub async fn handle_sign_request(
+    state: &DidcommState,
+    ctx: &DIDCommCtx<'_>,
+    msg: &Message,
+) -> HandlerResult {
+    let auth = auth_from_message(msg, &state.acl_ks).await?;
+    let body: vta_sdk::protocols::key_management::sign::SignRequestBody =
+        serde_json::from_value(msg.body.clone())?;
+
+    let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(&body.payload)
+        .map_err(|e| {
+            crate::error::AppError::Validation(format!("invalid base64url payload: {e}"))
+        })?;
+
+    let result = operations::keys::sign_payload(
+        &state.keys_ks,
+        &state.seed_store,
+        &auth,
+        &body.key_id,
+        &payload,
+        &body.algorithm,
+        "didcomm",
+    )
+    .await?;
+
+    ctx.send_response(&auth.did, key_management::SIGN_RESULT, Some(&msg.id), &result)
+        .await
+}

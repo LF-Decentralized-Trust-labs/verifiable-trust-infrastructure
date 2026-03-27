@@ -4,6 +4,7 @@ pub mod list;
 pub mod rename;
 pub mod revoke;
 pub mod secret;
+pub mod sign;
 
 pub const PROTOCOL_BASE: &str = "https://firstperson.network/protocols/key-management/1.0";
 
@@ -31,3 +32,8 @@ pub const GET_KEY_SECRET: &str =
     "https://firstperson.network/protocols/key-management/1.0/get-key-secret";
 pub const GET_KEY_SECRET_RESULT: &str =
     "https://firstperson.network/protocols/key-management/1.0/get-key-secret-result";
+
+pub const SIGN_REQUEST: &str =
+    "https://firstperson.network/protocols/key-management/1.0/sign-request";
+pub const SIGN_RESULT: &str =
+    "https://firstperson.network/protocols/key-management/1.0/sign-result";

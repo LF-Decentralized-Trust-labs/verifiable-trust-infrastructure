@@ -43,6 +43,22 @@ keyspace under the key `path_counter:{base_path}`. Every key allocation:
 All key types within a context (signing, key-agreement, pre-rotation) share
 **one counter**, so indices are unique and never reused.
 
+### P-256 Domain-Separated Derivation
+
+P-256 keys share the same BIP-32 path namespace as Ed25519/X25519 but use
+**HMAC-SHA512 domain separation** to produce independent key material:
+
+1. Derive the BIP-32 path normally (SLIP-0010 for Ed25519).
+2. Compute `HMAC-SHA512(key="p256-key-derivation", data=signing_key_bytes || chain_code)`.
+3. Take the first 32 bytes as the P-256 scalar (reduced mod n automatically).
+
+This ensures:
+- **No cross-curve key reuse** — Ed25519 and P-256 keys at the same path are
+  cryptographically independent.
+- **No Ed25519 clamping artifacts** — the HMAC output is uniformly distributed.
+- **No group-order bias** — the P-256 group order (~2²⁵⁶) accommodates 32
+  random bytes with negligible bias (~2⁻³²).
+
 ```
 allocate_path(keys_ks, "m/26'/2'/0'")   ->  m/26'/2'/0'/0'   (counter: 0 -> 1)
 allocate_path(keys_ks, "m/26'/2'/0'")   ->  m/26'/2'/0'/1'   (counter: 1 -> 2)
