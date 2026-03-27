@@ -39,9 +39,12 @@ struct Cli {
 
 #[tokio::main]
 async fn main() {
+    eprintln!("VTA enclave binary starting...");
+
     let cli = Cli::parse();
 
     // Load config
+    eprintln!("Loading config...");
     let config = match AppConfig::load(cli.config) {
         Ok(c) => c,
         Err(e) => {
@@ -50,17 +53,25 @@ async fn main() {
         }
     };
 
+    eprintln!("Config loaded. Initializing tracing...");
+
     // Initialize tracing. When vsock-log is enabled, logs are tee'd to both
     // stderr (visible in debug mode) and a vsock channel on port 5700 (visible
     // via enclave-proxy in production mode). The initial connection is awaited
     // (with a 2s timeout) so early boot logs are forwarded before bootstrap.
     #[cfg(feature = "vsock-log")]
     {
+        eprintln!("vsock-log feature enabled, starting vsock writer...");
         let vsock_writer = vsock_log::start().await;
+        eprintln!("vsock writer started, initializing tracing...");
         vta_service::init_tracing_with_writer(&config, vsock_writer);
     }
     #[cfg(not(feature = "vsock-log"))]
-    vta_service::init_tracing(&config);
+    {
+        eprintln!("vsock-log feature NOT enabled, using stderr tracing");
+        vta_service::init_tracing(&config);
+    }
+    eprintln!("Tracing initialized.");
     print_banner();
 
     // ── Open store (vsock-proxied or local) ──
