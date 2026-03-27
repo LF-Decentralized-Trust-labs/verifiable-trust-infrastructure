@@ -18,8 +18,12 @@ struct Cli {
     #[arg(long, env = "VTA_URL")]
     url: Option<String>,
 
+    /// VTA slug to use (overrides default)
+    #[arg(short, long, env = "PNM_VTA", global = true)]
+    vta: Option<String>,
+
     /// Enable verbose debug output (can also set RUST_LOG=debug)
-    #[arg(short, long, global = true)]
+    #[arg(short = 'V', long, global = true)]
     verbose: bool,
 
     #[command(subcommand)]
@@ -85,6 +89,24 @@ enum Commands {
         #[command(subcommand)]
         command: AuditCommands,
     },
+
+    /// VTA connection management
+    Vta {
+        #[command(subcommand)]
+        command: VtaCommands,
+    },
+}
+
+#[derive(Subcommand)]
+enum VtaCommands {
+    /// List configured VTAs
+    List,
+    /// Set the default VTA
+    Use { slug: String },
+    /// Remove a VTA connection
+    Remove { slug: String },
+    /// Show current VTA details
+    Info,
 }
 
 #[derive(Subcommand)]
@@ -525,7 +547,10 @@ fn print_banner() {
 fn requires_auth(cmd: &Commands) -> bool {
     !matches!(
         cmd,
-        Commands::Health | Commands::Auth { .. } | Commands::Setup { .. }
+        Commands::Health
+            | Commands::Auth { .. }
+            | Commands::Setup { .. }
+            | Commands::Vta { .. }
     )
 }
 
@@ -549,7 +574,7 @@ async fn main() {
     print_banner();
 
     // Load PNM config
-    let pnm_config = match config::load_config() {
+    let mut pnm_config = match config::load_config() {
         Ok(c) => c,
         Err(e) => {
             eprintln!("Warning: could not load config: {e}");
@@ -557,26 +582,127 @@ async fn main() {
         }
     };
 
-    // Save the CLI URL override (before it's consumed)
+    // Save overrides before consuming
     let url_override = cli.url.clone();
+    let vta_override = cli.vta.clone();
 
-    // Resolve URL: CLI flag > config > error (not needed for setup)
-    let url = cli.url.or(pnm_config.url.clone()).unwrap_or_else(|| {
-        if !matches!(cli.command, Commands::Setup { .. }) {
-            // For auth-required commands, auth::connect resolves the URL from
-            // the session store — so only error when we actually need a URL.
-            if !requires_auth(&cli.command) {
-                eprintln!("Error: no VTA URL configured and no --url provided.\n");
-                eprintln!("Run setup first, or provide a URL:");
-                eprintln!("  pnm setup --credential <CREDENTIAL>");
-                eprintln!("  pnm health --url http://localhost:8100");
+    // Handle commands that don't need VTA resolution
+    match &cli.command {
+        Commands::Setup { credential } => {
+            let result = setup::run_setup(credential.as_deref(), &mut pnm_config).await;
+            if let Err(e) = result {
+                eprintln!("Error: {e}");
                 std::process::exit(1);
             }
+            return;
         }
-        String::new()
-    });
+        Commands::Vta { command } => {
+            match command {
+                VtaCommands::List => {
+                    if pnm_config.vtas.is_empty() {
+                        println!("No VTAs configured.");
+                        println!("\nRun `pnm setup` to configure your first VTA.");
+                    } else {
+                        let default = pnm_config.default_vta.as_deref().unwrap_or("");
+                        for (slug, vta) in &pnm_config.vtas {
+                            let marker = if slug == default { " (default)" } else { "" };
+                            println!("  {slug}{marker}");
+                            println!("    Name: {}", vta.name);
+                            if let Some(ref url) = vta.url {
+                                println!("    URL:  {url}");
+                            }
+                            if let Some(ref did) = vta.vta_did {
+                                println!("    DID:  {did}");
+                            }
+                            println!();
+                        }
+                    }
+                }
+                VtaCommands::Use { slug } => {
+                    if !pnm_config.vtas.contains_key(slug) {
+                        eprintln!(
+                            "Error: VTA '{slug}' not found.\n\nConfigured VTAs: {}",
+                            pnm_config
+                                .vtas
+                                .keys()
+                                .cloned()
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        );
+                        std::process::exit(1);
+                    }
+                    pnm_config.default_vta = Some(slug.clone());
+                    if let Err(e) = config::save_config(&pnm_config) {
+                        eprintln!("Error saving config: {e}");
+                        std::process::exit(1);
+                    }
+                    println!("Default VTA set to '{slug}'.");
+                }
+                VtaCommands::Remove { slug } => {
+                    if !pnm_config.vtas.contains_key(slug) {
+                        eprintln!("Error: VTA '{slug}' not found.");
+                        std::process::exit(1);
+                    }
+                    pnm_config.vtas.remove(slug);
+                    // Clear default if it was the removed VTA
+                    if pnm_config.default_vta.as_deref() == Some(slug.as_str()) {
+                        pnm_config.default_vta = pnm_config.vtas.keys().next().cloned();
+                    }
+                    // Clear the keyring entry
+                    let key = config::vta_keyring_key(slug);
+                    auth::logout(&key);
+                    if let Err(e) = config::save_config(&pnm_config) {
+                        eprintln!("Error saving config: {e}");
+                        std::process::exit(1);
+                    }
+                    println!("VTA '{slug}' removed.");
+                }
+                VtaCommands::Info => {
+                    match config::resolve_vta(vta_override.as_deref(), &pnm_config) {
+                        Ok((slug, vta)) => {
+                            println!("Active VTA: {slug}");
+                            println!("  Name: {}", vta.name);
+                            if let Some(ref url) = vta.url {
+                                println!("  URL:  {url}");
+                            }
+                            if let Some(ref did) = vta.vta_did {
+                                println!("  DID:  {did}");
+                            }
+                            let key = config::vta_keyring_key(&slug);
+                            auth::status(&key);
+                        }
+                        Err(e) => {
+                            eprintln!("Error: {e}");
+                            std::process::exit(1);
+                        }
+                    }
+                }
+            }
+            return;
+        }
+        _ => {}
+    }
+
+    // Resolve active VTA
+    let (slug, vta_config) = match config::resolve_vta(vta_override.as_deref(), &pnm_config) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("Error: {e}");
+            std::process::exit(1);
+        }
+    };
+    let keyring_key = config::vta_keyring_key(&slug);
+
+    // Print VTA info banner
+    eprintln!("  {DIM}VTA: {slug}{RESET}");
+    if let Some(ref did) = vta_config.vta_did {
+        eprintln!("  {DIM}DID: {did}{RESET}");
+    }
+    eprintln!();
+
+    // Build client
     let client = if requires_auth(&cli.command) {
-        match auth::connect(url_override.as_deref()).await {
+        match auth::connect(url_override.as_deref(), &keyring_key).await {
             Ok(c) => c,
             Err(e) => {
                 eprintln!("Error: {e}");
@@ -584,20 +710,25 @@ async fn main() {
             }
         }
     } else {
+        let url = url_override
+            .or(vta_config.url.clone())
+            .unwrap_or_default();
         VtaClient::new(&url)
     };
 
     let result = match cli.command {
-        Commands::Setup { credential } => setup::run_setup(credential.as_deref()).await,
-        Commands::Health => cmd_health(&client).await,
+        Commands::Setup { .. } | Commands::Vta { .. } => unreachable!(),
+        Commands::Health => cmd_health(&client, &keyring_key).await,
         Commands::Auth { command } => match command {
-            AuthCommands::Login { credential } => auth::login(&credential, client.base_url()).await,
+            AuthCommands::Login { credential } => {
+                auth::login(&credential, client.base_url(), &keyring_key).await
+            }
             AuthCommands::Logout => {
-                auth::logout();
+                auth::logout(&keyring_key);
                 Ok(())
             }
             AuthCommands::Status => {
-                auth::status();
+                auth::status(&keyring_key);
                 Ok(())
             }
         },
@@ -850,10 +981,10 @@ use vta_cli_common::render::print_section;
 
 // ── Command handlers ────────────────────────────────────────────────
 
-async fn cmd_health(client: &VtaClient) -> Result<(), Box<dyn std::error::Error>> {
+async fn cmd_health(client: &VtaClient, keyring_key: &str) -> Result<(), Box<dyn std::error::Error>> {
     use affinidi_did_resolver_cache_sdk::{DIDCacheClient, config::DIDCacheConfigBuilder};
 
-    let session = auth::loaded_session();
+    let session = auth::loaded_session(keyring_key);
 
     // ── VTA ────────────────────────────────────────────────────────
     print_section("VTA");
@@ -904,10 +1035,10 @@ async fn cmd_health(client: &VtaClient) -> Result<(), Box<dyn std::error::Error>
 
     if let Some(ref info) = session {
         println!("  {CYAN}{:<13}{RESET} {}", "Client DID", info.client_did);
-        match auth::ensure_authenticated(client.base_url()).await {
+        match auth::ensure_authenticated(client.base_url(), keyring_key).await {
             Ok(_token) => {
                 // Re-check token status for display
-                if let Some(status) = auth::session_status() {
+                if let Some(status) = auth::session_status(keyring_key) {
                     match status.token_status {
                         vta_sdk::session::TokenStatus::Valid { expires_in_secs } => {
                             println!(
@@ -1055,5 +1186,13 @@ mod tests {
             command: ContextCommands::List,
         };
         assert!(requires_auth(&cmd));
+    }
+
+    #[test]
+    fn test_requires_auth_vta_false() {
+        let cmd = Commands::Vta {
+            command: VtaCommands::List,
+        };
+        assert!(!requires_auth(&cmd));
     }
 }
