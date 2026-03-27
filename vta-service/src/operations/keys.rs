@@ -403,17 +403,17 @@ pub async fn sign_payload(
         .await
         .map_err(|e| AppError::Internal(format!("{e}")))?;
     let bip32 = ed25519_dalek_bip32::ExtendedSigningKey::from_seed(&seed)
-        .map_err(|e| AppError::KeyDerivation(format!("failed to create BIP-32 root key: {e}")))?;
+        .map_err(|e| key_derivation_error(format!("failed to create BIP-32 root key: {e}")))?;
 
     let signature_bytes = match (algorithm, &record.key_type) {
         (SignAlgorithm::EdDSA, KeyType::Ed25519) => {
             let derivation_path: ed25519_dalek_bip32::DerivationPath = record
                 .derivation_path
                 .parse()
-                .map_err(|e| AppError::KeyDerivation(format!("invalid derivation path: {e}")))?;
+                .map_err(|e| key_derivation_error(format!("invalid derivation path: {e}")))?;
             let derived = bip32
                 .derive(&derivation_path)
-                .map_err(|e| AppError::KeyDerivation(format!("derivation failed: {e}")))?;
+                .map_err(|e| key_derivation_error(format!("derivation failed: {e}")))?;
             let signing_key =
                 ed25519_dalek::SigningKey::from_bytes(derived.signing_key.as_bytes());
             use ed25519_dalek::Signer;

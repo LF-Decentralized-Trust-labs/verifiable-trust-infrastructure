@@ -67,11 +67,11 @@ impl Bip32Extension for ExtendedSigningKey {
 
         let derivation_path: DerivationPath = path
             .parse()
-            .map_err(|e| AppError::KeyDerivation(format!("invalid derivation path: {e}")))?;
+            .map_err(|e| key_derivation_error(format!("invalid derivation path: {e}")))?;
 
         let derived = self
             .derive(&derivation_path)
-            .map_err(|e| AppError::KeyDerivation(format!("derivation failed: {e}")))?;
+            .map_err(|e| key_derivation_error(format!("derivation failed: {e}")))?;
 
         // Domain-separated derivation via HMAC-SHA512.
         // Prevents cross-curve key reuse: the same BIP-32 path produces
@@ -86,7 +86,7 @@ impl Bip32Extension for ExtendedSigningKey {
         let secret_key = p256::SecretKey::from_bytes(
             p256::FieldBytes::from_slice(&hmac_output[..32]),
         )
-        .map_err(|e| AppError::KeyDerivation(format!("P-256 key creation failed: {e}")))?;
+        .map_err(|e| key_derivation_error(format!("P-256 key creation failed: {e}")))?;
 
         Ok(P256Secret { secret_key })
     }

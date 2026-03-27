@@ -2,7 +2,7 @@ use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use tracing::info;
 
-use crate::auth::extractor::AuthClaims;
+use crate::auth::AuthClaims;
 use crate::error::AppError;
 use crate::store::KeyspaceHandle;
 

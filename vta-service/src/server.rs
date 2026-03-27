@@ -116,6 +116,7 @@ pub async fn build_app_state(
     let acl_ks = apply_encryption(store.keyspace("acl")?);
     let contexts_ks = apply_encryption(store.keyspace("contexts")?);
     let audit_ks = apply_encryption(store.keyspace("audit")?);
+    let cache_ks = store.keyspace("cache")?;
     #[cfg(feature = "webvh")]
     let webvh_ks = apply_encryption(store.keyspace("webvh")?);
 
@@ -128,6 +129,7 @@ pub async fn build_app_state(
         acl_ks,
         contexts_ks,
         audit_ks,
+        cache_ks,
         #[cfg(feature = "webvh")]
         webvh_ks,
         config: Arc::new(RwLock::new(config)),
