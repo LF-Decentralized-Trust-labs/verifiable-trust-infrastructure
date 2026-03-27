@@ -202,4 +202,219 @@ mod tests {
         let result = bip39::Mnemonic::parse("not a valid mnemonic");
         assert!(result.is_err());
     }
+
+    // -----------------------------------------------------------------------
+    // Key creation ↔ recovery consistency tests
+    //
+    // These simulate the two code paths that must agree:
+    //   Creation:  derive_entity_keys() in keys/mod.rs  (DID document keys)
+    //   Recovery:  init_auth() in server.rs              (restart re-derivation)
+    // -----------------------------------------------------------------------
+
+    /// Simulate DID-creation for Ed25519: manual BIP-32 derive → Secret::generate_ed25519.
+    /// This mirrors what `derive_entity_keys()` does.
+    fn creation_path_ed25519(seed: &[u8], path: &str) -> Secret {
+        let root = ExtendedSigningKey::from_seed(seed).unwrap();
+        let dp: DerivationPath = path.parse().unwrap();
+        let derived = root.derive(&dp).unwrap();
+        Secret::generate_ed25519(None, Some(derived.signing_key.as_bytes()))
+    }
+
+    /// Simulate DID-creation for X25519: manual BIP-32 derive → Ed25519 → to_x25519.
+    /// This mirrors what `derive_entity_keys()` does.
+    fn creation_path_x25519(seed: &[u8], path: &str) -> Secret {
+        let root = ExtendedSigningKey::from_seed(seed).unwrap();
+        let dp: DerivationPath = path.parse().unwrap();
+        let derived = root.derive(&dp).unwrap();
+        let ed = Secret::generate_ed25519(None, Some(derived.signing_key.as_bytes()));
+        ed.to_x25519().unwrap()
+    }
+
+    /// Simulate recovery for Ed25519: Bip32Extension::derive_ed25519.
+    /// This mirrors what `init_auth()` does on restart.
+    fn recovery_path_ed25519(seed: &[u8], path: &str) -> Secret {
+        let root = ExtendedSigningKey::from_seed(seed).unwrap();
+        root.derive_ed25519(path).unwrap()
+    }
+
+    /// Simulate recovery for X25519: Bip32Extension::derive_x25519.
+    /// This mirrors what `init_auth()` does on restart.
+    fn recovery_path_x25519(seed: &[u8], path: &str) -> Secret {
+        let root = ExtendedSigningKey::from_seed(seed).unwrap();
+        root.derive_x25519(path).unwrap()
+    }
+
+    #[test]
+    fn test_ed25519_creation_matches_recovery() {
+        let seed = &[
+            7, 26, 142, 230, 65, 85, 188, 182, 29, 129, 52, 229, 217, 159, 243, 182,
+            73, 89, 196, 246, 58, 28, 100, 144, 187, 21, 157, 39, 4, 188, 154, 180,
+        ];
+        for path in ["m/44'/0'/0'", "m/44'/0'/1'", "m/44'/0'/99'"] {
+            let created = creation_path_ed25519(seed, path);
+            let recovered = recovery_path_ed25519(seed, path);
+
+            assert_eq!(
+                created.get_public_keymultibase().unwrap(),
+                recovered.get_public_keymultibase().unwrap(),
+                "Ed25519 public key mismatch at path {path}: creation vs recovery"
+            );
+            assert_eq!(
+                created.get_private_keymultibase().unwrap(),
+                recovered.get_private_keymultibase().unwrap(),
+                "Ed25519 private key mismatch at path {path}: creation vs recovery"
+            );
+        }
+    }
+
+    #[test]
+    fn test_x25519_creation_matches_recovery() {
+        let seed = &[
+            7, 26, 142, 230, 65, 85, 188, 182, 29, 129, 52, 229, 217, 159, 243, 182,
+            73, 89, 196, 246, 58, 28, 100, 144, 187, 21, 157, 39, 4, 188, 154, 180,
+        ];
+        for path in ["m/44'/0'/0'", "m/44'/0'/1'", "m/44'/0'/99'"] {
+            let created = creation_path_x25519(seed, path);
+            let recovered = recovery_path_x25519(seed, path);
+
+            assert_eq!(
+                created.get_public_keymultibase().unwrap(),
+                recovered.get_public_keymultibase().unwrap(),
+                "X25519 public key mismatch at path {path}: creation vs recovery \
+                 (the key in the DID document would not match the runtime key)"
+            );
+            assert_eq!(
+                created.get_private_keymultibase().unwrap(),
+                recovered.get_private_keymultibase().unwrap(),
+                "X25519 private key mismatch at path {path}: creation vs recovery"
+            );
+        }
+    }
+
+    /// Multiple re-derivations from the same seed + path must produce identical
+    /// keys (simulates multiple VTA restarts).
+    #[test]
+    fn test_multiple_restarts_produce_identical_keys() {
+        let seed = &[
+            7, 26, 142, 230, 65, 85, 188, 182, 29, 129, 52, 229, 217, 159, 243, 182,
+            73, 89, 196, 246, 58, 28, 100, 144, 187, 21, 157, 39, 4, 188, 154, 180,
+        ];
+        let sign_path = "m/44'/0'/0'";
+        let ka_path = "m/44'/0'/1'";
+
+        let first_sign = recovery_path_ed25519(seed, sign_path);
+        let first_ka = recovery_path_x25519(seed, ka_path);
+
+        for i in 1..=5 {
+            let sign = recovery_path_ed25519(seed, sign_path);
+            let ka = recovery_path_x25519(seed, ka_path);
+
+            assert_eq!(
+                first_sign.get_public_keymultibase().unwrap(),
+                sign.get_public_keymultibase().unwrap(),
+                "Ed25519 public key drifted on restart {i}"
+            );
+            assert_eq!(
+                first_ka.get_public_keymultibase().unwrap(),
+                ka.get_public_keymultibase().unwrap(),
+                "X25519 public key drifted on restart {i}"
+            );
+        }
+    }
+
+    /// BIP-39 mnemonic → seed → keys must be fully deterministic.
+    #[test]
+    fn test_bip39_seed_to_keys_deterministic() {
+        let phrase = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+        let m = bip39::Mnemonic::parse(phrase).unwrap();
+        let seed = m.to_seed("");
+
+        let sign1 = creation_path_ed25519(&seed, "m/44'/0'/0'");
+        let ka1 = creation_path_x25519(&seed, "m/44'/0'/1'");
+
+        // Repeat from mnemonic
+        let m2 = bip39::Mnemonic::parse(phrase).unwrap();
+        let seed2 = m2.to_seed("");
+        let sign2 = recovery_path_ed25519(&seed2, "m/44'/0'/0'");
+        let ka2 = recovery_path_x25519(&seed2, "m/44'/0'/1'");
+
+        assert_eq!(
+            sign1.get_public_keymultibase().unwrap(),
+            sign2.get_public_keymultibase().unwrap(),
+            "Ed25519 key not deterministic from same mnemonic"
+        );
+        assert_eq!(
+            ka1.get_public_keymultibase().unwrap(),
+            ka2.get_public_keymultibase().unwrap(),
+            "X25519 key not deterministic from same mnemonic"
+        );
+    }
+
+    /// The stored ka_priv (Ed25519 seed bytes at the KA derivation path) must
+    /// reconstruct the same X25519 key when fed through the canonical conversion.
+    /// This is how DidSecretsBundle and external importers reconstruct keys.
+    #[test]
+    fn test_ka_priv_reconstructs_x25519() {
+        let seed = &[
+            7, 26, 142, 230, 65, 85, 188, 182, 29, 129, 52, 229, 217, 159, 243, 182,
+            73, 89, 196, 246, 58, 28, 100, 144, 187, 21, 157, 39, 4, 188, 154, 180,
+        ];
+        let ka_path = "m/44'/0'/1'";
+
+        // Simulate derive_entity_keys: get ka_priv (Ed25519 seed bytes, multibase)
+        let root = ExtendedSigningKey::from_seed(seed).unwrap();
+        let dp: DerivationPath = ka_path.parse().unwrap();
+        let derived = root.derive(&dp).unwrap();
+        let ka_priv = multibase::encode(
+            multibase::Base::Base58Btc,
+            derived.signing_key.as_bytes(),
+        );
+
+        // Original X25519 key (as would be in DID document)
+        let original = creation_path_x25519(seed, ka_path);
+        let original_pub = original.get_public_keymultibase().unwrap();
+
+        // Reconstruct from ka_priv (as an external importer would)
+        let (_, raw_bytes) = multibase::decode(&ka_priv).unwrap();
+        let seed_arr: &[u8; 32] = raw_bytes.as_slice().try_into().unwrap();
+        let reconstructed_ed = Secret::generate_ed25519(None, Some(seed_arr));
+        let reconstructed_x = reconstructed_ed.to_x25519().unwrap();
+        let reconstructed_pub = reconstructed_x.get_public_keymultibase().unwrap();
+
+        assert_eq!(
+            original_pub, reconstructed_pub,
+            "X25519 key reconstructed from stored ka_priv does not match DID document key"
+        );
+    }
+
+    /// Ensure the signing key's public multibase matches what ed25519_multibase_pubkey
+    /// produces (the format used in DID documents and did:key identifiers).
+    #[test]
+    fn test_signing_pub_matches_did_document_format() {
+        let seed = &[
+            7, 26, 142, 230, 65, 85, 188, 182, 29, 129, 52, 229, 217, 159, 243, 182,
+            73, 89, 196, 246, 58, 28, 100, 144, 187, 21, 157, 39, 4, 188, 154, 180,
+        ];
+        let path = "m/44'/0'/0'";
+
+        // What derive_entity_keys stores as signing_pub
+        let secret = creation_path_ed25519(seed, path);
+        let signing_pub = secret.get_public_keymultibase().unwrap();
+
+        // What the DID document formatter produces from raw bytes
+        let root = ExtendedSigningKey::from_seed(seed).unwrap();
+        let dp: DerivationPath = path.parse().unwrap();
+        let derived = root.derive(&dp).unwrap();
+        let raw_pub = ed25519_dalek::SigningKey::from_bytes(
+            derived.signing_key.as_bytes(),
+        )
+        .verifying_key()
+        .to_bytes();
+        let did_doc_pub = vta_sdk::did_key::ed25519_multibase_pubkey(&raw_pub);
+
+        assert_eq!(
+            signing_pub, did_doc_pub,
+            "Secret::get_public_keymultibase() does not match ed25519_multibase_pubkey()"
+        );
+    }
 }
