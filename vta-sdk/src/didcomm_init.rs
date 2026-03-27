@@ -110,6 +110,41 @@ pub async fn init_didcomm_connection(
         }
     };
 
+    // Flush any stale queued messages before enabling live delivery.
+    // After a key rotation (e.g., TEE reboot with new identity), the mediator
+    // may have messages encrypted with the old key. These can't be decrypted
+    // and would flood the log with errors on every reconnect.
+    {
+        use affinidi_tdk::messaging::messages::Folder;
+        match atm.list_messages(&profile, Folder::Inbox).await {
+            Ok(messages) if !messages.is_empty() => {
+                let ids: Vec<String> = messages.iter().map(|m| m.msg_id.clone()).collect();
+                info!(count = ids.len(), "flushing stale queued messages from mediator inbox");
+                let delete_req = affinidi_tdk::messaging::messages::DeleteMessageRequest {
+                    message_ids: ids,
+                };
+                match atm.delete_messages_direct(&profile, &delete_req).await {
+                    Ok(resp) => {
+                        info!(
+                            deleted = resp.success.len(),
+                            errors = resp.errors.len(),
+                            "mediator inbox flushed"
+                        );
+                    }
+                    Err(e) => {
+                        warn!("failed to flush stale messages (non-fatal): {e}");
+                    }
+                }
+            }
+            Ok(_) => {} // Empty inbox — nothing to flush
+            Err(e) => {
+                // Non-fatal — list might fail if mediator REST isn't available.
+                // The stale messages will just produce unpack errors in the log.
+                warn!("could not list mediator inbox (non-fatal): {e}");
+            }
+        }
+    }
+
     // Enable WebSocket (auto-starts live streaming from mediator)
     if let Err(e) = atm.profile_enable_websocket(&profile).await {
         warn!("failed to enable websocket: {e} — messaging disabled");
