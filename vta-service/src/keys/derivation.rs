@@ -1,8 +1,6 @@
 use crate::error::{AppError, key_derivation_error};
 use crate::keys::seed_store::SeedStore;
-use affinidi_tdk::{
-    affinidi_crypto::ed25519::ed25519_private_to_x25519, secrets_resolver::secrets::Secret,
-};
+use affinidi_tdk::secrets_resolver::secrets::Secret;
 use ed25519_dalek_bip32::{DerivationPath, ExtendedSigningKey};
 use rand::Rng;
 use tracing::{debug, info};
@@ -43,8 +41,13 @@ impl Bip32Extension for ExtendedSigningKey {
             .derive(&derivation_path)
             .map_err(|e| key_derivation_error(format!("derivation failed: {e}")))?;
 
-        let x25519_seed = ed25519_private_to_x25519(derived.signing_key.as_bytes());
-        Ok(Secret::generate_x25519(None, Some(&x25519_seed))?)
+        // Use the same conversion path as DID creation (keys/mod.rs derive_entity_keys):
+        // generate Ed25519 secret, then convert to X25519 via Secret::to_x25519().
+        // This ensures the runtime key matches the public key in the DID document.
+        let ed_secret = Secret::generate_ed25519(None, Some(derived.signing_key.as_bytes()));
+        ed_secret
+            .to_x25519()
+            .map_err(|e| key_derivation_error(format!("X25519 conversion failed: {e}")))
     }
 }
 
