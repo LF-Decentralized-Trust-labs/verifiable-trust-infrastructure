@@ -548,19 +548,34 @@ pub(crate) async fn run_log_receiver(vsock_port: u32) {
         };
         info!("[logs] enclave log stream connected");
 
+        // The VTA sends a heartbeat every 15 seconds when idle.
+        // If we don't receive anything for 45 seconds (3 missed heartbeats),
+        // the connection is dead (enclave terminated without clean EOF).
+        const DEAD_CONNECTION_TIMEOUT: std::time::Duration =
+            std::time::Duration::from_secs(45);
+
         let reader = tokio::io::BufReader::new(stream);
         let mut lines = reader.lines();
         loop {
-            match lines.next_line().await {
-                Ok(Some(line)) => {
-                    println!("[vta] {line}");
+            match tokio::time::timeout(DEAD_CONNECTION_TIMEOUT, lines.next_line()).await {
+                Ok(Ok(Some(line))) => {
+                    // Filter out heartbeat lines — don't print them
+                    if line != "__heartbeat__" {
+                        println!("[vta] {line}");
+                    }
                 }
-                Ok(None) => {
+                Ok(Ok(None)) => {
                     // Clean EOF — enclave closed the connection
                     break;
                 }
-                Err(e) => {
+                Ok(Err(e)) => {
                     warn!("[logs] read error: {e}");
+                    break;
+                }
+                Err(_) => {
+                    // No data for 45s (3 missed heartbeats) — connection is dead
+                    warn!("[logs] no heartbeat received for {}s — connection dead",
+                        DEAD_CONNECTION_TIMEOUT.as_secs());
                     break;
                 }
             }

@@ -88,7 +88,16 @@ pub async fn start() -> TeeMakeWriter {
     TeeMakeWriter { tx: Arc::new(tx) }
 }
 
+/// Heartbeat interval — sent over the vsock log channel when idle.
+/// The parent's log receiver uses a timeout slightly longer than this
+/// to detect dead connections.
+const HEARTBEAT_INTERVAL: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// Heartbeat line — the proxy recognizes this and doesn't print it.
+const HEARTBEAT_LINE: &[u8] = b"__heartbeat__\n";
+
 /// Background task: drains the channel and writes to the vsock stream.
+/// Sends periodic heartbeats when idle so the proxy can detect dead connections.
 /// Reconnects with backoff if the connection drops.
 async fn vsock_drain_task(
     mut rx: mpsc::Receiver<Vec<u8>>,
@@ -107,16 +116,27 @@ async fn vsock_drain_task(
     };
 
     loop {
-        match rx.recv().await {
-            Some(buf) => {
-                if AsyncWriteExt::write_all(&mut stream, &buf).await.is_err() {
-                    // Connection lost — reconnect
-                    stream = connect_with_backoff(&addr, &mut rx).await;
-                    // Retry writing this buffer on the new connection
-                    let _ = AsyncWriteExt::write_all(&mut stream, &buf).await;
+        tokio::select! {
+            msg = rx.recv() => {
+                match msg {
+                    Some(buf) => {
+                        if AsyncWriteExt::write_all(&mut stream, &buf).await.is_err() {
+                            // Connection lost — reconnect
+                            stream = connect_with_backoff(&addr, &mut rx).await;
+                            // Retry writing this buffer on the new connection
+                            let _ = AsyncWriteExt::write_all(&mut stream, &buf).await;
+                        }
+                    }
+                    None => return, // Channel closed — VTA shutting down
                 }
             }
-            None => return, // Channel closed — VTA shutting down
+            _ = tokio::time::sleep(HEARTBEAT_INTERVAL) => {
+                // No log data for a while — send heartbeat to keep connection alive
+                // and let the proxy know we're still running.
+                if AsyncWriteExt::write_all(&mut stream, HEARTBEAT_LINE).await.is_err() {
+                    stream = connect_with_backoff(&addr, &mut rx).await;
+                }
+            }
         }
     }
 }
