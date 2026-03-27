@@ -62,7 +62,6 @@ pub async fn maybe_bootstrap_admin(
     }
 
     let context_id = &kms_config.admin_context_id;
-    info!(context_id, "bootstrapping super-admin credential for TEE enclave");
 
     // Create admin context if it doesn't exist
     let _ctx = match contexts::get_context(&contexts_ks, context_id).await? {
@@ -72,52 +71,80 @@ pub async fn maybe_bootstrap_admin(
             .map_err(|e| AppError::Internal(format!("failed to create admin context: {e}")))?,
     };
 
-    // Generate a random did:key credential
-    let (did, private_key_multibase) = generate_did_key();
+    // Use the operator-provided admin DID if configured, otherwise generate one
+    if let Some(ref admin_did) = kms_config.admin_did {
+        // Operator-provided DID — just create the ACL entry.
+        // The private key stays with the operator (never touches TEE or parent).
+        info!(did = %admin_did, context_id, "bootstrapping super-admin from config admin_did");
 
-    // Create super-admin ACL entry (empty allowed_contexts = unrestricted)
-    let entry = AclEntry {
-        did: did.clone(),
-        role: Role::Admin,
-        label: Some("TEE bootstrap admin".to_string()),
-        allowed_contexts: vec![],
-        created_at: now_epoch(),
-        created_by: "tee:bootstrap".to_string(),
-    };
-    store_acl_entry(&acl_ks, &entry).await?;
+        let entry = AclEntry {
+            did: admin_did.clone(),
+            role: Role::Admin,
+            label: Some("TEE bootstrap admin".to_string()),
+            allowed_contexts: vec![],
+            created_at: now_epoch(),
+            created_by: "tee:bootstrap".to_string(),
+        };
+        store_acl_entry(&acl_ks, &entry).await?;
 
-    // Build the credential bundle
-    let vta_did = config.vta_did.clone().unwrap_or_default();
-    let bundle = CredentialBundle {
-        did: did.clone(),
-        private_key_multibase,
-        vta_did,
-        vta_url: config.public_url.clone(),
-    };
-    let credential = bundle
-        .encode()
-        .map_err(|e| AppError::Internal(format!("failed to encode credential bundle: {e}")))?;
+        // Persist sentinel so we don't re-run on next boot
+        keys_ks
+            .insert_raw(ADMIN_CREDENTIAL_STORE_KEY, admin_did.as_bytes().to_vec())
+            .await?;
 
-    // Persist in encrypted keyspace (sentinel + retrievable via REST)
-    keys_ks
-        .insert_raw(ADMIN_CREDENTIAL_STORE_KEY, credential.as_bytes().to_vec())
-        .await?;
+        store.persist().await?;
 
-    // Also persist in unencrypted bootstrap keyspace for parent proxy retrieval
-    let bootstrap_ks = store.keyspace("bootstrap")?;
-    bootstrap_ks
-        .insert_raw(ADMIN_CREDENTIAL_STORE_KEY, credential.as_bytes().to_vec())
-        .await?;
+        info!(
+            did = %admin_did,
+            context_id,
+            "super-admin ACL created — connect using the private key for this DID"
+        );
+    } else {
+        // No admin_did configured — generate a random did:key and store the
+        // credential bundle for retrieval via REST.
+        info!(context_id, "no admin_did configured — generating random admin credential");
 
-    // Flush to ensure durability
-    store.persist().await?;
+        let (did, private_key_multibase) = generate_did_key();
 
-    info!(
-        did = %did,
-        context_id,
-        "super-admin credential bootstrapped — retrieve via: \
-         GET /attestation/admin-credential or from the bootstrap keyspace"
-    );
+        let entry = AclEntry {
+            did: did.clone(),
+            role: Role::Admin,
+            label: Some("TEE bootstrap admin".to_string()),
+            allowed_contexts: vec![],
+            created_at: now_epoch(),
+            created_by: "tee:bootstrap".to_string(),
+        };
+        store_acl_entry(&acl_ks, &entry).await?;
+
+        let vta_did = config.vta_did.clone().unwrap_or_default();
+        let bundle = CredentialBundle {
+            did: did.clone(),
+            private_key_multibase,
+            vta_did,
+            vta_url: config.public_url.clone(),
+        };
+        let credential = bundle
+            .encode()
+            .map_err(|e| AppError::Internal(format!("failed to encode credential bundle: {e}")))?;
+
+        keys_ks
+            .insert_raw(ADMIN_CREDENTIAL_STORE_KEY, credential.as_bytes().to_vec())
+            .await?;
+
+        // Also persist in unencrypted bootstrap keyspace for REST retrieval
+        let bootstrap_ks = store.keyspace("bootstrap")?;
+        bootstrap_ks
+            .insert_raw(ADMIN_CREDENTIAL_STORE_KEY, credential.as_bytes().to_vec())
+            .await?;
+
+        store.persist().await?;
+
+        info!(
+            did = %did,
+            context_id,
+            "super-admin credential generated — retrieve via GET /attestation/admin-credential"
+        );
+    }
 
     Ok(())
 }

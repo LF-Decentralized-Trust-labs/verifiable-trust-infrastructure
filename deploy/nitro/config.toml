@@ -59,6 +59,15 @@ resolver_url = "ws://127.0.0.1:4445/did/v1/ws"
 region = "us-east-1"
 key_arn = "REPLACE_WITH_KMS_KEY_ARN"
 
+# Super-admin DID — grants unrestricted access to this VTA on first boot.
+# Generate a did:key locally (e.g., via `pnm setup`) and paste it here.
+# The private key stays on your machine — it never touches the TEE or parent.
+#
+# If omitted, the VTA generates a random did:key and stores the credential
+# in the bootstrap keyspace (retrievable via GET /attestation/admin-credential
+# when REST is enabled).
+# admin_did = "did:key:z6Mk..."
+
 # Template for auto-generating the VTA's did:webvh identity on first boot.
 # {SCID} is replaced with the self-certifying identifier at creation time.
 # The domain must match where you'll host the did.jsonl file.

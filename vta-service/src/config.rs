@@ -187,11 +187,21 @@ pub struct TeeKmsConfig {
     pub vta_did_template: Option<String>,
     /// Context ID used for the auto-bootstrapped admin (default: "default").
     ///
-    /// On first boot, the VTA auto-creates this context, generates a
-    /// super-admin credential, and writes it to the bootstrap keyspace
-    /// for the parent instance to retrieve.
+    /// On first boot, the VTA auto-creates this context and grants the
+    /// admin_did super-admin access.
     #[serde(default = "default_admin_context_id")]
     pub admin_context_id: String,
+    /// DID to grant super-admin access on first boot.
+    ///
+    /// The operator generates a `did:key` locally (e.g., via `pnm setup`),
+    /// sets it here before building the EIF, and connects to the VTA using
+    /// the corresponding private key after boot. The private key never
+    /// touches the TEE or the parent instance.
+    ///
+    /// If not set, the VTA auto-generates a random `did:key` and stores
+    /// the credential in the bootstrap keyspace (retrievable via REST).
+    #[serde(default)]
+    pub admin_did: Option<String>,
 }
 
 // KMS ciphertexts (seed, JWT key, fingerprint) are stored as K/V entries
