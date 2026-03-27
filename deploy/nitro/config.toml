@@ -2,58 +2,97 @@
 # VTA Configuration — AWS Nitro Enclave
 # =============================================================================
 #
-# This config is baked into the Enclave Image File (EIF) during docker build.
-# Changing it requires rebuilding the Docker image and EIF (which changes PCR0).
+# This file is baked into the Enclave Image File (EIF) at docker build time.
+# Changing any value requires rebuilding the EIF (which changes PCR0).
 #
-# Secrets (seed, JWT key) are bootstrapped from KMS — NOT stored in this file.
-# The VTA identity (did:webvh) is auto-generated on first boot if a template
-# is configured — no manual DID creation or EIF rebuild needed.
+# QUICK START — You only need to set TWO values:
+#   1. key_arn       — Your KMS key ARN (in [tee.kms])
+#   2. mediator_did  — Your mediator's DID (in [messaging])
 #
-# Networking: The VTA connects to localhost ports that are proxied through
-# vsock to the parent EC2 instance. The entrypoint script sets up the proxies.
+# Everything else has sensible defaults for TEE operation.
 #
-# Port mapping (inside enclave):
-#   VTA REST API     → 127.0.0.1:8100  (served directly)
-#   HTTPS/WSS proxy  → 127.0.0.1:4444  (CONNECT proxy → parent → internet + mediator)
-#   DID resolver     → 127.0.0.1:4445  (proxied to parent → resolver sidecar)
-#   IMDS credentials → 169.254.169.254  (proxied to parent → IMDS)
+# SECRETS: The VTA generates its own seed and JWT key inside the TEE on
+# first boot, encrypts them with KMS, and stores the ciphertexts in the
+# vsock-proxied persistent store. Never put secrets in this file.
+#
+# IDENTITY: The VTA auto-generates its did:webvh identity on first boot
+# using vta_did_template (see [tee.kms]). The DID is persisted in the
+# encrypted store. Retrieve the did.jsonl via GET /attestation/did-log.
+#
+# NETWORKING: The enclave has no direct network access. All traffic is
+# proxied through vsock to the parent EC2 instance:
+#   REST API      → 127.0.0.1:8100  (served directly, proxied inbound)
+#   HTTPS + WSS   → 127.0.0.1:4444  (HTTP CONNECT proxy to parent)
+#   DID resolver  → 127.0.0.1:4445  (WebSocket to resolver sidecar)
+#   IMDS          → 169.254.169.254  (AWS credentials via parent)
 # =============================================================================
 
-# ── Deployment inputs ────────────────────────────────────────────────────────
-# These are the values you MUST configure before building the EIF.
-#
-# public_url (optional): The external HTTPS URL where this VTA is reachable.
-#   Only needed when REST is enabled — used in DID documents to advertise the
-#   TEE attestation endpoint. DIDComm-only deployments (Profile A) do not need
-#   this since all communication goes through the mediator.
-#
-# vta_did_template (in [tee.kms]): Template for auto-generating the VTA's
-#   did:webvh identity on first boot. See the [tee.kms] section below.
-#
-# vta_did: Set this INSTEAD of vta_did_template if you want to manage the
-#   DID manually (e.g., created via CLI before baking the EIF). When both are
-#   set, vta_did takes precedence and the template is ignored.
 
-# vta_did = "did:webvh:..."
-# vta_name = "My VTA"
+# ── Top-level settings ──────────────────────────────────────────────────────
 
-# Only needed for REST deployments (Profiles B and C). Omit for DIDComm-only
-# (Profile A) — the mediator handles routing and this URL is not used.
-# public_url = "https://vta.example.com"
-
-# DID resolver — in TEE mode, the VTA uses network mode to connect to the
-# affinidi-did-resolver-cache-server sidecar on the parent, bridged via vsock.
-# The URL points to the local socat proxy inside the enclave.
+# DID resolver — connects to the resolver sidecar on the parent via vsock.
+# Only change this if you use a different resolver port.
 resolver_url = "ws://127.0.0.1:4445/did/v1/ws"
 
-# ── Service toggles ─────────────────────────────────────────────────────────
-# Runtime overrides for compiled-in features. These can only DISABLE a service
-# that was compiled in, never enable one that wasn't. For example, if the
-# binary was built with FEATURES="didcomm,vsock-store" (Profile A), setting rest=true
-# here has no effect — the REST code isn't in the binary.
-[services]
-rest = true
-didcomm = true
+# Uncomment to set the VTA's public REST URL (used in DID documents for
+# the TeeAttestation service endpoint). Not needed for DIDComm-only mode.
+# public_url = "https://vta.example.com"
+
+# Uncomment to set a manually-created VTA DID instead of auto-generating.
+# When set, vta_did_template is ignored.
+# vta_did = "did:webvh:..."
+
+
+# ── REQUIRED: KMS bootstrap ─────────────────────────────────────────────────
+#
+# The VTA uses AWS KMS to protect its secrets. On first boot it generates
+# a seed + JWT key inside the TEE, encrypts them with this KMS key, and
+# stores the ciphertexts persistently. On subsequent boots it decrypts
+# them using Nitro attestation-conditioned KMS access.
+#
+# Prerequisites:
+#   1. Create a KMS key in your AWS account
+#   2. Attach the Nitro attestation policy (see deploy guide)
+#   3. Paste the key ARN below
+#
+[tee.kms]
+region = "us-east-1"
+key_arn = "REPLACE_WITH_KMS_KEY_ARN"
+
+# Template for auto-generating the VTA's did:webvh identity on first boot.
+# {SCID} is replaced with the self-certifying identifier at creation time.
+# The domain must match where you'll host the did.jsonl file.
+#
+# Examples:
+#   "did:webvh:{SCID}:vta.example.com"
+#   "did:webvh:{SCID}:example.com:agents:vta-1"
+#   "did:webvh:{SCID}:example.com%3A8080:vta"    (with port)
+#
+# Ignored if vta_did is set (either in this file or in the encrypted store).
+# vta_did_template = "did:webvh:{SCID}:example.com:vta"
+
+
+# ── REQUIRED: DIDComm mediator ──────────────────────────────────────────────
+#
+# The VTA communicates via DIDComm through a mediator. Set mediator_did to
+# the DID of your Affinidi Messaging mediator. The TDK resolves this DID
+# to discover the mediator's WebSocket endpoint automatically.
+#
+# WebSocket traffic is routed through the enclave's HTTPS_PROXY (set by
+# the entrypoint) via the parent's HTTP CONNECT proxy. The mediator host
+# is auto-added to the proxy allowlist from the DID.
+#
+[messaging]
+mediator_did = "REPLACE_WITH_MEDIATOR_DID"
+
+
+# ── TEE settings ────────────────────────────────────────────────────────────
+
+[tee]
+mode = "required"
+embed_in_did = true
+
+# ── Server (rarely need to change) ──────────────────────────────────────────
 
 [server]
 host = "127.0.0.1"
@@ -65,70 +104,3 @@ format = "json"
 
 [store]
 data_dir = "/var/lib/vta/data"
-
-# ── DIDComm mediator ────────────────────────────────────────────────────────
-# Required for Profiles A (Hardened) and B (Full API).
-#
-# mediator_url: The real mediator URL (e.g., wss://mediator.example.com/ws).
-#               The TDK resolves mediator_did to discover this automatically,
-#               but it can be set explicitly as a fallback.
-# mediator_did: The DID of your mediator service.
-#
-# websocket_proxy: HTTP CONNECT proxy for WebSocket traffic. Inside the
-#                  enclave, this is set to http://127.0.0.1:4444 — the local
-#                  socat bridge to the parent's HTTPS CONNECT proxy (channel 3).
-#                  The TDK routes mediator WebSocket connections through this
-#                  proxy since the enclave has no direct network access.
-#
-# mediator_host: Optional manual override for the parent proxy's mediator
-#                channel — skips DID resolution for the parent-side TLS
-#                connection. Not needed when using websocket_proxy.
-#
-# [messaging]
-# mediator_did = "did:web:mediator.example.com"
-# websocket_proxy = "http://127.0.0.1:4444"
-
-# ── TEE attestation ─────────────────────────────────────────────────────────
-[tee]
-mode = "required"           # Refuse to start if not in a TEE
-embed_in_did = true         # Add TeeAttestation service to DID documents
-attestation_cache_ttl = 300 # 5 minute cache
-storage_key_salt = "vta-tee-storage-v1"
-
-# ── KMS secret bootstrap ────────────────────────────────────────────────────
-# On first boot: generates seed + JWT key inside TEE, encrypts to KMS, stores
-# ciphertexts as K/V entries in the "bootstrap" keyspace of the persistent store.
-# On subsequent boots: decrypts from KMS with Nitro attestation verification.
-# No file paths needed — everything goes through the vsock storage proxy.
-#
-# Fill in key_arn after running setup-kms-policy.sh (Step 4c in deploy guide).
-[tee.kms]
-region = "us-east-1"
-key_arn = "REPLACE_WITH_KMS_KEY_ARN"
-
-# ── Automatic DID identity generation ────────────────────────────────────────
-# On first boot, the VTA can auto-generate its did:webvh identity from a
-# template. This eliminates the manual create-DID / update-config / rebuild
-# cycle. The template uses {SCID} as a placeholder for the self-certifying
-# identifier that is computed during DID creation.
-#
-# The VTA derives keys from the bootstrapped seed, creates the DID, and
-# persists it in the encrypted store. The did.jsonl log entry is stored in
-# the "keys" keyspace under key "tee:did_log" — retrieve it via the API
-# or from the fjall database on the parent.
-#
-# On subsequent boots, the DID is restored from the encrypted store — the
-# template is not re-evaluated.
-#
-# Uncomment and set your domain/path:
-# vta_did_template = "did:webvh:{SCID}:example.com:vta"
-
-[auth]
-access_token_expiry = 900
-refresh_token_expiry = 86400
-challenge_ttl = 300
-session_cleanup_interval = 600
-# jwt_signing_key is provided by KMS bootstrap — do NOT set it here
-
-[secrets]
-# Seed is provided by KMS bootstrap — do NOT set it here
