@@ -1,5 +1,5 @@
 use std::path::PathBuf;
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 
 use affinidi_did_resolver_cache_sdk::{DIDCacheClient, config::DIDCacheConfigBuilder};
 
@@ -162,7 +162,7 @@ pub async fn run_create_did(
     };
 
     let did_resolver = DIDCacheClient::new(DIDCacheConfigBuilder::default().build()).await?;
-    let no_bridge: Arc<OnceLock<DIDCommBridge>> = Arc::new(OnceLock::new());
+    let no_bridge: Arc<tokio::sync::RwLock<Option<DIDCommBridge>>> = Arc::new(tokio::sync::RwLock::new(None));
     let result = operations::did_webvh::create_did_webvh(
         &keys_ks,
         &contexts_ks,
@@ -249,7 +249,7 @@ pub async fn run_delete_did(
 
     let auth = cli_super_admin();
     let did_resolver = DIDCacheClient::new(DIDCacheConfigBuilder::default().build()).await?;
-    let no_bridge: Arc<OnceLock<DIDCommBridge>> = Arc::new(OnceLock::new());
+    let no_bridge: Arc<tokio::sync::RwLock<Option<DIDCommBridge>>> = Arc::new(tokio::sync::RwLock::new(None));
     operations::did_webvh::delete_did_webvh(
         &webvh_ks,
         &keys_ks,

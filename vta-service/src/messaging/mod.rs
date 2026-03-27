@@ -2,7 +2,7 @@ pub mod auth;
 pub mod handlers;
 pub mod response;
 
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 
 use affinidi_tdk::didcomm::Message;
 use affinidi_tdk::messaging::ATM;
@@ -39,7 +39,7 @@ pub struct DidcommState {
     pub seed_store: Arc<dyn SeedStore>,
     pub config: Arc<RwLock<AppConfig>>,
     pub did_resolver: Option<DIDCacheClient>,
-    pub didcomm_bridge: Arc<OnceLock<DIDCommBridge>>,
+    pub didcomm_bridge: Arc<tokio::sync::RwLock<Option<DIDCommBridge>>>,
     #[cfg(feature = "tee")]
     pub tee_state: Option<crate::tee::TeeState>,
 }
