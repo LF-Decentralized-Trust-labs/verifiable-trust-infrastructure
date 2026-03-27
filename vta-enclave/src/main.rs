@@ -43,12 +43,27 @@ async fn main() {
 
     let cli = Cli::parse();
 
-    // Load config
-    eprintln!("Loading config...");
+    // Load config — resolve the path first so we can print diagnostics on failure
+    let config_path = cli.config.clone()
+        .or_else(|| std::env::var("VTA_CONFIG_PATH").ok().map(std::path::PathBuf::from))
+        .unwrap_or_else(|| std::path::PathBuf::from("config.toml"));
+    eprintln!("Loading config from: {}", config_path.display());
+    if config_path.exists() {
+        eprintln!("Config file exists ({} bytes)", std::fs::metadata(&config_path).map(|m| m.len()).unwrap_or(0));
+    } else {
+        eprintln!("Config file NOT FOUND at {}", config_path.display());
+    }
     let config = match AppConfig::load(cli.config) {
-        Ok(c) => c,
+        Ok(c) => {
+            eprintln!("Config loaded successfully");
+            c
+        }
         Err(e) => {
-            eprintln!("failed to load config: {e}");
+            eprintln!("FATAL: failed to load config: {e}");
+            // Print the raw config file for debugging
+            if let Ok(raw) = std::fs::read_to_string(&config_path) {
+                eprintln!("--- config file contents ---\n{raw}\n--- end config ---");
+            }
             std::process::exit(1);
         }
     };
