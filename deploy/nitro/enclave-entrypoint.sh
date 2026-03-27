@@ -212,4 +212,9 @@ echo ""
 echo "Starting VTA on 127.0.0.1:${VTA_PORT} (TEE mode: required)"
 echo ""
 
-exec vta-enclave --config "$CONFIG_PATH"
+# Run VTA (not exec, so we can capture crash output)
+vta-enclave --config "$CONFIG_PATH" 2>&1
+VTA_EXIT=$?
+echo "VTA exited with code ${VTA_EXIT}"
+# Keep the enclave alive briefly so console output can be read
+sleep 10
