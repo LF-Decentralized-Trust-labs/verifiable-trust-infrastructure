@@ -1011,53 +1011,63 @@ async fn cmd_health(client: &VtaClient, keyring_key: &str) -> Result<(), Box<dyn
         }
     }
 
-    // URL
-    println!("  {CYAN}{:<13}{RESET} {}", "URL", client.base_url());
+    let has_rest = !client.base_url().is_empty();
 
-    // REST health check
-    match client.health().await {
-        Ok(resp) => {
-            println!(
-                "  {CYAN}{:<13}{RESET} {GREEN}✓{RESET} ok (v{})",
-                "Service", resp.version
-            );
+    if has_rest {
+        // URL
+        println!("  {CYAN}{:<13}{RESET} {}", "URL", client.base_url());
+
+        // REST health check
+        match client.health().await {
+            Ok(resp) => {
+                println!(
+                    "  {CYAN}{:<13}{RESET} {GREEN}✓{RESET} ok (v{})",
+                    "Service", resp.version
+                );
+            }
+            Err(e) => {
+                println!(
+                    "  {CYAN}{:<13}{RESET} {RED}✗{RESET} unreachable ({e})",
+                    "Service"
+                );
+            }
         }
-        Err(e) => {
-            println!(
-                "  {CYAN}{:<13}{RESET} {RED}✗{RESET} unreachable ({e})",
-                "Service"
-            );
-        }
+    } else {
+        println!("  {CYAN}{:<13}{RESET} DIDComm-only", "Mode");
     }
 
     // ── Authentication ─────────────────────────────────────────────
     print_section("Authentication");
 
-    if let Some(ref info) = session {
-        println!("  {CYAN}{:<13}{RESET} {}", "Client DID", info.client_did);
-        match auth::ensure_authenticated(client.base_url(), keyring_key).await {
-            Ok(_token) => {
-                // Re-check token status for display
-                if let Some(status) = auth::session_status(keyring_key) {
-                    match status.token_status {
-                        vta_sdk::session::TokenStatus::Valid { expires_in_secs } => {
-                            println!(
-                                "  {CYAN}{:<13}{RESET} {GREEN}✓{RESET} valid (expires in {expires_in_secs}s)",
-                                "Token"
-                            );
-                        }
-                        _ => {
-                            println!("  {CYAN}{:<13}{RESET} {GREEN}✓{RESET} valid", "Token");
+    if has_rest {
+        if let Some(ref info) = session {
+            println!("  {CYAN}{:<13}{RESET} {}", "Client DID", info.client_did);
+            match auth::ensure_authenticated(client.base_url(), keyring_key).await {
+                Ok(_token) => {
+                    // Re-check token status for display
+                    if let Some(status) = auth::session_status(keyring_key) {
+                        match status.token_status {
+                            vta_sdk::session::TokenStatus::Valid { expires_in_secs } => {
+                                println!(
+                                    "  {CYAN}{:<13}{RESET} {GREEN}✓{RESET} valid (expires in {expires_in_secs}s)",
+                                    "Token"
+                                );
+                            }
+                            _ => {
+                                println!("  {CYAN}{:<13}{RESET} {GREEN}✓{RESET} valid", "Token");
+                            }
                         }
                     }
                 }
+                Err(e) => {
+                    println!("  {CYAN}{:<13}{RESET} {RED}✗{RESET} {e}", "Token");
+                }
             }
-            Err(e) => {
-                println!("  {CYAN}{:<13}{RESET} {RED}✗{RESET} {e}", "Token");
-            }
+        } else {
+            println!("  {DIM}Not authenticated{RESET}");
         }
     } else {
-        println!("  {DIM}Not authenticated{RESET}");
+        println!("  {DIM}DIDComm — no REST auth{RESET}");
     }
 
     // ── Mediator ───────────────────────────────────────────────────
@@ -1084,7 +1094,7 @@ async fn cmd_health(client: &VtaClient, keyring_key: &str) -> Result<(), Box<dyn
                     }
                 }
 
-                // Trust-ping
+                // Trust-ping mediator
                 match tokio::time::timeout(
                     std::time::Duration::from_secs(10),
                     vta_sdk::session::send_trust_ping(
@@ -1098,6 +1108,41 @@ async fn cmd_health(client: &VtaClient, keyring_key: &str) -> Result<(), Box<dyn
                 {
                     Ok(Ok(latency)) => {
                         println!("                {GREEN}✓{RESET} pong ({latency}ms)");
+
+                        // ── VTA DIDComm ────────────────────────────────
+                        print_section("VTA DIDComm");
+
+                        // Trust-ping the VTA through the mediator
+                        match tokio::time::timeout(
+                            std::time::Duration::from_secs(15),
+                            vta_sdk::session::send_trust_ping(
+                                &info.client_did,
+                                &info.private_key_multibase,
+                                &mediator_did,
+                                Some(&info.vta_did),
+                            ),
+                        )
+                        .await
+                        {
+                            Ok(Ok(latency)) => {
+                                println!(
+                                    "  {CYAN}{:<13}{RESET} {GREEN}✓{RESET} pong ({latency}ms)",
+                                    "Trust-ping"
+                                );
+                            }
+                            Ok(Err(e)) => {
+                                println!(
+                                    "  {CYAN}{:<13}{RESET} {RED}✗{RESET} trust-ping failed: {e}",
+                                    "Trust-ping"
+                                );
+                            }
+                            Err(_) => {
+                                println!(
+                                    "  {CYAN}{:<13}{RESET} {RED}✗{RESET} trust-ping timed out",
+                                    "Trust-ping"
+                                );
+                            }
+                        }
                     }
                     Ok(Err(e)) => {
                         println!("                {RED}✗{RESET} trust-ping failed: {e}");
