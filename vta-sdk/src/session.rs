@@ -897,8 +897,15 @@ pub async fn resolve_mediator_did(
     let did_resolver = DIDCacheClient::new(DIDCacheConfigBuilder::default().build())
         .await
         .map_err(|e| format!("DID resolver init failed: {e}"))?;
+    resolve_mediator_did_with_resolver(vta_did, &did_resolver).await
+}
 
-    let resolved = did_resolver
+/// Resolve the mediator DID using an existing resolver (avoids re-creating one).
+pub async fn resolve_mediator_did_with_resolver(
+    vta_did: &str,
+    resolver: &DIDCacheClient,
+) -> Result<Option<String>, Box<dyn std::error::Error>> {
+    let resolved = resolver
         .resolve(vta_did)
         .await
         .map_err(|e| format!("DID resolution failed: {e}"))?;
@@ -918,6 +925,80 @@ pub async fn resolve_mediator_did(
     }
 
     Ok(None)
+}
+
+/// A reusable DIDComm session for sending multiple trust-pings through
+/// the same ATM + WebSocket connection.
+///
+/// Eliminates per-ping overhead of TDK init, ATM creation, profile setup,
+/// and WebSocket handshake (~4 seconds saved per additional ping).
+pub struct TrustPingSession {
+    atm: affinidi_tdk::messaging::ATM,
+    profile: std::sync::Arc<affinidi_tdk::messaging::profiles::ATMProfile>,
+    mediator_did: String,
+}
+
+impl TrustPingSession {
+    /// Create a new session connected to the mediator via WebSocket.
+    pub async fn new(
+        client_did: &str,
+        private_key_multibase: &str,
+        mediator_did: &str,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        use std::sync::Arc;
+        use affinidi_tdk::common::TDKSharedState;
+        use affinidi_tdk::messaging::ATM;
+        use affinidi_tdk::messaging::config::ATMConfig;
+        use affinidi_tdk::messaging::profiles::ATMProfile;
+
+        let seed = crate::did_key::decode_private_key_multibase(private_key_multibase)?;
+        let secrets = crate::did_key::secrets_from_did_key(client_did, &seed)?;
+
+        let tdk = TDKSharedState::default().await;
+        tdk.secrets_resolver.insert(secrets.signing).await;
+        tdk.secrets_resolver.insert(secrets.key_agreement).await;
+
+        let atm = ATM::new(ATMConfig::builder().build()?, Arc::new(tdk)).await?;
+
+        let profile = ATMProfile::new(
+            &atm,
+            None,
+            client_did.to_string(),
+            Some(mediator_did.to_string()),
+        )
+        .await?;
+        let profile = Arc::new(profile);
+
+        atm.profile_enable_websocket(&profile).await?;
+
+        Ok(Self {
+            atm,
+            profile,
+            mediator_did: mediator_did.to_string(),
+        })
+    }
+
+    /// Send a trust-ping to a target (or the mediator if `target_did` is None).
+    /// Returns latency in milliseconds.
+    pub async fn ping(
+        &self,
+        target_did: Option<&str>,
+    ) -> Result<u128, Box<dyn std::error::Error>> {
+        use std::time::Instant;
+        use affinidi_tdk::messaging::protocols::trust_ping::TrustPing;
+
+        let target = target_did.unwrap_or(&self.mediator_did);
+        let start = Instant::now();
+        TrustPing::default()
+            .send_ping(&self.atm, &self.profile, target, true, true, true)
+            .await?;
+        Ok(start.elapsed().as_millis())
+    }
+
+    /// Gracefully shut down the ATM connection.
+    pub async fn shutdown(self) {
+        self.atm.graceful_shutdown().await;
+    }
 }
 
 fn now_epoch() -> u64 {

@@ -986,13 +986,13 @@ async fn cmd_health(client: &VtaClient, keyring_key: &str) -> Result<(), Box<dyn
 
     let session = auth::loaded_session(keyring_key);
 
-    // ── VTA ────────────────────────────────────────────────────────
-    print_section("VTA");
-
-    // DID resolution
+    // Single shared DID resolver — cached across all resolutions
     let did_resolver = DIDCacheClient::new(DIDCacheConfigBuilder::default().build())
         .await
         .ok();
+
+    // ── VTA ────────────────────────────────────────────────────────
+    print_section("VTA");
 
     if let Some(ref info) = session {
         println!("  {CYAN}{:<13}{RESET} {}", "DID", info.vta_did);
@@ -1014,10 +1014,8 @@ async fn cmd_health(client: &VtaClient, keyring_key: &str) -> Result<(), Box<dyn
     let has_rest = !client.base_url().is_empty();
 
     if has_rest {
-        // URL
         println!("  {CYAN}{:<13}{RESET} {}", "URL", client.base_url());
 
-        // REST health check
         match client.health().await {
             Ok(resp) => {
                 println!(
@@ -1044,7 +1042,6 @@ async fn cmd_health(client: &VtaClient, keyring_key: &str) -> Result<(), Box<dyn
             println!("  {CYAN}{:<13}{RESET} {}", "Client DID", info.client_did);
             match auth::ensure_authenticated(client.base_url(), keyring_key).await {
                 Ok(_token) => {
-                    // Re-check token status for display
                     if let Some(status) = auth::session_status(keyring_key) {
                         match status.token_status {
                             vta_sdk::session::TokenStatus::Valid { expires_in_secs } => {
@@ -1070,15 +1067,22 @@ async fn cmd_health(client: &VtaClient, keyring_key: &str) -> Result<(), Box<dyn
         println!("  {DIM}DIDComm — no REST auth{RESET}");
     }
 
-    // ── Mediator ───────────────────────────────────────────────────
+    // ── Mediator + DIDComm pings ──────────────────────────────────
     print_section("Mediator");
 
     if let Some(ref info) = session {
-        match vta_sdk::session::resolve_mediator_did(&info.vta_did).await {
+        // Resolve mediator DID using the shared resolver (avoids creating a second one)
+        let mediator_result = if let Some(ref resolver) = did_resolver {
+            vta_sdk::session::resolve_mediator_did_with_resolver(&info.vta_did, resolver).await
+        } else {
+            vta_sdk::session::resolve_mediator_did(&info.vta_did).await
+        };
+
+        match mediator_result {
             Ok(Some(mediator_did)) => {
                 println!("  {CYAN}{:<13}{RESET} {mediator_did}", "DID");
 
-                // Resolve mediator DID
+                // Resolve mediator DID document (uses cached resolver)
                 if let Some(ref resolver) = did_resolver {
                     match resolver.resolve(&mediator_did).await {
                         Ok(_) => {
@@ -1094,33 +1098,42 @@ async fn cmd_health(client: &VtaClient, keyring_key: &str) -> Result<(), Box<dyn
                     }
                 }
 
-                // Trust-ping mediator
+                // Set up a single DIDComm session and reuse for both pings
                 match tokio::time::timeout(
-                    std::time::Duration::from_secs(10),
-                    vta_sdk::session::send_trust_ping(
+                    std::time::Duration::from_secs(15),
+                    vta_sdk::session::TrustPingSession::new(
                         &info.client_did,
                         &info.private_key_multibase,
                         &mediator_did,
-                        None,
                     ),
                 )
                 .await
                 {
-                    Ok(Ok(latency)) => {
-                        println!("                {GREEN}✓{RESET} pong ({latency}ms)");
+                    Ok(Ok(session)) => {
+                        // Ping mediator
+                        match tokio::time::timeout(
+                            std::time::Duration::from_secs(10),
+                            session.ping(None),
+                        )
+                        .await
+                        {
+                            Ok(Ok(latency)) => {
+                                println!("                {GREEN}✓{RESET} pong ({latency}ms)");
+                            }
+                            Ok(Err(e)) => {
+                                println!("                {RED}✗{RESET} trust-ping failed: {e}");
+                            }
+                            Err(_) => {
+                                println!("                {RED}✗{RESET} trust-ping timed out");
+                            }
+                        }
 
-                        // ── VTA DIDComm ────────────────────────────────
+                        // Ping VTA through the same session
                         print_section("VTA DIDComm");
 
-                        // Trust-ping the VTA through the mediator
                         match tokio::time::timeout(
                             std::time::Duration::from_secs(15),
-                            vta_sdk::session::send_trust_ping(
-                                &info.client_did,
-                                &info.private_key_multibase,
-                                &mediator_did,
-                                Some(&info.vta_did),
-                            ),
+                            session.ping(Some(&info.vta_did)),
                         )
                         .await
                         {
@@ -1143,12 +1156,14 @@ async fn cmd_health(client: &VtaClient, keyring_key: &str) -> Result<(), Box<dyn
                                 );
                             }
                         }
+
+                        session.shutdown().await;
                     }
                     Ok(Err(e)) => {
-                        println!("                {RED}✗{RESET} trust-ping failed: {e}");
+                        println!("                {RED}✗{RESET} DIDComm setup failed: {e}");
                     }
                     Err(_) => {
-                        println!("                {RED}✗{RESET} trust-ping timed out");
+                        println!("                {RED}✗{RESET} DIDComm setup timed out");
                     }
                 }
             }
