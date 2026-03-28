@@ -7639,6 +7639,7 @@ dependencies = [
  "affinidi-messaging-didcomm",
  "affinidi-messaging-didcomm-service",
  "affinidi-tdk",
+ "affinidi-tdk-common",
  "aws-config",
  "aws-sdk-kms",
  "aws-sdk-secretsmanager",

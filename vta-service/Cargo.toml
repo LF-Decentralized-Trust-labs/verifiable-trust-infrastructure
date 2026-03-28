@@ -51,6 +51,7 @@ vta-sdk = { path = "../vta-sdk", features = ["didcomm"] }
 affinidi-tdk = { workspace = true }
 affinidi-messaging-didcomm = "0.13"
 affinidi-messaging-didcomm-service = { workspace = true }
+affinidi-tdk-common = "0.5"
 affinidi-did-resolver-cache-sdk = { version = "0.8", features = ["network"] }
 tokio-util = { version = "0.7", features = ["rt"] }
 base64 = { workspace = true }
