@@ -1,0 +1,6 @@
+{
+  "git": {
+    "sha1": "5ef4463c28a7ecd1744fcf79931c1d34a1612b5b"
+  },
+  "path_in_vcs": "crates/messaging/affinidi-messaging-didcomm-service"
+}
