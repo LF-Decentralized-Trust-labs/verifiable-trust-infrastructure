@@ -101,7 +101,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!(did = %did, "identity created");
 
     // Derive secrets using the same path as VTA: Ed25519 seed → Secret → to_x25519
-    let secrets = secrets_from_did_key(&did, signing_derived.signing_key.as_bytes())?;
+    let mut secrets = secrets_from_did_key(&did, signing_derived.signing_key.as_bytes())?;
 
     let signing_pub = secrets
         .signing
@@ -111,7 +111,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .key_agreement
         .get_public_keymultibase()
         .map_err(|e| format!("{e}"))?;
-    info!(signing = %signing_pub, ka = %ka_pub, "keys derived");
+
+    // init_didcomm_connection() looks up secrets by "{did}#key-0" and "{did}#key-1"
+    // (the convention used by did:webvh VTA identities). Override the did:key-style
+    // fragment IDs so the resolver finds them.
+    secrets.signing.id = format!("{did}#key-0");
+    secrets.key_agreement.id = format!("{did}#key-1");
+
+    info!(signing = %signing_pub, ka = %ka_pub, "keys derived (authcrypt: ECDH-1PU+A256KW)");
 
     // Also derive the KA key via the BIP-32 path (like VTA does for did:webvh entities)
     // to verify both derivation paths produce the same X25519 key
