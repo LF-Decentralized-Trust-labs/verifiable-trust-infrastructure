@@ -101,7 +101,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!(did = %did, "identity created");
 
     // Derive secrets using the same path as VTA: Ed25519 seed → Secret → to_x25519
-    let mut secrets = secrets_from_did_key(&did, signing_derived.signing_key.as_bytes())?;
+    let secrets = secrets_from_did_key(&did, signing_derived.signing_key.as_bytes())?;
 
     let signing_pub = secrets
         .signing
@@ -112,11 +112,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .get_public_keymultibase()
         .map_err(|e| format!("{e}"))?;
 
-    // init_didcomm_connection() looks up secrets by "{did}#key-0" and "{did}#key-1"
-    // (the convention used by did:webvh VTA identities). Override the did:key-style
-    // fragment IDs so the resolver finds them.
-    secrets.signing.id = format!("{did}#key-0");
-    secrets.key_agreement.id = format!("{did}#key-1");
+    // We need secrets registered under TWO ID conventions:
+    //   1. "{did}#key-0" / "#key-1"  — used by init_didcomm_connection() lookups
+    //   2. "{did}#{multibase_pub}"   — used by affinidi-did-authentication when it
+    //      resolves the did:key document and looks up the KA secret by VM ID
+    //
+    // Clone the secrets so we can insert both sets of IDs.
+    let mut signing_key0 = secrets.signing.clone();
+    signing_key0.id = format!("{did}#key-0");
+    let mut ka_key1 = secrets.key_agreement.clone();
+    ka_key1.id = format!("{did}#key-1");
+
+    // The originals keep their did:key fragment IDs (e.g. "{did}#{z6Mk...}", "{did}#{z6LS...}")
+    let signing_didkey = secrets.signing.clone();
+    let ka_didkey = secrets.key_agreement.clone();
 
     info!(signing = %signing_pub, ka = %ka_pub, "keys derived (authcrypt: ECDH-1PU+A256KW)");
 
@@ -143,11 +152,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (atm, profile) = vta_sdk::didcomm_init::init_didcomm_connection(
         &args.mediator_did,
         &{
-            // Build a temporary ThreadedSecretsResolver and insert our secrets
+            // Build a temporary ThreadedSecretsResolver and insert secrets under
+            // both ID conventions (see comment above).
             let (resolver, _handle) =
                 affinidi_tdk::secrets_resolver::ThreadedSecretsResolver::new(None).await;
-            resolver.insert(secrets.signing.clone()).await;
-            resolver.insert(secrets.key_agreement.clone()).await;
+            // #key-0 / #key-1 IDs (for init_didcomm_connection lookups)
+            resolver.insert(signing_key0).await;
+            resolver.insert(ka_key1).await;
+            // did:key fragment IDs (for affinidi-did-authentication DID-doc lookups)
+            resolver.insert(signing_didkey).await;
+            resolver.insert(ka_didkey).await;
             Arc::new(resolver)
         },
         &did,
