@@ -99,6 +99,7 @@ All protocol URIs are under `https://firstperson.network/protocols/`.
 | `.../rename-key` | `.../rename-key-result` | Admin | Rename a key |
 | `.../revoke-key` | `.../revoke-key-result` | Admin | Revoke a key |
 | `.../get-key-secret` | `.../get-key-secret-result` | Admin | Export secret key material |
+| `.../sign-request` | `.../sign-result` | Auth + context | Sign payload (signing oracle) |
 
 #### create-key
 
@@ -221,6 +222,31 @@ Response body:
   "key_type": "ed25519",
   "public_key_multibase": "z6Mk...",
   "private_key_multibase": "z..."
+}
+```
+
+#### sign-request
+
+Request body:
+
+```json
+{
+  "key_id": "did:webvh:example.com#key-0",
+  "payload": "<base64url-encoded-bytes>",
+  "algorithm": "es256"
+}
+```
+
+The `algorithm` field must match the key type: `"eddsa"` for Ed25519 keys,
+`"es256"` for P-256 keys.
+
+Response body:
+
+```json
+{
+  "key_id": "did:webvh:example.com#key-0",
+  "signature": "<base64url-encoded-signature>",
+  "algorithm": "es256"
 }
 ```
 
@@ -610,6 +636,8 @@ https://firstperson.network/protocols/key-management/1.0/revoke-key
 https://firstperson.network/protocols/key-management/1.0/revoke-key-result
 https://firstperson.network/protocols/key-management/1.0/get-key-secret
 https://firstperson.network/protocols/key-management/1.0/get-key-secret-result
+https://firstperson.network/protocols/key-management/1.0/sign-request
+https://firstperson.network/protocols/key-management/1.0/sign-result
 
 # Seed Management
 https://firstperson.network/protocols/seed-management/1.0/list-seeds
