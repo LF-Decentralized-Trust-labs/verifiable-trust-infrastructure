@@ -2178,6 +2178,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "didcomm-test"
+version = "0.1.1"
+dependencies = [
+ "affinidi-did-resolver-cache-sdk",
+ "affinidi-tdk",
+ "clap",
+ "ed25519-dalek",
+ "ed25519-dalek-bip32",
+ "hex",
+ "multibase",
+ "rand 0.10.0",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "vta-sdk",
+]
+
+[[package]]
 name = "didwebvh-rs"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

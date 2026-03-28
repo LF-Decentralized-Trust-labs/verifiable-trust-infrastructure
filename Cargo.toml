@@ -2,6 +2,7 @@
 [workspace]
 members = [
   "cnm-cli",
+  "didcomm-test",
   "pnm-cli",
   "vta-cli-common",
   "vta-sdk",
