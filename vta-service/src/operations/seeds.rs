@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use tracing::info;
 
+use crate::audit::{self, audit};
 use vta_sdk::protocols::seed_management::{
     list::{ListSeedsResultBody, SeedInfo},
     rotate::RotateSeedResultBody,
@@ -48,6 +49,8 @@ pub async fn list_seeds(
 pub async fn rotate_seed(
     keys_ks: &KeyspaceHandle,
     seed_store: &Arc<dyn SeedStore>,
+    audit_ks: &KeyspaceHandle,
+    actor: &str,
     mnemonic: Option<&str>,
     channel: &str,
 ) -> Result<RotateSeedResultBody, AppError> {
@@ -60,6 +63,8 @@ pub async fn rotate_seed(
         .map_err(|e| AppError::Internal(format!("{e}")))?;
 
     info!(channel, previous_id, new_id, "seed rotated");
+    audit!("seed.rotate", actor = actor, resource = "seed", outcome = "success");
+    let _ = audit::record(audit_ks, "seed.rotate", actor, Some("seed"), "success", Some(channel), None).await;
 
     Ok(RotateSeedResultBody {
         previous_seed_id: previous_id,

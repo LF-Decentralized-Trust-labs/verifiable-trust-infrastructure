@@ -5,6 +5,7 @@ use vta_sdk::protocols::audit_management::list::{
 };
 use vta_sdk::protocols::audit_management::retention::RetentionResultBody;
 
+use crate::audit::{self, audit};
 use crate::auth::AuthClaims;
 use crate::config::AppConfig;
 use crate::error::AppError;
@@ -95,6 +96,7 @@ pub async fn get_retention(
 /// Update the audit retention period (super-admin only).
 pub async fn update_retention(
     config: &Arc<RwLock<AppConfig>>,
+    audit_ks: &KeyspaceHandle,
     auth: &AuthClaims,
     retention_days: u32,
     channel: &str,
@@ -119,5 +121,7 @@ pub async fn update_retention(
 
     std::fs::write(&path, contents).map_err(AppError::Io)?;
     tracing::info!(channel, retention_days, "audit retention updated");
+    audit!("audit.retention_update", actor = &auth.did, resource = retention_days, outcome = "success");
+    let _ = audit::record(audit_ks, "audit.retention_update", &auth.did, Some(&retention_days.to_string()), "success", Some(channel), None).await;
     Ok(result)
 }

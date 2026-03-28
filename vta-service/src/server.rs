@@ -34,6 +34,15 @@ use tower_http::trace::{DefaultMakeSpan, DefaultOnRequest, DefaultOnResponse, Tr
 use tracing::Level;
 use tracing::{debug, error, info, warn};
 
+#[cfg(feature = "didcomm")]
+use affinidi_messaging_didcomm_service::{
+    DIDCommService, DIDCommServiceConfig, ListenerConfig, RestartPolicy, RetryConfig,
+};
+#[cfg(feature = "didcomm")]
+use affinidi_tdk_common::profiles::TDKProfile;
+#[cfg(feature = "didcomm")]
+use tokio_util::sync::CancellationToken;
+
 /// TEE context passed by the caller (main.rs or vta-enclave).
 /// None when running outside a TEE.
 ///
@@ -200,11 +209,17 @@ pub async fn run(
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
     // Spawn signal handler on the main tokio runtime
+    #[cfg(feature = "didcomm")]
+    let didcomm_shutdown = CancellationToken::new();
     tokio::spawn({
         let shutdown_tx = shutdown_tx.clone();
+        #[cfg(feature = "didcomm")]
+        let didcomm_shutdown = didcomm_shutdown.clone();
         async move {
             shutdown_signal().await;
             let _ = shutdown_tx.send(true);
+            #[cfg(feature = "didcomm")]
+            didcomm_shutdown.cancel();
         }
     });
 
@@ -215,14 +230,14 @@ pub async fn run(
     let storage_auth_config = config.auth.clone();
     let has_auth = jwt_keys.is_some();
 
-    // Shared DIDComm bridge (set by the DIDComm thread once ATM is ready)
+    // Shared DIDComm bridge (still used by REST handlers for WebVH request-response)
     #[cfg(feature = "didcomm")]
     let didcomm_bridge: Arc<tokio::sync::RwLock<Option<DIDCommBridge>>> = Arc::new(tokio::sync::RwLock::new(None));
 
-    // Clone handles for DIDComm before REST takes ownership
+    // Build VtaState for the DIDComm service router
     #[cfg(feature = "didcomm")]
-    let didcomm_state = if config.services.didcomm {
-        Some(messaging::DidcommState {
+    let vta_state = if config.services.didcomm {
+        Some(Arc::new(messaging::router::VtaState {
             keys_ks: keys_ks.clone(),
             acl_ks: acl_ks.clone(),
             contexts_ks: contexts_ks.clone(),
@@ -232,10 +247,9 @@ pub async fn run(
             seed_store: seed_store.clone(),
             config: Arc::new(RwLock::new(config.clone())),
             did_resolver: did_resolver.clone(),
-            didcomm_bridge: didcomm_bridge.clone(),
             #[cfg(feature = "tee")]
-            tee_state: tee_context.as_ref().and_then(|tc| Some(tc.state.clone())),
-        })
+            tee_state: tee_context.as_ref().map(|tc| tc.state.clone()),
+        }))
     } else {
         None
     };
@@ -275,32 +289,67 @@ pub async fn run(
     #[cfg(not(feature = "rest"))]
     let rest_handle: Option<std::thread::JoinHandle<()>> = None;
 
-    // Spawn DIDComm thread (conditional)
+    // Start DIDComm service (conditional)
     #[cfg(feature = "didcomm")]
-    let didcomm_handle = if let Some(didcomm_state) = didcomm_state {
-        let didcomm_secrets = secrets_resolver;
-        let didcomm_vta_did = config.vta_did.clone();
-        let mut didcomm_shutdown_rx = shutdown_rx.clone();
-        let didcomm_bridge_lock = didcomm_bridge;
-        Some(
-            std::thread::Builder::new()
-                .name("vta-didcomm".into())
-                .spawn(move || {
-                    run_didcomm_thread(
-                        didcomm_secrets,
-                        didcomm_vta_did,
-                        didcomm_state,
-                        &mut didcomm_shutdown_rx,
-                        didcomm_bridge_lock,
-                    )
-                })
-                .map_err(|e| AppError::Internal(format!("failed to spawn DIDComm thread: {e}")))?,
-        )
+    let didcomm_service: Option<DIDCommService> = if let Some(ref vta_state) = vta_state {
+        match (&secrets_resolver, &config.vta_did, &config.messaging) {
+            (Some(sr), Some(vta_did), Some(messaging_config)) => {
+                // Collect secrets from the resolver for the TDKProfile
+                let mut secrets = Vec::new();
+                let signing_id = format!("{vta_did}#key-0");
+                let ka_id = format!("{vta_did}#key-1");
+                if let Some(s) = sr.get_secret(&signing_id).await {
+                    secrets.push(s);
+                }
+                if let Some(s) = sr.get_secret(&ka_id).await {
+                    secrets.push(s);
+                }
+
+                let profile = TDKProfile::new(
+                    "VTA",
+                    vta_did,
+                    Some(&messaging_config.mediator_did),
+                    secrets,
+                );
+
+                let service_config = DIDCommServiceConfig {
+                    listeners: vec![ListenerConfig {
+                        id: "vta-main".into(),
+                        profile,
+                        restart_policy: RestartPolicy::Always {
+                            backoff: RetryConfig {
+                                initial_delay_secs: 5,
+                                max_delay_secs: 60,
+                            },
+                        },
+                        ..Default::default()
+                    }],
+                };
+
+                let router = messaging::router::build_router(Arc::clone(vta_state))
+                    .map_err(|e| AppError::Internal(format!("failed to build DIDComm router: {e}")))?;
+
+                match DIDCommService::start(service_config, router, didcomm_shutdown.clone()).await {
+                    Ok(service) => {
+                        info!("DIDComm service started");
+                        Some(service)
+                    }
+                    Err(e) => {
+                        warn!("failed to start DIDComm service: {e}");
+                        None
+                    }
+                }
+            }
+            _ => {
+                info!("DIDComm not configured — service not started");
+                None
+            }
+        }
     } else {
         None
     };
     #[cfg(not(feature = "didcomm"))]
-    let didcomm_handle: Option<std::thread::JoinHandle<()>> = None;
+    let didcomm_service: Option<()> = None;
 
     // Storage thread always runs
     let mut storage_shutdown_rx = shutdown_rx.clone();
@@ -319,9 +368,11 @@ pub async fn run(
         })
         .map_err(|e| AppError::Internal(format!("failed to spawn storage thread: {e}")))?;
 
-    // Join service threads
+    // Wait for shutdown signal (blocks until SIGINT/SIGTERM or a service thread exits)
     let mut any_panic = false;
 
+    // If REST is running, wait for it to stop (it blocks on its own shutdown_rx).
+    // If REST is not running, wait directly for the shutdown signal.
     if let Some(handle) = rest_handle {
         match tokio::task::spawn_blocking(move || handle.join()).await {
             Ok(Ok(())) => info!("REST thread stopped"),
@@ -334,21 +385,22 @@ pub async fn run(
                 any_panic = true;
             }
         }
+    } else {
+        // No REST thread — wait for the shutdown signal directly so the DIDComm
+        // service stays alive until SIGINT/SIGTERM.
+        let mut wait_rx = shutdown_rx.clone();
+        let _ = wait_rx.changed().await;
     }
 
-    if let Some(handle) = didcomm_handle {
-        match tokio::task::spawn_blocking(move || handle.join()).await {
-            Ok(Ok(())) => info!("DIDComm thread stopped"),
-            Ok(Err(_panic)) => {
-                error!("DIDComm thread panicked");
-                any_panic = true;
-            }
-            Err(e) => {
-                error!("failed to join DIDComm thread: {e}");
-                any_panic = true;
-            }
-        }
+    // Signal DIDComm service to stop and wait for graceful shutdown
+    #[cfg(feature = "didcomm")]
+    if let Some(service) = didcomm_service {
+        didcomm_shutdown.cancel();
+        service.shutdown().await;
+        info!("DIDComm service stopped");
     }
+    #[cfg(not(feature = "didcomm"))]
+    drop(didcomm_service);
 
     if any_panic {
         let _ = shutdown_tx.send(true);
@@ -467,12 +519,10 @@ fn run_rest_thread(
     });
 }
 
-/// DIDComm thread: connects to the mediator and processes inbound messages.
-///
-/// Retries with exponential backoff (5 s -> 60 s cap) when the mediator
-/// connection fails or drops. The bridge is cleared while reconnecting so
-/// REST handlers can report the correct status.
+/// Legacy DIDComm thread — replaced by DIDCommService in the new architecture.
+/// Kept temporarily for reference; will be removed in cleanup PR.
 #[cfg(feature = "didcomm")]
+#[allow(dead_code)]
 fn run_didcomm_thread(
     secrets_resolver: Option<Arc<ThreadedSecretsResolver>>,
     vta_did: Option<String>,

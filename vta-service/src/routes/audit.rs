@@ -4,7 +4,6 @@ use axum::extract::{Query, State};
 use vta_sdk::protocols::audit_management::list::{ListAuditLogsBody, ListAuditLogsResultBody};
 use vta_sdk::protocols::audit_management::retention::{RetentionResultBody, UpdateRetentionBody};
 
-use crate::audit::audit;
 use crate::auth::{AdminAuth, SuperAdminAuth};
 use crate::error::AppError;
 use crate::operations;
@@ -43,8 +42,7 @@ pub async fn update_retention(
     Json(body): Json<UpdateRetentionBody>,
 ) -> Result<Json<RetentionResultBody>, AppError> {
     let result = operations::audit::update_retention(
-        &state.config, &auth.0, body.retention_days, "rest",
+        &state.config, &state.audit_ks, &auth.0, body.retention_days, "rest",
     ).await?;
-    audit!("audit.retention_update", actor = &auth.0.did, resource = body.retention_days, outcome = "success");
     Ok(Json(result))
 }
