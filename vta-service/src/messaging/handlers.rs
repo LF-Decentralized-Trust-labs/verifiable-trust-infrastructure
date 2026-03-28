@@ -8,6 +8,8 @@
 
 use std::sync::Arc;
 
+use base64::Engine;
+
 use affinidi_messaging_didcomm::Message;
 use affinidi_messaging_didcomm_service::{
     DIDCommResponse, DIDCommServiceError, Extension, HandlerContext, ProblemReport,
@@ -146,6 +148,26 @@ pub async fn handle_get_key_secret(
         &state.keys_ks, &state.seed_store, &state.audit_ks, &auth, &body.key_id, "didcomm",
     ).await.map_err(handler_err)?;
     response(key_management::GET_KEY_SECRET_RESULT, &result)
+}
+
+pub async fn handle_sign_request(
+    _ctx: HandlerContext,
+    message: Message,
+    Extension(state): Extension<Arc<VtaState>>,
+) -> HandlerResult {
+    let auth = auth_from_message(&message, &state.acl_ks).await.map_err(handler_err)?;
+    let body: vta_sdk::protocols::key_management::sign::SignRequestBody =
+        serde_json::from_value(message.body).map_err(handler_err)?;
+
+    let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(&body.payload)
+        .map_err(|e| handler_err(format!("invalid base64url payload: {e}")))?;
+
+    let result = operations::keys::sign_payload(
+        &state.keys_ks, &state.seed_store, &auth,
+        &body.key_id, &payload, &body.algorithm, "didcomm",
+    ).await.map_err(handler_err)?;
+    response(key_management::SIGN_RESULT, &result)
 }
 
 // ---------------------------------------------------------------------------

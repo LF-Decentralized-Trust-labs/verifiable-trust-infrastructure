@@ -1,5 +1,7 @@
 use std::path::PathBuf;
 
+use p256::elliptic_curve::sec1::ToEncodedPoint;
+
 use crate::config::AppConfig;
 use crate::keys::derivation::Bip32Extension;
 use crate::keys::seed_store::create_seed_store;
@@ -101,18 +103,48 @@ pub async fn run_keys_secrets(
         let bip32 = ed25519_dalek_bip32::ExtendedSigningKey::from_seed(&seed)
             .map_err(|e| format!("failed to create BIP-32 root key: {e}"))?;
 
-        let secret = match record.key_type {
-            KeyType::Ed25519 => bip32.derive_ed25519(&record.derivation_path),
-            KeyType::X25519 => bip32.derive_x25519(&record.derivation_path),
-        }
-        .map_err(|e| format!("failed to derive key {key_id}: {e}"))?;
-
-        let public = secret
-            .get_public_keymultibase()
-            .map_err(|e| format!("{e}"))?;
-        let private = secret
-            .get_private_keymultibase()
-            .map_err(|e| format!("{e}"))?;
+        let (public, private) = match record.key_type {
+            KeyType::Ed25519 => {
+                let secret = bip32
+                    .derive_ed25519(&record.derivation_path)
+                    .map_err(|e| format!("failed to derive key {key_id}: {e}"))?;
+                (
+                    secret
+                        .get_public_keymultibase()
+                        .map_err(|e| format!("{e}"))?,
+                    secret
+                        .get_private_keymultibase()
+                        .map_err(|e| format!("{e}"))?,
+                )
+            }
+            KeyType::X25519 => {
+                let secret = bip32
+                    .derive_x25519(&record.derivation_path)
+                    .map_err(|e| format!("failed to derive key {key_id}: {e}"))?;
+                (
+                    secret
+                        .get_public_keymultibase()
+                        .map_err(|e| format!("{e}"))?,
+                    secret
+                        .get_private_keymultibase()
+                        .map_err(|e| format!("{e}"))?,
+                )
+            }
+            KeyType::P256 => {
+                let p256_secret = bip32
+                    .derive_p256(&record.derivation_path)
+                    .map_err(|e| format!("failed to derive key {key_id}: {e}"))?;
+                let verifying_key = p256_secret.secret_key.public_key();
+                let encoded = verifying_key.to_encoded_point(true);
+                (
+                    multibase::encode(multibase::Base::Base58Btc, encoded.as_bytes()),
+                    multibase::encode(
+                        multibase::Base::Base58Btc,
+                        p256_secret.secret_key.to_bytes(),
+                    ),
+                )
+            }
+        };
 
         eprintln!("Key ID:               {}", record.key_id);
         eprintln!("Key Type:             {}", record.key_type);
