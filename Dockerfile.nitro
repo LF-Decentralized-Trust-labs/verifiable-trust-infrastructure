@@ -42,9 +42,10 @@ COPY vtc-service/Cargo.toml vtc-service/Cargo.toml
 COPY vti-common/Cargo.toml vti-common/Cargo.toml
 COPY cnm-cli/Cargo.toml cnm-cli/Cargo.toml
 COPY pnm-cli/Cargo.toml pnm-cli/Cargo.toml
+COPY didcomm-test/Cargo.toml didcomm-test/Cargo.toml
 
 # Create dummy source files so cargo can resolve the workspace
-RUN mkdir -p vta-sdk/src vta-service/src vta-enclave/src vta-cli-common/src vtc-service/src vti-common/src cnm-cli/src pnm-cli/src && \
+RUN mkdir -p vta-sdk/src vta-service/src vta-enclave/src vta-cli-common/src vtc-service/src vti-common/src cnm-cli/src pnm-cli/src didcomm-test/src && \
     echo "pub fn dummy() {}" > vta-sdk/src/lib.rs && \
     echo "pub fn dummy() {}" > vta-service/src/lib.rs && \
     echo "fn main() {}" > vta-service/src/main.rs && \
@@ -53,7 +54,8 @@ RUN mkdir -p vta-sdk/src vta-service/src vta-enclave/src vta-cli-common/src vtc-
     echo "fn main() {}" > vtc-service/src/main.rs && \
     echo "pub fn dummy() {}" > vti-common/src/lib.rs && \
     echo "fn main() {}" > cnm-cli/src/main.rs && \
-    echo "fn main() {}" > pnm-cli/src/main.rs
+    echo "fn main() {}" > pnm-cli/src/main.rs && \
+    echo "fn main() {}" > didcomm-test/src/main.rs
 
 # Feature flags for the VTA enclave build.
 # Override with: docker build --build-arg FEATURES="didcomm,vsock-store" ...
@@ -82,6 +84,7 @@ COPY vtc-service/ vtc-service/
 COPY vti-common/ vti-common/
 COPY cnm-cli/ cnm-cli/
 COPY pnm-cli/ pnm-cli/
+COPY didcomm-test/ didcomm-test/
 
 # Touch source files to invalidate the dummy build cache
 RUN find vta-sdk/src vta-service/src vta-enclave/src vta-cli-common/src vti-common/src -name '*.rs' -exec touch {} +
