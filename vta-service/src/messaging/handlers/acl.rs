@@ -26,6 +26,7 @@ pub async fn handle_create_acl(
 
     let result = operations::acl::create_acl(
         &state.acl_ks,
+        &state.audit_ks,
         &auth,
         &body.did,
         role,
@@ -77,6 +78,7 @@ pub async fn handle_update_acl(
 
     let result = operations::acl::update_acl(
         &state.acl_ks,
+        &state.audit_ks,
         &auth,
         &body.did,
         operations::acl::UpdateAclParams {
@@ -101,6 +103,6 @@ didcomm_handler!(handle_delete_acl,
     body: vta_sdk::protocols::acl_management::delete::DeleteAclBody,
     result: acl_management::DELETE_ACL_RESULT,
     |state, auth, body| operations::acl::delete_acl(
-        &state.acl_ks, &auth, &body.did, "didcomm",
+        &state.acl_ks, &state.audit_ks, &auth, &body.did, "didcomm",
     )
 );

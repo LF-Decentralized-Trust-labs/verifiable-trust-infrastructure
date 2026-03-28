@@ -11,7 +11,6 @@ use vta_sdk::protocols::seed_management::{
     list::ListSeedsResultBody, rotate::RotateSeedResultBody,
 };
 
-use crate::audit::audit;
 use crate::auth::{AdminAuth, AuthClaims};
 use crate::error::AppError;
 use crate::keys::KeyRecord;
@@ -39,6 +38,7 @@ pub async fn create_key(
         &state.keys_ks,
         &state.contexts_ks,
         &state.seed_store,
+        &state.audit_ks,
         &auth.0,
         operations::keys::CreateKeyParams {
             key_type: req.key_type,
@@ -51,7 +51,6 @@ pub async fn create_key(
         "rest",
     )
     .await?;
-    audit!("key.create", actor = &auth.0.did, resource =&result.key_id, outcome = "success");
     Ok((StatusCode::CREATED, Json(result)))
 }
 
@@ -63,12 +62,12 @@ pub async fn get_key_secret(
     let result = operations::keys::get_key_secret(
         &state.keys_ks,
         &state.seed_store,
+        &state.audit_ks,
         &auth.0,
         &key_id,
         "rest",
     )
     .await?;
-    audit!("key.secret_export", actor = &auth.0.did, resource =&key_id, outcome = "success");
     Ok(Json(result))
 }
 
@@ -86,8 +85,7 @@ pub async fn invalidate_key(
     State(state): State<AppState>,
     Path(key_id): Path<String>,
 ) -> Result<Json<RevokeKeyResultBody>, AppError> {
-    let result = operations::keys::revoke_key(&state.keys_ks, &auth.0, &key_id, "rest").await?;
-    audit!("key.revoke", actor = &auth.0.did, resource =&key_id, outcome = "success");
+    let result = operations::keys::revoke_key(&state.keys_ks, &state.audit_ks, &auth.0, &key_id, "rest").await?;
     Ok(Json(result))
 }
 
@@ -103,7 +101,7 @@ pub async fn rename_key(
     Json(req): Json<RenameKeyRequest>,
 ) -> Result<Json<RenameKeyResultBody>, AppError> {
     let result =
-        operations::keys::rename_key(&state.keys_ks, &auth.0, &key_id, &req.key_id, "rest").await?;
+        operations::keys::rename_key(&state.keys_ks, &state.audit_ks, &auth.0, &key_id, &req.key_id, "rest").await?;
     Ok(Json(result))
 }
 
@@ -158,10 +156,11 @@ pub async fn rotate_seed(
     let result = operations::seeds::rotate_seed(
         &state.keys_ks,
         &state.seed_store,
+        &state.audit_ks,
+        &_auth.0.did,
         req.mnemonic.as_deref(),
         "rest",
     )
     .await?;
-    audit!("seed.rotate", actor = &_auth.0.did, resource ="seed", outcome = "success");
     Ok(Json(result))
 }

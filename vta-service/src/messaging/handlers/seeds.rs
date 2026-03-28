@@ -22,6 +22,8 @@ didcomm_handler!(handle_rotate_seed,
     |state, auth, body| operations::seeds::rotate_seed(
         &state.keys_ks,
         &state.seed_store,
+        &state.audit_ks,
+        &auth.did,
         body.mnemonic.as_deref(),
         "didcomm",
     )

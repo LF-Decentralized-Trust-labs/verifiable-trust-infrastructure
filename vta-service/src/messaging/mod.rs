@@ -1,6 +1,8 @@
 pub mod auth;
 pub mod handlers;
 pub mod response;
+pub mod router;
+pub mod service_handlers;
 
 use std::sync::Arc;
 

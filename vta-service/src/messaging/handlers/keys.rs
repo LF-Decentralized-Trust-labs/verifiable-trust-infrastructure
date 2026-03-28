@@ -17,6 +17,7 @@ didcomm_handler!(handle_create_key,
         &state.keys_ks,
         &state.contexts_ks,
         &state.seed_store,
+        &state.audit_ks,
         &auth,
         operations::keys::CreateKeyParams {
             key_type: body.key_type,
@@ -63,7 +64,7 @@ didcomm_handler!(handle_rename_key,
     auth: admin,
     result: key_management::RENAME_KEY_RESULT,
     |state, auth, body| operations::keys::rename_key(
-        &state.keys_ks, &auth, &body.key_id, &body.new_key_id, "didcomm",
+        &state.keys_ks, &state.audit_ks, &auth, &body.key_id, &body.new_key_id, "didcomm",
     )
 );
 
@@ -72,7 +73,7 @@ didcomm_handler!(handle_revoke_key,
     auth: admin,
     result: key_management::REVOKE_KEY_RESULT,
     |state, auth, body| operations::keys::revoke_key(
-        &state.keys_ks, &auth, &body.key_id, "didcomm",
+        &state.keys_ks, &state.audit_ks, &auth, &body.key_id, "didcomm",
     )
 );
 
@@ -81,6 +82,6 @@ didcomm_handler!(handle_get_key_secret,
     auth: admin,
     result: key_management::GET_KEY_SECRET_RESULT,
     |state, auth, body| operations::keys::get_key_secret(
-        &state.keys_ks, &state.seed_store, &auth, &body.key_id, "didcomm",
+        &state.keys_ks, &state.seed_store, &state.audit_ks, &auth, &body.key_id, "didcomm",
     )
 );

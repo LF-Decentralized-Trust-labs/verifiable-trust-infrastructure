@@ -8,6 +8,7 @@ use vta_sdk::protocols::key_management::{
     revoke::RevokeKeyResultBody, secret::GetKeySecretResultBody,
 };
 
+use crate::audit::{self, audit};
 use crate::auth::AuthClaims;
 use crate::contexts::get_context;
 use crate::error::{AppError, key_derivation_error};
@@ -38,6 +39,7 @@ pub async fn create_key(
     keys_ks: &KeyspaceHandle,
     contexts_ks: &KeyspaceHandle,
     seed_store: &Arc<dyn SeedStore>,
+    audit_ks: &KeyspaceHandle,
     auth: &AuthClaims,
     params: CreateKeyParams,
     channel: &str,
@@ -112,6 +114,8 @@ pub async fn create_key(
     keys_ks.insert(keys::store_key(&key_id), &record).await?;
 
     info!(channel, key_id = %key_id, key_type = ?params.key_type, path = %derivation_path, "key created");
+    audit!("key.create", actor = &auth.did, resource = &key_id, outcome = "success");
+    let _ = audit::record(audit_ks, "key.create", &auth.did, Some(&key_id), "success", Some(channel), context_id.as_deref()).await;
 
     Ok(CreateKeyResultBody {
         key_id,
@@ -199,6 +203,7 @@ pub async fn list_keys(
 
 pub async fn rename_key(
     keys_ks: &KeyspaceHandle,
+    audit_ks: &KeyspaceHandle,
     auth: &AuthClaims,
     key_id: &str,
     new_key_id: &str,
@@ -230,6 +235,8 @@ pub async fn rename_key(
     }
 
     info!(channel, old_id = %key_id, new_id = %new_key_id, "key renamed");
+    audit!("key.rename", actor = &auth.did, resource = new_key_id, outcome = "success");
+    let _ = audit::record(audit_ks, "key.rename", &auth.did, Some(new_key_id), "success", Some(channel), record.context_id.as_deref()).await;
 
     Ok(RenameKeyResultBody {
         key_id: new_key_id.to_string(),
@@ -239,6 +246,7 @@ pub async fn rename_key(
 
 pub async fn revoke_key(
     keys_ks: &KeyspaceHandle,
+    audit_ks: &KeyspaceHandle,
     auth: &AuthClaims,
     key_id: &str,
     channel: &str,
@@ -270,6 +278,8 @@ pub async fn revoke_key(
     keys_ks.insert(store_key, &record).await?;
 
     info!(channel, key_id = %key_id, "key revoked");
+    audit!("key.revoke", actor = &auth.did, resource = key_id, outcome = "success");
+    let _ = audit::record(audit_ks, "key.revoke", &auth.did, Some(key_id), "success", Some(channel), record.context_id.as_deref()).await;
 
     Ok(RevokeKeyResultBody {
         key_id: key_id.to_string(),
@@ -281,6 +291,7 @@ pub async fn revoke_key(
 pub async fn get_key_secret(
     keys_ks: &KeyspaceHandle,
     seed_store: &Arc<dyn SeedStore>,
+    audit_ks: &KeyspaceHandle,
     auth: &AuthClaims,
     key_id: &str,
     channel: &str,
@@ -310,6 +321,8 @@ pub async fn get_key_secret(
     };
 
     info!(channel, key_id = %key_id, "key secret retrieved");
+    audit!("key.secret_export", actor = &auth.did, resource = key_id, outcome = "success");
+    let _ = audit::record(audit_ks, "key.secret_export", &auth.did, Some(key_id), "success", Some(channel), record.context_id.as_deref()).await;
 
     Ok(GetKeySecretResultBody {
         key_id: record.key_id,

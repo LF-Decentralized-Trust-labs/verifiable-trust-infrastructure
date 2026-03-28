@@ -31,6 +31,6 @@ didcomm_handler!(handle_update_retention,
     auth: admin,
     result: audit_management::UPDATE_RETENTION_RESULT,
     |state, auth, body| operations::audit::update_retention(
-        &state.config, &auth, body.retention_days, "didcomm"
+        &state.config, &state.audit_ks, &auth, body.retention_days, "didcomm"
     )
 );

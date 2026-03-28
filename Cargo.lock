@@ -253,6 +253,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "affinidi-messaging-didcomm-service"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cba2422a25edc8a21d807af3b6dcf94061855695956faff49c9b77e0fa66a30f"
+dependencies = [
+ "affinidi-messaging-didcomm",
+ "affinidi-messaging-sdk",
+ "affinidi-secrets-resolver",
+ "affinidi-tdk-common",
+ "async-trait",
+ "regex",
+ "serde",
+ "serde_json",
+ "sha256",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
 name = "affinidi-messaging-sdk"
 version = "0.16.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7010,6 +7033,7 @@ dependencies = [
  "bytes",
  "futures-core",
  "futures-sink",
+ "futures-util",
  "pin-project-lite",
  "tokio",
 ]
@@ -7612,7 +7636,10 @@ dependencies = [
  "aes",
  "aes-gcm",
  "affinidi-did-resolver-cache-sdk",
+ "affinidi-messaging-didcomm",
+ "affinidi-messaging-didcomm-service",
  "affinidi-tdk",
+ "affinidi-tdk-common",
  "aws-config",
  "aws-sdk-kms",
  "aws-sdk-secretsmanager",
@@ -7649,6 +7676,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
+ "tokio-util",
  "toml",
  "tower 0.5.3",
  "tower-http",
