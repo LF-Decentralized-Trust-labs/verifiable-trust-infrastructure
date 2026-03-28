@@ -29,6 +29,7 @@ repository = "https://github.com/FirstPersonNetwork/vtc-vta-rs"
 
 # Affinidi Trust Development Kit
 affinidi-tdk = "0.6"
+affinidi-messaging-didcomm-service = "0.1"
 
 # Decentralized Trust Graph Credentials
 # NOTE: When this is published, switch from git to crates.io

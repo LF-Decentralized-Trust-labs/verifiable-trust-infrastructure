@@ -49,7 +49,10 @@ path = "src/main.rs"
 vti-common = { path = "../vti-common", features = ["encryption"] }
 vta-sdk = { path = "../vta-sdk", features = ["didcomm"] }
 affinidi-tdk = { workspace = true }
+affinidi-messaging-didcomm = "0.13"
+affinidi-messaging-didcomm-service = { workspace = true }
 affinidi-did-resolver-cache-sdk = { version = "0.8", features = ["network"] }
+tokio-util = { version = "0.7", features = ["rt"] }
 base64 = { workspace = true }
 axum = "0.8"
 axum-extra = { workspace = true }
