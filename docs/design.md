@@ -26,7 +26,7 @@ request/response types stay in sync.
 | Web framework  | Axum 0.8                                 |
 | Async runtime  | Tokio                                    |
 | Storage        | fjall (embedded LSM key-value store)     |
-| Cryptography   | ed25519-dalek, ed25519-dalek-bip32       |
+| Cryptography   | ed25519-dalek, ed25519-dalek-bip32, p256 |
 | DID resolution | affinidi-did-resolver-cache-sdk          |
 | DIDComm        | affinidi-tdk (didcomm, secrets_resolver) |
 | JWT            | jsonwebtoken (EdDSA / Ed25519)           |
@@ -43,6 +43,7 @@ AppState
   sessions_ks      KeyspaceHandle                         "sessions" partition
   acl_ks           KeyspaceHandle                         "acl" partition
   contexts_ks      KeyspaceHandle                         "contexts" partition
+  cache_ks         KeyspaceHandle                         "cache" partition
   config           Arc<RwLock<AppConfig>>                  runtime-mutable config
   seed_store       Arc<KeyringSeedStore>                   OS keyring for master seed
   did_resolver     Option<DIDCacheClient>                  DID resolution (None before setup)
@@ -85,7 +86,7 @@ vta-service/src/
     mod.rs         Application context CRUD, index allocation
 
   keys/
-    derivation.rs  BIP-32 Ed25519/X25519 derivation trait
+    derivation.rs  BIP-32 Ed25519/X25519/P-256 derivation trait
     paths.rs       Sequential path counter allocation
     seed_store.rs  OS keyring read/write for master seed
 
@@ -97,9 +98,10 @@ vta-service/src/
     health.rs      GET /health
     auth.rs        Challenge-response, token issue/refresh, sessions
     config.rs      GET/PATCH /config
-    keys.rs        Key CRUD
+    keys.rs        Key CRUD + signing oracle
     contexts.rs    Context CRUD
     acl.rs         ACL CRUD
+    cache.rs       Token cache (GET/PUT/DELETE)
 ```
 
 ## API Surface
@@ -131,13 +133,23 @@ vta-service/src/
 
 ### Keys
 
-| Method | Path           | Auth  | Purpose                                 |
-| ------ | -------------- | ----- | --------------------------------------- |
-| GET    | /keys          | Auth  | List (filtered by context access)       |
-| POST   | /keys          | Admin | Create (context access checked)         |
-| GET    | /keys/{key_id} | Auth  | Get key record (context access checked) |
-| DELETE | /keys/{key_id} | Admin | Invalidate key (context access checked) |
-| PATCH  | /keys/{key_id} | Admin | Rename key (context access checked)     |
+| Method | Path                  | Auth  | Purpose                                 |
+| ------ | --------------------- | ----- | --------------------------------------- |
+| GET    | /keys                 | Auth  | List (filtered by context access)       |
+| POST   | /keys                 | Admin | Create (context access checked)         |
+| GET    | /keys/{key_id}        | Auth  | Get key record (context access checked) |
+| DELETE | /keys/{key_id}        | Admin | Invalidate key (context access checked) |
+| PATCH  | /keys/{key_id}        | Admin | Rename key (context access checked)     |
+| GET    | /keys/{key_id}/secret | Admin | Export private key material              |
+| POST   | /keys/{key_id}/sign   | Auth  | Sign payload (signing oracle)           |
+
+### Cache
+
+| Method | Path         | Auth | Purpose                         |
+| ------ | ------------ | ---- | ------------------------------- |
+| GET    | /cache/{key} | Auth | Retrieve cached value           |
+| PUT    | /cache/{key} | Auth | Store value with TTL            |
+| DELETE | /cache/{key} | Auth | Delete cached value             |
 
 ### Contexts
 
@@ -301,6 +313,9 @@ See [`bip32_paths.md`](bip32_paths.md) for the full specification.
 - **Ed25519** -- signing, authentication, assertion. Multibase prefix `z6Mk`.
 - **X25519** -- key agreement (Diffie-Hellman). Derived from Ed25519 private
   key via clamping. Multibase prefix `z6LS`.
+- **P-256** -- ECDSA signing (ES256). Used for PAT JWT signing and other
+  standards requiring NIST curves. Derived via HMAC-SHA512 domain separation
+  from BIP-32 path material (see [`bip32_paths.md`](bip32_paths.md)).
 
 ### Key Record
 
@@ -308,7 +323,7 @@ See [`bip32_paths.md`](bip32_paths.md) for the full specification.
 KeyRecord {
     key_id:          String,          // "did:webvh:...#key-0"
     derivation_path: String,          // "m/26'/2'/0'/0'"
-    key_type:        KeyType,         // Ed25519 | X25519
+    key_type:        KeyType,         // Ed25519 | X25519 | P256
     status:          KeyStatus,       // Active | Revoked
     public_key:      String,          // multibase
     label:           Option<String>,
@@ -391,6 +406,33 @@ Message types used:
 | `https://affinidi.com/atm/1.0/authenticate`         | Challenge response |
 | `https://affinidi.com/atm/1.0/authenticate/refresh` | Token refresh      |
 
+### Signing Oracle
+
+The VTA can act as a **signing oracle**: clients send unsigned payloads to
+`POST /keys/{key_id}/sign` (or the DIDComm `sign-request` message type),
+and the VTA derives the key from BIP-32, signs in memory, and returns the
+base64url-encoded signature. Key material never leaves VTA and is dropped
+immediately after signing.
+
+Supported algorithms:
+
+| Algorithm | Key Type | Signature Format |
+| --------- | -------- | ---------------- |
+| `eddsa`   | Ed25519  | 64-byte Ed25519  |
+| `es256`   | P256     | 64-byte ECDSA    |
+
+### Token Cache
+
+The VTA provides a simple key-value cache scoped per caller DID for storing
+short-lived tokens (PATs, access tokens). Entries support TTL-based expiry
+with lazy cleanup on read.
+
+| Method | Path         | Purpose                |
+| ------ | ------------ | ---------------------- |
+| GET    | /cache/{key} | Read (404 if expired)  |
+| PUT    | /cache/{key} | Write with TTL         |
+| DELETE | /cache/{key} | Delete                 |
+
 ## Configuration
 
 Configuration loads from a TOML file with environment variable overrides:
@@ -438,6 +480,7 @@ All data lives in fjall keyspaces:
 | acl      | `acl:{did}`                | AclEntry (JSON)      |
 | contexts | `ctx:{id}`                 | ContextRecord (JSON) |
 | contexts | `ctx_counter`              | u32 (LE bytes)       |
+| cache    | `cache:{did}:{key}`        | CacheEntry (JSON)    |
 
 ## VTA CLI
 

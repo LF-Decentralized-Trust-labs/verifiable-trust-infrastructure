@@ -59,6 +59,7 @@ pub fn build_router(state: Arc<VtaState>) -> Result<Router, DIDCommServiceError>
         .route(key_management::RENAME_KEY, handler_fn(handlers::handle_rename_key))?
         .route(key_management::REVOKE_KEY, handler_fn(handlers::handle_revoke_key))?
         .route(key_management::GET_KEY_SECRET, handler_fn(handlers::handle_get_key_secret))?
+        .route(key_management::SIGN_REQUEST, handler_fn(handlers::handle_sign_request))?
         // Seed management
         .route(seed_management::LIST_SEEDS, handler_fn(handlers::handle_list_seeds))?
         .route(seed_management::ROTATE_SEED, handler_fn(handlers::handle_rotate_seed))?
