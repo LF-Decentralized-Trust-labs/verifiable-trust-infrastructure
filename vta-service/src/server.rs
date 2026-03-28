@@ -368,9 +368,11 @@ pub async fn run(
         })
         .map_err(|e| AppError::Internal(format!("failed to spawn storage thread: {e}")))?;
 
-    // Join service threads
+    // Wait for shutdown signal (blocks until SIGINT/SIGTERM or a service thread exits)
     let mut any_panic = false;
 
+    // If REST is running, wait for it to stop (it blocks on its own shutdown_rx).
+    // If REST is not running, wait directly for the shutdown signal.
     if let Some(handle) = rest_handle {
         match tokio::task::spawn_blocking(move || handle.join()).await {
             Ok(Ok(())) => info!("REST thread stopped"),
@@ -383,9 +385,14 @@ pub async fn run(
                 any_panic = true;
             }
         }
+    } else {
+        // No REST thread — wait for the shutdown signal directly so the DIDComm
+        // service stays alive until SIGINT/SIGTERM.
+        let mut wait_rx = shutdown_rx.clone();
+        let _ = wait_rx.changed().await;
     }
 
-    // Shutdown DIDComm service
+    // Signal DIDComm service to stop and wait for graceful shutdown
     #[cfg(feature = "didcomm")]
     if let Some(service) = didcomm_service {
         didcomm_shutdown.cancel();
