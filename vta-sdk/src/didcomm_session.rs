@@ -7,7 +7,7 @@ use affinidi_tdk::messaging::config::ATMConfig;
 use affinidi_tdk::messaging::profiles::ATMProfile;
 use affinidi_tdk::messaging::transports::SendMessageResponse;
 use affinidi_tdk::secrets_resolver::SecretsResolver;
-use tracing::debug;
+use tracing::{debug, info, warn};
 
 use crate::protocols::PROBLEM_REPORT_TYPE;
 
@@ -59,6 +59,32 @@ impl DIDCommSession {
 
         // No WebSocket — REST-only transport for CLI use
         let atm = Arc::new(atm);
+
+        // Flush stale messages from the inbox (accumulated between CLI runs)
+        {
+            use affinidi_tdk::messaging::messages::Folder;
+            match atm.list_messages(&profile, Folder::Inbox).await {
+                Ok(messages) if !messages.is_empty() => {
+                    let ids: Vec<String> = messages.iter().map(|m| m.msg_id.clone()).collect();
+                    info!(count = ids.len(), "flushing stale queued messages from inbox");
+                    let delete_req = affinidi_tdk::messaging::messages::DeleteMessageRequest {
+                        message_ids: ids,
+                    };
+                    match atm.delete_messages_direct(&profile, &delete_req).await {
+                        Ok(resp) => {
+                            debug!(
+                                deleted = resp.success.len(),
+                                errors = resp.errors.len(),
+                                "inbox flushed"
+                            );
+                        }
+                        Err(e) => warn!("failed to flush stale messages (non-fatal): {e}"),
+                    }
+                }
+                Ok(_) => {} // Empty inbox
+                Err(e) => warn!("could not list inbox (non-fatal): {e}"),
+            }
+        }
 
         debug!("DIDComm session connected via mediator {mediator_did} (REST mode)");
 
