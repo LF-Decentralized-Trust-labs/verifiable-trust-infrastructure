@@ -1,35 +1,33 @@
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use affinidi_tdk::common::TDKSharedState;
+use affinidi_tdk::didcomm::Message;
 use affinidi_tdk::messaging::ATM;
 use affinidi_tdk::messaging::config::ATMConfig;
 use affinidi_tdk::messaging::profiles::ATMProfile;
-use affinidi_tdk::messaging::transports::websockets::WebSocketResponses;
+use affinidi_tdk::messaging::transports::SendMessageResponse;
 use affinidi_tdk::secrets_resolver::SecretsResolver;
-use tokio::sync::broadcast;
-use tokio::task::JoinHandle;
-use tracing::{debug, warn};
+use tracing::debug;
 
-use crate::didcomm_transport::{PendingMap, send_and_wait_raw};
 use crate::protocols::PROBLEM_REPORT_TYPE;
 
 /// Client-side DIDComm session for request-response messaging via ATM.
 ///
-/// Mirrors the server's `DIDCommBridge` pattern but from the client side.
-/// Maintains a persistent ATM connection with a spawned inbound routing task
-/// that matches responses to pending requests by thread ID.
+/// Uses REST-based message send/receive through the mediator (no WebSocket).
+/// Designed for short-lived CLI tools that send a request and wait for a reply.
 pub struct DIDCommSession {
     atm: Arc<ATM>,
     profile: Arc<ATMProfile>,
     pub(crate) client_did: String,
     pub(crate) vta_did: String,
-    pending: PendingMap,
-    _inbound_task: JoinHandle<()>,
 }
 
 impl DIDCommSession {
     /// Connect to a VTA via DIDComm through a mediator.
+    ///
+    /// Sets up the ATM and profile for REST-based messaging. Does NOT open a
+    /// WebSocket — all communication goes through the mediator's REST API,
+    /// avoiding connection storms when the CLI is invoked repeatedly.
     pub async fn connect(
         client_did: &str,
         private_key_multibase: &str,
@@ -45,10 +43,8 @@ impl DIDCommSession {
         tdk.secrets_resolver.insert(secrets.signing).await;
         tdk.secrets_resolver.insert(secrets.key_agreement).await;
 
-        // Build ATM with inbound message channel
-        let atm_config = ATMConfig::builder()
-            .with_inbound_message_channel(100)
-            .build()?;
+        // Build ATM (no inbound channel needed — we use REST polling)
+        let atm_config = ATMConfig::builder().build()?;
         let atm = ATM::new(atm_config, Arc::new(tdk)).await?;
 
         // Create profile with mediator
@@ -61,39 +57,23 @@ impl DIDCommSession {
         .await?;
         let profile = Arc::new(profile);
 
-        // Enable WebSocket (starts live streaming from mediator)
-        atm.profile_enable_websocket(&profile).await?;
-
+        // No WebSocket — REST-only transport for CLI use
         let atm = Arc::new(atm);
-        let pending: PendingMap = Arc::new(std::sync::Mutex::new(HashMap::new()));
 
-        // Spawn inbound routing task
-        let inbound_rx = atm
-            .get_inbound_channel()
-            .ok_or("no inbound channel available")?;
-        let task_atm = atm.clone();
-        let task_profile = profile.clone();
-        let task_pending = pending.clone();
-        let inbound_task = tokio::spawn(async move {
-            run_inbound_loop(inbound_rx, &task_atm, &task_profile, &task_pending).await;
-        });
-
-        debug!("DIDComm session connected via mediator {mediator_did}");
+        debug!("DIDComm session connected via mediator {mediator_did} (REST mode)");
 
         Ok(Self {
             atm,
             profile,
             client_did: client_did.to_string(),
             vta_did: vta_did.to_string(),
-            pending,
-            _inbound_task: inbound_task,
         })
     }
 
     /// Send a DIDComm message and wait for a matching response.
     ///
-    /// Builds an encrypted message, sends it via ATM, waits for a response
-    /// matching the thread ID, then deserializes the response body.
+    /// Packs the message, sends it via the mediator's REST API, and polls
+    /// for the response. No WebSocket needed.
     pub async fn send_and_wait<T: serde::de::DeserializeOwned>(
         &self,
         msg_type: &str,
@@ -101,85 +81,65 @@ impl DIDCommSession {
         expected_result_type: &str,
         timeout_secs: u64,
     ) -> Result<T, Box<dyn std::error::Error>> {
-        let response = send_and_wait_raw(
-            &self.atm,
-            &self.profile,
-            &self.pending,
-            &self.client_did,
-            &self.vta_did,
-            msg_type,
-            body,
-            expected_result_type,
-            PROBLEM_REPORT_TYPE,
-            timeout_secs,
+        let msg_id = uuid::Uuid::new_v4().to_string();
+        let msg = Message::build(msg_id.clone(), msg_type.to_string(), body)
+            .from(self.client_did.clone())
+            .to(self.vta_did.clone())
+            .finalize();
+
+        // Pack encrypted (signed + encrypted to recipient)
+        let (packed, _) = self
+            .atm
+            .pack_encrypted(
+                &msg,
+                &self.vta_did,
+                Some(&self.client_did),
+                Some(&self.client_did),
+            )
+            .await
+            .map_err(|e| format!("failed to pack message: {e}"))?;
+
+        debug!(msg_type, msg_id, "sending via DIDComm REST");
+
+        // Send and wait for response via REST (mediator holds the response
+        // until it arrives, then returns it in the same HTTP response)
+        let response = tokio::time::timeout(
+            std::time::Duration::from_secs(timeout_secs),
+            self.atm.send_message(&self.profile, &packed, &msg_id, true, true),
         )
         .await
-        .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
+        .map_err(|_| "timeout waiting for DIDComm response")?
+        .map_err(|e| format!("failed to send/receive message: {e}"))?;
 
-        // Delete message from mediator (best-effort)
-        if let Err(e) = self
-            .atm
-            .delete_message_background(&self.profile, &response.id)
-            .await
-        {
-            warn!("failed to delete message from mediator: {e}");
+        let response_msg = match response {
+            SendMessageResponse::Message(msg) => *msg,
+            _ => return Err("no response message received from mediator".into()),
+        };
+
+        debug!(response_type = %response_msg.typ, "received DIDComm response");
+
+        // Check for problem report
+        if response_msg.typ == PROBLEM_REPORT_TYPE || response_msg.typ.contains("problem-report") {
+            let code = response_msg.body.get("code").and_then(|v| v.as_str()).unwrap_or("unknown");
+            let comment = response_msg.body.get("comment").and_then(|v| v.as_str()).unwrap_or("");
+            return Err(format!("{code}: {comment}").into());
+        }
+
+        // Verify expected type
+        if response_msg.typ != expected_result_type {
+            return Err(format!(
+                "unexpected response type: expected {expected_result_type}, got {}",
+                response_msg.typ
+            ).into());
         }
 
         // Deserialize response body
-        serde_json::from_value(response.body)
+        serde_json::from_value(response_msg.body)
             .map_err(|e| format!("failed to deserialize DIDComm response: {e}").into())
     }
 
     /// Gracefully shut down the DIDComm session.
     pub async fn shutdown(&self) {
         self.atm.graceful_shutdown().await;
-        self._inbound_task.abort();
-    }
-}
-
-/// Inbound message routing loop.
-///
-/// Receives messages from the ATM broadcast channel and routes them to
-/// pending requests by matching thread ID.
-async fn run_inbound_loop(
-    mut rx: broadcast::Receiver<WebSocketResponses>,
-    atm: &ATM,
-    profile: &Arc<ATMProfile>,
-    pending: &PendingMap,
-) {
-    loop {
-        let msg = match rx.recv().await {
-            Ok(WebSocketResponses::MessageReceived(msg, _metadata)) => *msg,
-            Ok(WebSocketResponses::PackedMessageReceived(packed)) => {
-                match atm.unpack(&packed).await {
-                    Ok((msg, _metadata)) => msg,
-                    Err(e) => {
-                        warn!("failed to unpack inbound message: {e}");
-                        continue;
-                    }
-                }
-            }
-            Err(broadcast::error::RecvError::Lagged(n)) => {
-                warn!("inbound channel lagged, missed {n} messages");
-                continue;
-            }
-            Err(broadcast::error::RecvError::Closed) => {
-                debug!("inbound channel closed");
-                break;
-            }
-        };
-
-        // Try to complete a pending request by thread ID
-        if let Some(thid) = &msg.thid {
-            if let Some(tx) = pending.lock().unwrap().remove(thid) {
-                let _ = tx.send(msg);
-                continue;
-            }
-        }
-
-        // Unexpected inbound message — delete from mediator
-        if let Err(e) = atm.delete_message_background(profile, &msg.id).await {
-            warn!("failed to delete unexpected message from mediator: {e}");
-        }
     }
 }
