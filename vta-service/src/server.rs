@@ -317,6 +317,23 @@ pub async fn run(
                     secrets,
                 );
 
+                // Build a TDKConfig for the DIDComm listener so it uses the
+                // same resolver mode as the VTA (network-mode in TEE enclaves).
+                // Without this, the listener defaults to local-mode and every
+                // JWE encrypt/decrypt triggers a fresh HTTP fetch through the
+                // HTTPS proxy — adding ~1s per message.
+                let listener_tdk_config = {
+                    let mut builder = affinidi_tdk::common::config::TDKConfig::builder()
+                        .with_load_environment(false);
+                    if let Some(ref url) = config.resolver_url {
+                        let resolver_config = DIDCacheConfigBuilder::default()
+                            .with_network_mode(url)
+                            .build();
+                        builder = builder.with_did_resolver_config(resolver_config);
+                    }
+                    builder.build().ok()
+                };
+
                 let service_config = DIDCommServiceConfig {
                     listeners: vec![ListenerConfig {
                         id: "vta-main".into(),
@@ -327,6 +344,7 @@ pub async fn run(
                                 max_delay_secs: 60,
                             },
                         },
+                        tdk_config: listener_tdk_config,
                         ..Default::default()
                     }],
                 };
