@@ -7,17 +7,39 @@ control for a Verifiable Trust Community as part of the
 
 ## Workspace
 
-The repository is a Rust workspace with three crates:
+The repository is a Rust workspace with nine crates:
 
 ```
-vtc-vta-rs/
-  vta-sdk/           Shared types (KeyRecord, ContextRecord, protocol constants)
+verifiable-trust-infrastructure/
+  vti-common/         Shared error types, utilities, and constants
+  vta-sdk/            Data model (KeyRecord, ContextRecord, protocol constants)
   vta-service/        Axum HTTP service (this document's focus)
+  vta-enclave/        TEE enclave wrapper (Nitro Enclaves / vsock proxy)
+  vtc-service/        Verifiable Trust Community service
+  vta-cli-common/     Shared CLI auth, config, and HTTP helpers
+  pnm-cli/            Personal Network Manager CLI
   cnm-cli/            Community Network Manager CLI
+  didcomm-test/       DIDComm integration test harness
 ```
 
-`vta-sdk` defines the data model. Both the service and CLI depend on it so
-request/response types stay in sync.
+`vti-common` provides foundational types used across the stack. `vta-sdk`
+defines the data model; both the service and CLIs depend on it so
+request/response types stay in sync. `vta-cli-common` factors out shared
+CLI logic (authentication, HTTP client, credential management) consumed by
+both `pnm-cli` and `cnm-cli`.
+
+```mermaid
+graph LR
+    vti-common --> vta-sdk
+    vti-common --> vta-service
+    vti-common --> vtc-service
+    vta-sdk --> vta-service
+    vta-sdk --> vta-cli-common
+    vta-sdk --> didcomm-test
+    vta-service --> vta-enclave["vta-enclave (TEE)"]
+    vta-cli-common --> pnm-cli
+    vta-cli-common --> cnm-cli
+```
 
 ## Technology Stack
 
@@ -92,6 +114,22 @@ vta-service/src/
 
   store/
     mod.rs         fjall wrapper (Store, KeyspaceHandle)
+
+  messaging/
+    mod.rs         DIDComm router (route by message type)
+    handlers/      Per-type DIDComm message handlers
+
+  operations/
+    backup.rs      Encrypted backup export/import logic
+
+  metrics.rs       Prometheus-compatible metrics collection
+
+  tee/
+    mod.rs         TEE abstraction layer
+    kms_bootstrap.rs   KMS-based seed unsealing for enclaves
+    did_autogen.rs     Auto-generate VTA DID on first boot
+    admin_bootstrap.rs Admin credential bootstrap in TEE mode
+    mnemonic_guard.rs  Mnemonic access policy (TEE vs. dev)
 
   routes/
     mod.rs         Route table
@@ -192,32 +230,19 @@ Auth levels: **Auth** = any valid JWT, **Manage** = Admin or Initiator,
 
 Authentication uses a DIDComm-based challenge-response flow:
 
-```
-Client                                 VTA
-  |                                     |
-  |  POST /auth/challenge {did}         |
-  |------------------------------------>|
-  |  {sessionId, challenge}             |
-  |<------------------------------------|
-  |                                     |
-  |  Build DIDComm message:             |
-  |    type: .../authenticate           |
-  |    body: {challenge, session_id}    |
-  |    from: client_did                 |
-  |    to:   vta_did                    |
-  |  Sign + encrypt (pack_encrypted)   |
-  |                                     |
-  |  POST /auth/ {packed_message}       |
-  |------------------------------------>|
-  |  Unpack, verify challenge+DID       |
-  |  Look up ACL (role, contexts)       |
-  |  Issue JWT + refresh token          |
-  |  {accessToken, refreshToken, ...}   |
-  |<------------------------------------|
-  |                                     |
-  |  Authorization: Bearer {JWT}        |
-  |------------------------------------>|
-  |  (protected API calls)              |
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant V as VTA
+    C->>V: POST /auth/challenge {did}
+    V->>V: Generate random challenge + session
+    V-->>C: {session_id, challenge}
+    C->>C: Build DIDComm message with challenge
+    C->>C: Sign with DID private key
+    C->>V: POST /auth/ (packed DIDComm message)
+    V->>V: Unpack + verify signature
+    V->>V: Verify challenge matches session
+    V-->>C: {access_token, refresh_token}
 ```
 
 ### JWT Claims
@@ -399,6 +424,30 @@ A typical DID document includes:
 - `keyAgreement` referencing the X25519 key.
 - `service` with a `DIDCommMessaging` endpoint routing through the mediator.
 
+## Request Flow
+
+The VTA exposes two parallel ingress paths that converge on a shared
+operations layer:
+
+```mermaid
+graph TD
+    subgraph Client
+        REST_Client[REST Client]
+        DIDComm_Client[DIDComm Client]
+    end
+    subgraph VTA
+        REST_Routes[REST Routes + Auth Extractors]
+        DIDComm_Router[DIDComm Router + MessagePolicy]
+        Operations[Shared Operations Layer]
+        Store[(fjall Store)]
+    end
+    REST_Client -->|HTTP + JWT| REST_Routes
+    DIDComm_Client -->|Mediator + JWE| DIDComm_Router
+    REST_Routes --> Operations
+    DIDComm_Router --> Operations
+    Operations --> Store
+```
+
 ## DIDComm Messaging
 
 The VTA uses DIDComm v2 for authenticated communication:
@@ -514,38 +563,6 @@ vta acl update <did> [--role ...]       Update ACL entry
 vta acl delete <did> [--yes]            Delete ACL entry
 ```
 
-## CNM CLI (cnm-cli)
+## CLI References
 
-The Community Network Manager CLI is the primary network client:
-
-```
-cnm setup                               First-time setup wizard
-cnm health                               Health check (community + personal VTA)
-cnm community list|use|add|remove|status Multi-community management
-cnm auth login <credential>              Import credential and authenticate
-cnm auth status                          Show current session
-cnm auth logout                          Clear session
-cnm config get                           Show VTA config
-cnm config update [--name ...] ...       Update config fields
-cnm keys list [--status ...]             List keys
-cnm keys create [--context-id ...]       Create key
-cnm keys get <key_id>                    Get key
-cnm keys revoke <key_id>                 Invalidate key
-cnm keys rename <key_id> <new_id>        Rename key
-cnm contexts list                        List contexts
-cnm contexts get <id>                    Get context
-cnm contexts create --id ... ...         Create context
-cnm contexts update <id> [...]           Update context
-cnm contexts delete <id>                 Delete context
-cnm contexts bootstrap --id ... ...      Create context + first admin credential
-cnm acl list [--context ...]             List ACL entries
-cnm acl get <did>                        Get ACL entry
-cnm acl create --did ... --role ...      Create ACL entry
-cnm acl update <did> [--role ...]        Update ACL entry
-cnm acl delete <did>                     Delete ACL entry
-cnm auth-credential create --role ...    Generate did:key credential with ACL entry
-```
-
-The CLI caches authentication state (tokens, credential) in the OS keyring.
-Protected commands auto-authenticate via challenge-response and refresh
-tokens when the access token nears expiry.
+See [pnm-cli/README.md](../pnm-cli/README.md) and [cnm-cli/README.md](../cnm-cli/README.md) for CLI references.

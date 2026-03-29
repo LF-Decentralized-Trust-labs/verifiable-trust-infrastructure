@@ -7,14 +7,18 @@ level, which is reserved for the First Person Network.
 
 ## Path Hierarchy
 
-```
-m/26'
-  |
-  +-- 2'/N'/K'    Application context keys
-       |
-       +-- 0'     VTA (created at setup)
-       |
-       +-- 1'+    Additional contexts (created via setup, API, or CLI)
+```mermaid
+graph TD
+    Root["m (BIP-39 seed)"] --> Purpose["26' (VTI purpose)"]
+    Purpose --> CoinType["2' (Ed25519)"]
+    CoinType --> Ctx0["0' (Context 0)"]
+    CoinType --> Ctx1["1' (Context 1)"]
+    CoinType --> CtxN["N' (Context N)"]
+    Ctx0 --> Key0["0' (Key 0)"]
+    Ctx0 --> Key1["1' (Key 1)"]
+    Purpose --> P256["256' (P-256 domain)"]
+    P256 --> P256Ctx["N' (Context)"]
+    P256Ctx --> P256Key["K' (Key)"]
 ```
 
 ## Application Contexts

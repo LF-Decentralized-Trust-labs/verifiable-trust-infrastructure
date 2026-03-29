@@ -338,6 +338,29 @@ vta_did_template = "did:webvh:{SCID}:example.com:vta"
 
 ### Component 5: Startup Sequence (TEE Mode)
 
+#### TEE Bootstrap Sequence
+
+```mermaid
+sequenceDiagram
+    participant E as Enclave
+    participant KMS as AWS KMS
+    participant S as Parent Store
+
+    Note over E: First Boot
+    E->>E: Generate BIP-39 seed + JWT key
+    E->>KMS: GenerateDataKey (with Nitro attestation)
+    KMS-->>E: KMS-encrypted data key + plaintext
+    E->>E: AES-GCM encrypt seed + JWT key
+    E->>S: Store ciphertexts via vsock
+
+    Note over E: Subsequent Boot
+    E->>S: Load ciphertexts via vsock
+    E->>KMS: Decrypt data key (with Nitro attestation)
+    KMS-->>E: Plaintext data key
+    E->>E: AES-GCM decrypt seed + JWT key
+    E->>E: Derive storage encryption key (HKDF)
+```
+
 ```
 main()
   ↓

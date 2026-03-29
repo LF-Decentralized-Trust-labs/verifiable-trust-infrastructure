@@ -56,6 +56,32 @@ The VTA implements a defense-in-depth security model with eight layers of protec
 - Connection limits prevent resource exhaustion
 - Request body size limits protect enclave memory
 
+#### Enclave Proxy Architecture
+
+```mermaid
+graph LR
+    subgraph Enclave
+        VTA[VTA Service]
+    end
+    subgraph Parent EC2
+        Proxy[Enclave Proxy]
+        Store[(fjall Store)]
+        Resolver[DID Resolver Sidecar]
+    end
+    subgraph External
+        Mediator[Mediator]
+        KMS[AWS KMS]
+        IMDS[IMDS 169.254.169.254]
+    end
+    Client -->|TCP :8443| Proxy
+    Proxy -->|vsock :5100| VTA
+    VTA -->|vsock :5200| Proxy -->|TLS| Mediator
+    VTA -->|vsock :5300| Proxy -->|HTTPS CONNECT| KMS
+    VTA -->|vsock :5400| Proxy --> IMDS
+    VTA -->|vsock :5500| Proxy --> Store
+    VTA -->|vsock :5600| Proxy --> Resolver
+```
+
 ### Layer 8: Audit & Observability
 - Structured audit events at target "audit" — never suppressed by log level
 - All security operations logged: auth, ACL changes, key operations, exports
