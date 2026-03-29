@@ -171,6 +171,19 @@ vta-service/src/
 | PATCH  | /acl/{did} | Manage | Update entry |
 | DELETE | /acl/{did} | Manage | Delete entry |
 
+### VTA Management
+
+| Method | Path            | Auth  | Purpose                     |
+| ------ | --------------- | ----- | --------------------------- |
+| POST   | /vta/restart    | Admin | Trigger soft restart        |
+
+### Backup
+
+| Method | Path            | Auth  | Purpose                     |
+| ------ | --------------- | ----- | --------------------------- |
+| POST   | /backup/export  | Admin | Export encrypted backup      |
+| POST   | /backup/import  | Admin | Import encrypted backup      |
+
 Auth levels: **Auth** = any valid JWT, **Manage** = Admin or Initiator,
 **Admin** = Admin role only, **Super Admin** = Admin with empty
 `allowed_contexts`.

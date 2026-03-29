@@ -547,6 +547,78 @@ persisted to the config file.
 
 Response body: same format as `get-config-result`.
 
+### VTA Management — Restart (`vta-management/1.0`)
+
+| Request Type | Response Type | Auth | Description |
+|---|---|---|---|
+| `.../restart` | `.../restart-result` | Admin | Trigger a soft restart |
+
+#### restart
+
+Request body: `{}` (empty)
+
+Response body:
+
+```json
+{
+  "status": "restarting"
+}
+```
+
+The VTA sends the response before restarting. Service threads shut down,
+auth/crypto re-initialize, and threads restart without a process restart.
+
+### Backup Management (`backup-management/1.0`)
+
+| Request Type | Response Type | Auth | Description |
+|---|---|---|---|
+| `.../export` | `.../export-result` | Admin | Export encrypted backup |
+| `.../import` | `.../import-result` | Admin | Import encrypted backup |
+
+#### export
+
+Request body:
+
+```json
+{
+  "password": "minimum-12-characters",
+  "include_audit": false
+}
+```
+
+Response body: A `BackupEnvelope` JSON object containing the Argon2id KDF
+parameters, AES-256-GCM encryption parameters, and the base64url-encoded
+ciphertext of all VTA state.
+
+#### import
+
+Request body:
+
+```json
+{
+  "backup": { "...BackupEnvelope..." },
+  "password": "the-export-password",
+  "confirm": true
+}
+```
+
+With `confirm: false`, returns a preview without modifying state.
+With `confirm: true`, replaces all VTA state and triggers a soft restart.
+
+Response body:
+
+```json
+{
+  "status": "imported",
+  "source_did": "did:webvh:...",
+  "key_count": 5,
+  "acl_count": 2,
+  "context_count": 3,
+  "audit_count": 0,
+  "message": "Import complete. VTA will restart with new identity."
+}
+```
+
 ### Credential Management (`credential-management/1.0`)
 
 | Request Type | Response Type | Auth | Description |

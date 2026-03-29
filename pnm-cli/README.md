@@ -223,6 +223,25 @@ has unrestricted access across all contexts.
 | --------------------------------------------------------------------------- | -------------------------------------------- |
 | `auth-credential create --role ROLE [--label LABEL] [--contexts ctx1,ctx2]` | Generate a did:key credential with ACL entry |
 
+### Backup & Restore
+
+| Command                                           | Description                                   |
+| ------------------------------------------------- | --------------------------------------------- |
+| `backup export [--include-audit] [--output FILE]` | Export encrypted backup of all VTA state       |
+| `backup import <file> [--preview]`                | Import backup (preview or apply + restart VTA) |
+
+Backups are encrypted with Argon2id + AES-256-GCM using a user-provided password (minimum 12 characters). The `.vtabak` file contains the seed, keys, ACL, contexts, WebVH records, and config.
+
+### VTA Management
+
+| Command       | Description                                           |
+| ------------- | ----------------------------------------------------- |
+| `vta list`    | List configured VTAs                                  |
+| `vta use`     | Set the default VTA                                   |
+| `vta remove`  | Remove a VTA connection                               |
+| `vta info`    | Show current VTA details                              |
+| `vta restart` | Trigger a soft restart (reloads config, reconnects)   |
+
 ## Additional Resources
 
 - [VTA Service & Architecture](../README.md)

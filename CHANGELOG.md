@@ -1,5 +1,153 @@
 # Changelog
 
+## 0.2.0 — 2026-03-29
+
+### Architecture
+
+- **vta-service / vta-enclave split** — `vta-service` is
+  now a library crate exporting all business logic.
+  `vta-enclave` is a separate binary crate for Nitro
+  Enclave deployments with TEE-specific bootstrap (KMS,
+  vsock-store, attestation). Future front-ends (SGX,
+  serverless) follow the same pattern.
+- **Soft restart** — The VTA server can now restart
+  in-process without a process restart. Service threads
+  shut down gracefully, auth/crypto re-initialize, and
+  threads restart. Exposed via `POST /vta/restart`,
+  DIDComm protocol, and `pnm vta restart`.
+- **Patched affinidi-messaging-didcomm-service** — Local
+  patch adds `tdk_config` field to `ListenerConfig` so
+  the VTA can pass its network-mode DID resolver to the
+  DIDComm service listener.
+
+### TEE / Nitro Enclave
+
+- **KMS-based secret bootstrap** — First boot generates
+  BIP-39 seed and JWT key inside the enclave, encrypts
+  with KMS `GenerateDataKey` (with Nitro attestation),
+  stores ciphertext. Subsequent boots decrypt via KMS
+  `Decrypt` with PCR enforcement.
+- **Encrypted storage** — AES-256-GCM encryption of all
+  sensitive keyspaces. Key derived from seed via HKDF.
+- **Auto-generated VTA identity** — `did:webvh` DID
+  created automatically on first boot from a template.
+- **Admin credential bootstrap** — Operator-provided
+  admin DID or auto-generated `did:key` with credential
+  bundle stored for retrieval.
+- **Seal mechanism** — Ed25519 challenge-response seal
+  prevents offline CLI modification after bootstrap.
+- **Nitro deployment infrastructure** — Dockerfile,
+  enclave entrypoint, KMS setup scripts, IAM policies,
+  full deployment guide (1,200+ lines).
+
+### DIDComm
+
+- **Migrated to affinidi-messaging-didcomm-service** —
+  Replaced manual message dispatch with typed Router,
+  handler functions, MessagePolicy middleware, and
+  RequestLogging. Handlers use `Extension<Arc<VtaState>>`
+  for shared state injection.
+- **WebSocket-based DIDComm session** — PNM CLI now uses
+  WebSocket streaming for response delivery, fixing
+  reliability issues with REST-only polling.
+- **Backup management protocol** —
+  `backup-management/1.0/export` and
+  `backup-management/1.0/import` DIDComm message types.
+- **VTA restart protocol** —
+  `vta-management/1.0/restart` DIDComm message type.
+
+### P-256 Key Support
+
+- **P-256 (secp256r1) key derivation** — New key type
+  with BIP-32 derivation using domain-separated paths
+  (`m/13'/256'/...`).
+- **Signing oracle endpoint** — `POST /keys/{key_id}/sign`
+  (REST) and `key-management/1.0/sign` (DIDComm) for
+  server-side signing with managed keys.
+- **Token cache API** — `GET/PUT/DELETE /cache/{key}` for
+  ephemeral key-value storage with TTL support.
+
+### Backup & Restore
+
+- **Export** — `POST /backup/export` and DIDComm protocol
+  serialize all VTA state (seed, keys, ACL, contexts,
+  WebVH, config, optional audit logs) into a
+  password-protected `.vtabak` file.
+- **Encryption** — Argon2id (64 MiB, 3 iterations, 4
+  parallel) derives AES-256-GCM key from user password.
+- **Import** — `POST /backup/import` decrypts, validates,
+  replaces all state, and triggers soft restart. Preview
+  mode (`confirm=false`) shows what would change.
+- **TEE re-encryption** — On import in TEE mode,
+  `re_encrypt_bootstrap_secrets()` re-encrypts the
+  imported seed and JWT key with the enclave's KMS key.
+- **PNM CLI** — `pnm backup export [--include-audit]`
+  and `pnm backup import <file> [--preview]`.
+
+### Performance
+
+- **DIDComm service DID resolver fix** — The DIDComm
+  service listener was creating a local-mode DID resolver
+  (ignoring network-mode config), causing ~1s of uncached
+  HTTP DID resolution per message through the HTTPS proxy.
+  Fixed via patched crate with `tdk_config` passthrough.
+- **Reusable TrustPingSession** — PNM health command now
+  creates one ATM + WebSocket connection for both mediator
+  and VTA pings, eliminating ~4s of duplicate setup.
+- **Shared DID resolver** — Single `DIDCacheClient` across
+  all health check operations.
+
+### CLI
+
+- **DIDComm-only mode** — PNM CLI works without a REST
+  URL, using DIDComm through the mediator for all
+  operations.
+- **Multi-VTA support** — `pnm vta list/use/remove/info`
+  for managing connections to multiple VTAs.
+- **`pnm vta restart`** — Trigger soft restart remotely.
+- **`pnm backup export/import`** — Remote backup and
+  restore with password protection.
+- **Trust-ping in health** — `pnm health` now pings both
+  the mediator and VTA through DIDComm with latency
+  display.
+
+### Enclave Proxy
+
+- **Rust rewrite** — Replaced shell-based parent proxy
+  with a Rust binary (`enclave-proxy`).
+- **7-channel multiplexer** — Inbound REST, outbound
+  mediator (TLS), HTTPS CONNECT proxy, IMDS credential
+  proxy, persistent storage (fjall), DID resolver bridge,
+  log forwarding.
+- **Embedded Affinidi DID resolver** — Resolves mediator
+  DID locally without external resolver service.
+- **Connection limit** — Semaphore-based limit (256) per
+  channel to prevent resource exhaustion.
+
+### Breaking Changes
+
+- **`vta-service` is now a library** — The local/dev
+  binary is still included, but TEE deployments use
+  `vta-enclave` which depends on `vta-service` as a
+  library.
+- **DIDComm handler signatures changed** — Handlers now
+  use `(HandlerContext, Message, Extension<Arc<VtaState>>)`
+  pattern from `affinidi-messaging-didcomm-service`.
+- **Workspace version bumped to 0.2.0** — All crates
+  updated.
+
+### Dependency Updates
+
+- `affinidi-messaging-didcomm-service` 0.1.2 (patched
+  locally for TDK config passthrough)
+- `didwebvh-rs` 0.3 → 0.4
+- `tokio-vsock` 0.5 → 0.7
+- `argon2` 0.5 (new — backup encryption)
+- `aes-gcm` 0.10
+- `hmac` 0.12
+
+---
+
 ## 2026-03-21
 
 ### vti-common `0.1.1` (new crate)

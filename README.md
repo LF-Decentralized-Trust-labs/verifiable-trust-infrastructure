@@ -25,14 +25,19 @@ Manager (CNM) CLI.
 
 ## Overview
 
-The repository is a Rust workspace with four crates:
+The repository is a Rust workspace:
 
-| Crate           | Description                                                                                             |
-| --------------- | ------------------------------------------------------------------------------------------------------- |
-| **vta-service** | Axum HTTP service -- the VTA itself. Manages keys, contexts, ACL, sessions, and DIDComm authentication. |
-| **vta-sdk**     | Shared SDK: types, VTA HTTP client, session/auth logic, and protocol constants.                         |
-| **cnm-cli**     | Community Network Manager CLI -- multi-community client for operating VTAs.                             |
-| **pnm-cli**     | Personal Network Manager CLI -- simpler single-VTA client for personal use.                             |
+| Crate               | Description                                                                                             |
+| -------------------- | ------------------------------------------------------------------------------------------------------- |
+| **vta-service**      | VTA library and local/dev binary. Manages keys, contexts, ACL, sessions, DIDComm, and backup/restore.   |
+| **vta-enclave**      | VTA binary for AWS Nitro Enclaves (TEE bootstrap, KMS, vsock-store, attestation).                       |
+| **vta-sdk**          | Shared SDK: types, VTA HTTP/DIDComm client, session/auth logic, and protocol constants.                 |
+| **vti-common**       | Shared foundation: auth, ACL, store abstraction (local + vsock), error types, config.                   |
+| **vta-cli-common**   | Shared CLI command implementations used by both pnm-cli and cnm-cli.                                    |
+| **cnm-cli**          | Community Network Manager CLI -- multi-community client for operating VTAs.                              |
+| **pnm-cli**          | Personal Network Manager CLI -- single-VTA client for personal use.                                      |
+| **vtc-service**      | Verifiable Trust Community service.                                                                      |
+| **didcomm-test**     | Standalone DIDComm connectivity test harness.                                                            |
 
 ## Architecture
 

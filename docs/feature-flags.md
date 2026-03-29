@@ -22,6 +22,7 @@ These are the flags on the `vta-service` library crate. Front-end binaries
 | `gcp-secrets` | GCP Secret Manager seed storage | `google-cloud-secretmanager`, `google-cloud-auth`, `bytes` |
 | `azure-secrets` | Azure Key Vault seed storage | `azure_security_keyvault_secrets`, `azure_identity` |
 | `vsock-store` | Vsock-proxied persistent storage (for enclaves) | `vti-common/vsock-store` |
+| `vsock-log` | Vsock-proxied log forwarding (for enclaves) | `vti-common/vsock-log` |
 
 **Default features:** `setup`, `keyring`, `rest`, `didcomm`
 
