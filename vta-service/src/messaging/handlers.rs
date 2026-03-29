@@ -15,7 +15,7 @@ use affinidi_messaging_didcomm_service::{
     DIDCommResponse, DIDCommServiceError, Extension, HandlerContext, ProblemReport,
     ServiceProblemReport,
 };
-use tracing::warn;
+use tracing::{info, warn};
 
 use crate::acl::Role;
 use crate::messaging::auth::auth_from_message;
@@ -712,6 +712,11 @@ pub async fn handle_backup_export(
     let _ = crate::audit::record(
         &state.audit_ks, "backup.export", &auth.did, None, "success", Some("didcomm"), None,
     ).await;
+    let response_json = serde_json::to_string(&envelope).unwrap_or_default();
+    info!(
+        response_bytes = response_json.len(),
+        "backup export DIDComm response size"
+    );
     response(vta_sdk::protocols::backup_management::EXPORT_BACKUP_RESULT, &envelope)
 }
 
