@@ -19,7 +19,7 @@ pub async fn restart(
     auth: AuthClaims,
     State(state): State<AppState>,
 ) -> Result<Json<RestartResponse>, AppError> {
-    auth.require_admin()?;
+    auth.require_super_admin()?;
 
     // Log the restart request before triggering
     let _ = crate::audit::record(

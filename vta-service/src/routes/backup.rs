@@ -52,7 +52,7 @@ pub async fn import(
     State(state): State<AppState>,
     Json(req): Json<ImportRequest>,
 ) -> Result<Json<ImportResult>, AppError> {
-    auth.require_admin()?;
+    auth.require_super_admin()?;
 
     // Preview mode: decrypt and return summary without modifying state
     if !req.confirm {

@@ -48,7 +48,7 @@ pub async fn export_backup(
     password: &str,
     include_audit: bool,
 ) -> Result<BackupEnvelope, AppError> {
-    auth.require_admin()?;
+    auth.require_super_admin()?;
 
     // 1. Collect the active seed
     let seed_bytes = seed_store

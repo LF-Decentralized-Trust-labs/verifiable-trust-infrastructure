@@ -675,7 +675,7 @@ pub async fn handle_restart(
     Extension(state): Extension<Arc<VtaState>>,
 ) -> HandlerResult {
     let auth = auth_from_message(&message, &state.acl_ks).await.map_err(handler_err)?;
-    auth.require_admin().map_err(handler_err)?;
+    auth.require_super_admin().map_err(handler_err)?;
     let _ = crate::audit::record(
         &state.audit_ks, "vta.restart", &auth.did, None, "success", Some("didcomm"), None,
     ).await;
@@ -720,7 +720,7 @@ pub async fn handle_backup_import(
     Extension(state): Extension<Arc<VtaState>>,
 ) -> HandlerResult {
     let auth = auth_from_message(&message, &state.acl_ks).await.map_err(handler_err)?;
-    auth.require_admin().map_err(handler_err)?;
+    auth.require_super_admin().map_err(handler_err)?;
     let body: vta_sdk::protocols::backup_management::types::ImportRequest =
         serde_json::from_value(message.body).map_err(handler_err)?;
 
