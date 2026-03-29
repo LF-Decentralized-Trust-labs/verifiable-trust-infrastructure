@@ -1,6 +1,7 @@
 # Verifiable Trust Communities - Verified Trust Agent
 
-[![Rust](https://img.shields.io/badge/rust-1.91.0%2B-blue.svg?maxAge=3600)](https://github.com/FirstPersonNetwork/vtc-vta-rs)
+[![Rust](https://img.shields.io/badge/rust-1.91.0%2B-blue.svg?maxAge=3600)](https://github.com/OpenVTC/verifiable-trust-infrastructure)
+[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
 A Verifiable Trust Agent (VTA) is an always-on service that manages cryptographic
 keys, DIDs, and access-control policies for a

@@ -1,12 +1,12 @@
 [package]
 name = "vtc-service"
 description = "Service for Verifiable Trust Communities"
+readme = "README.md"
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
 authors.workspace = true
 rust-version.workspace = true
-readme = "README.md"
 license.workspace = true
 repository.workspace = true
 
@@ -28,8 +28,8 @@ name = "vtc"
 path = "src/main.rs"
 
 [dependencies]
-vti-common = { path = "../vti-common" }
-vta-sdk = { path = "../vta-sdk", features = [
+vti-common = { path = "../vti-common", version = "0.2.0" }
+vta-sdk = { path = "../vta-sdk", version = "0.2.0", features = [
   "didcomm",
   "session",
   "config-session",

@@ -18,12 +18,12 @@ resolver = "3"
 description = "Verifiable Trust Infrastructure (VTI) — VTA, VTC, and supporting crates"
 version = "0.2.0"
 edition = "2024"
-publish = false
+publish = true
 authors = ["Glenn Gore <glenn@affinidi.com>"]
 rust-version = "1.91.0"
 readme = "README.md"
 license = "Apache-2.0"
-repository = "https://github.com/FirstPersonNetwork/vtc-vta-rs"
+repository = "https://github.com/OpenVTC/verifiable-trust-infrastructure"
 
 [workspace.dependencies]
 
@@ -32,8 +32,7 @@ affinidi-tdk = "0.6"
 affinidi-messaging-didcomm-service = "0.1"
 
 # Decentralized Trust Graph Credentials
-# NOTE: When this is published, switch from git to crates.io
-dtg-credentials = { version = "0.1", git = "https://github.com/FirstPersonNetwork/dtg-credentials-rs" }
+dtg-credentials = "0.1"
 
 # Async runtime
 tokio = { version = "1", features = [
@@ -102,9 +101,6 @@ ratatui = "0.30"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 
-
-[patch.crates-io]
-affinidi-messaging-didcomm-service = { path = "crates/affinidi-messaging-didcomm-service" }
 
 [profile.release]
 lto = "thin"
