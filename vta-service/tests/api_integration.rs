@@ -633,3 +633,253 @@ async fn audit_list_requires_admin() {
     assert_eq!(status, StatusCode::OK);
     assert!(body["entries"].is_array());
 }
+
+// ── Context scoping ────────────────────────────────────────────────
+
+#[tokio::test]
+async fn scoped_admin_can_only_access_own_context_keys() {
+    let (app, ctx) = TestApp::new().await;
+    let super_token = ctx.auth_token("did:key:z6MkSuper", "admin", vec![]).await;
+
+    // Create two contexts
+    app.request(post_auth("/contexts", &super_token, json!({"id": "ctx-a", "name": "A"}))).await;
+    app.request(post_auth("/contexts", &super_token, json!({"id": "ctx-b", "name": "B"}))).await;
+
+    // Create a key in ctx-a
+    let (status, key_body) = app.request(post_auth(
+        "/keys", &super_token, json!({"key_type": "ed25519", "context_id": "ctx-a"}),
+    )).await;
+    assert!(status.is_success());
+    let key_id = key_body["key_id"].as_str().unwrap();
+
+    // Scoped admin for ctx-b cannot get the key in ctx-a (returns 403 or 404 — both are valid)
+    let encoded_id = urlencoding::encode(key_id);
+    let scoped_b_token = ctx.auth_token("did:key:z6MkB", "admin", vec!["ctx-b".into()]).await;
+    let (status, _) = app.request(get_auth(&format!("/keys/{encoded_id}"), &scoped_b_token)).await;
+    assert!(
+        status == StatusCode::FORBIDDEN || status == StatusCode::NOT_FOUND,
+        "scoped admin should not access other context's key, got {status}"
+    );
+
+    // Scoped admin for ctx-a CAN get the key
+    let scoped_a_token = ctx.auth_token("did:key:z6MkA", "admin", vec!["ctx-a".into()]).await;
+    let (status, body) = app.request(get_auth(&format!("/keys/{encoded_id}"), &scoped_a_token)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["key_id"], key_id);
+}
+
+// ── Key lifecycle ──────────────────────────────────────────────────
+
+#[tokio::test]
+async fn key_create_revoke_list_lifecycle() {
+    let (app, ctx) = TestApp::new().await;
+    let token = ctx.auth_token("did:key:z6MkAdmin", "admin", vec![]).await;
+
+    // Create context + key
+    app.request(post_auth("/contexts", &token, json!({"id": "lc", "name": "Lifecycle"}))).await;
+    let (_, key_body) = app.request(post_auth(
+        "/keys", &token, json!({"key_type": "ed25519", "context_id": "lc"}),
+    )).await;
+    let key_id = key_body["key_id"].as_str().unwrap();
+    assert_eq!(key_body["status"], "active");
+
+    // Revoke the key (key_id may contain slashes from derivation path, URL-encode it)
+    let encoded_id = urlencoding::encode(key_id);
+    let (status, body) = app.request(delete_auth(&format!("/keys/{encoded_id}"), &token)).await;
+    assert!(status.is_success(), "revoke: {status} {body}");
+
+    // Get key — should show revoked status
+    let (status, body) = app.request(get_auth(&format!("/keys/{encoded_id}"), &token)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["status"], "revoked");
+}
+
+#[tokio::test]
+async fn key_rename() {
+    let (app, ctx) = TestApp::new().await;
+    let token = ctx.auth_token("did:key:z6MkAdmin", "admin", vec![]).await;
+
+    app.request(post_auth("/contexts", &token, json!({"id": "rn", "name": "Rename"}))).await;
+    let (_, key_body) = app.request(post_auth(
+        "/keys", &token, json!({"key_type": "ed25519", "context_id": "rn", "label": "original"}),
+    )).await;
+    let key_id = key_body["key_id"].as_str().unwrap();
+
+    // Rename the key (PATCH expects new key_id in body)
+    let encoded_id = urlencoding::encode(key_id);
+    let (status, body) = app.request(patch_auth(
+        &format!("/keys/{encoded_id}"), &token, json!({"key_id": "renamed-key"}),
+    )).await;
+    assert!(status.is_success(), "rename: {status} {body}");
+    assert_eq!(body["key_id"], "renamed-key");
+}
+
+// ── Seed management ────────────────────────────────────────────────
+
+#[tokio::test]
+async fn seed_list_returns_seeds() {
+    let (app, ctx) = TestApp::new().await;
+    let token = ctx.auth_token("did:key:z6MkAdmin", "admin", vec![]).await;
+    let (status, body) = app.request(get_auth("/keys/seeds", &token)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body["seeds"].is_array());
+}
+
+// ── Audit entries created by operations ────────────────────────────
+
+#[tokio::test]
+async fn operations_create_audit_entries() {
+    let (app, ctx) = TestApp::new().await;
+    let token = ctx.auth_token("did:key:z6MkAdmin", "admin", vec![]).await;
+
+    // Perform some operations that create audit entries
+    app.request(post_auth("/contexts", &token, json!({"id": "aud", "name": "Audit Test"}))).await;
+    app.request(post_auth(
+        "/keys", &token, json!({"key_type": "ed25519", "context_id": "aud"}),
+    )).await;
+
+    // Check audit logs contain entries
+    let (status, body) = app.request(get_auth("/audit/logs", &token)).await;
+    assert_eq!(status, StatusCode::OK);
+    let entries = body["entries"].as_array().expect("entries");
+    assert!(!entries.is_empty(), "should have at least 1 audit entry, got {}", entries.len());
+
+    // Verify audit entries have expected fields
+    let entry = &entries[0];
+    assert!(entry["id"].is_string());
+    assert!(entry["timestamp"].is_number());
+    assert!(entry["action"].is_string());
+    assert!(entry["actor"].is_string());
+}
+
+// ── Audit retention ────────────────────────────────────────────────
+
+#[tokio::test]
+async fn audit_retention_get_and_update() {
+    let (app, ctx) = TestApp::new().await;
+    let token = ctx.auth_token("did:key:z6MkAdmin", "admin", vec![]).await;
+
+    // Get current retention
+    let (status, body) = app.request(get_auth("/audit/retention", &token)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body["retention_days"].is_number());
+
+    // Update retention
+    let (status, body) = app.request(patch_auth(
+        "/audit/retention", &token, json!({"retention_days": 90}),
+    )).await;
+    assert!(status.is_success(), "update retention: {status} {body}");
+}
+
+// ── Backup wrong password ──────────────────────────────────────────
+
+#[tokio::test]
+async fn backup_import_wrong_password_returns_auth_error() {
+    let (app, ctx) = TestApp::new().await;
+    let token = ctx.auth_token("did:key:z6MkSuper", "admin", vec![]).await;
+
+    // Export with one password
+    let (status, envelope) = app.request(post_auth(
+        "/backup/export", &token,
+        json!({"password": "correct-password!!", "include_audit": false}),
+    )).await;
+    assert_eq!(status, StatusCode::OK);
+
+    // Import with wrong password
+    let (status, body) = app.request(post_auth(
+        "/backup/import", &token,
+        json!({"backup": envelope, "password": "wrong-password!!!", "confirm": false}),
+    )).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "wrong password should → 401: {body}");
+}
+
+// ── ACL CRUD full lifecycle ────────────────────────────────────────
+
+#[tokio::test]
+async fn acl_get_update_delete_lifecycle() {
+    let (app, ctx) = TestApp::new().await;
+    let token = ctx.auth_token("did:key:z6MkAdmin", "admin", vec![]).await;
+
+    // Create
+    app.request(post_auth("/acl", &token, json!({
+        "did": "did:key:z6MkTarget",
+        "role": "application",
+        "label": "test",
+        "allowed_contexts": ["ctx1"]
+    }))).await;
+
+    // Get
+    let (status, body) = app.request(get_auth("/acl/did:key:z6MkTarget", &token)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["role"], "application");
+
+    // Update
+    let (status, body) = app.request(patch_auth(
+        "/acl/did:key:z6MkTarget", &token,
+        json!({"role": "initiator", "label": "updated"}),
+    )).await;
+    assert!(status.is_success(), "update: {status} {body}");
+    assert_eq!(body["role"], "initiator");
+
+    // Delete
+    let (status, _) = app.request(delete_auth("/acl/did:key:z6MkTarget", &token)).await;
+    assert!(status.is_success());
+
+    // Verify deleted
+    let (status, _) = app.request(get_auth("/acl/did:key:z6MkTarget", &token)).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+// ── Context lifecycle ──────────────────────────────────────────────
+
+#[tokio::test]
+async fn context_create_get_update_delete() {
+    let (app, ctx) = TestApp::new().await;
+    let token = ctx.auth_token("did:key:z6MkSuper", "admin", vec![]).await;
+
+    // Create
+    let (status, _) = app.request(post_auth(
+        "/contexts", &token, json!({"id": "lifecycle", "name": "Test", "description": "A test context"}),
+    )).await;
+    assert!(status.is_success());
+
+    // Get
+    let (status, body) = app.request(get_auth("/contexts/lifecycle", &token)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["name"], "Test");
+    assert_eq!(body["description"], "A test context");
+
+    // Update
+    let (status, body) = app.request(patch_auth(
+        "/contexts/lifecycle", &token, json!({"name": "Updated"}),
+    )).await;
+    assert!(status.is_success(), "update: {status} {body}");
+    assert_eq!(body["name"], "Updated");
+
+    // List
+    let (status, body) = app.request(get_auth("/contexts", &token)).await;
+    assert_eq!(status, StatusCode::OK);
+    let contexts = body["contexts"].as_array().expect("contexts");
+    assert!(contexts.iter().any(|c| c["id"] == "lifecycle"));
+
+    // Delete
+    let (status, _) = app.request(delete_auth("/contexts/lifecycle", &token)).await;
+    assert!(status.is_success());
+}
+
+// ── Multiple key types ─────────────────────────────────────────────
+
+#[tokio::test]
+async fn create_p256_key() {
+    let (app, ctx) = TestApp::new().await;
+    let token = ctx.auth_token("did:key:z6MkAdmin", "admin", vec![]).await;
+
+    app.request(post_auth("/contexts", &token, json!({"id": "p256", "name": "P256 Test"}))).await;
+
+    let (status, body) = app.request(post_auth(
+        "/keys", &token, json!({"key_type": "p256", "context_id": "p256"}),
+    )).await;
+    assert!(status.is_success(), "create p256: {status} {body}");
+    assert_eq!(body["key_type"], "p256");
+    assert!(body["public_key"].is_string());
+}
