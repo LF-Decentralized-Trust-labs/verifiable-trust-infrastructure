@@ -563,16 +563,30 @@ fn run_rest_thread(
     rt.block_on(async {
         info!("REST thread started");
 
+        // Install Prometheus metrics recorder (once per process)
+        let metrics_handle = crate::metrics::install();
+
         let listener = tokio::net::TcpListener::from_std(std_listener)
             .expect("failed to convert std TcpListener to tokio TcpListener");
 
-        let traced_routes = routes::router().with_state(state.clone()).layer(
-            TraceLayer::new_for_http()
-                .make_span_with(DefaultMakeSpan::new().level(Level::INFO))
-                .on_request(DefaultOnRequest::new().level(Level::INFO))
-                .on_response(DefaultOnResponse::new().level(Level::INFO)),
-        );
-        let app = traced_routes.merge(routes::health_router().with_state(state));
+        let traced_routes = routes::router()
+            .with_state(state.clone())
+            .layer(axum::middleware::from_fn(crate::metrics::track_metrics))
+            .layer(
+                TraceLayer::new_for_http()
+                    .make_span_with(DefaultMakeSpan::new().level(Level::INFO))
+                    .on_request(DefaultOnRequest::new().level(Level::INFO))
+                    .on_response(DefaultOnResponse::new().level(Level::INFO)),
+            );
+
+        // Metrics and health endpoints (unauthenticated)
+        let metrics_route = axum::Router::new()
+            .route("/metrics", axum::routing::get(crate::metrics::metrics_handler))
+            .with_state(metrics_handle);
+
+        let app = traced_routes
+            .merge(routes::health_router().with_state(state))
+            .merge(metrics_route);
 
         let shutdown_rx = shutdown_rx.clone();
         axum::serve(listener, app)
