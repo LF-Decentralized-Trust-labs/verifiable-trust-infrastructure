@@ -2,6 +2,63 @@
 
 ## 0.2.0 — 2026-03-29
 
+### Observability
+
+- **Prometheus metrics endpoint** — `GET /metrics` serves
+  request count and latency histograms in Prometheus text
+  format. Requires authentication (any role including the
+  new Monitor role).
+- **Monitor role** — New lowest-privilege role for
+  observability-only access. Can read `/metrics` and
+  `/health` but nothing else. Create with
+  `pnm acl create --role monitor`.
+
+### Hardening
+
+- **Admin credential delete-after-read** — The
+  `/attestation/admin-credential` endpoint now deletes the
+  credential from the store after first retrieval.
+  Subsequent calls return 404.
+- **Server-side backup password minimum** — The backup
+  export API enforces a 12-character minimum password.
+- **Super admin for backup/restart** — Backup export,
+  import, and VTA restart now require super admin (admin
+  with no context restrictions).
+- **Enclave bootstrap error handling** — Replaced all
+  `.expect()` calls in `vta-enclave/src/main.rs` with
+  proper error handling and `tracing::error` before exit.
+- **Clippy clean** — Fixed all actionable warnings:
+  `Role::from_str` → `Role::parse`, `.clamp()`, needless
+  borrows, collapsed ifs.
+
+### Testing
+
+- **31 REST API integration tests** — Full axum server
+  with temp fjall store, programmatic JWT tokens, and
+  pre-inserted sessions. Covers auth enforcement (6),
+  role hierarchy (4), CRUD operations (5), backup (3),
+  cache (1), audit (2), context scoping (1), key
+  lifecycle (3), P-256 keys (1), seed list (1),
+  wrong password (1), ACL lifecycle (1), context
+  lifecycle (1), audit retention (1).
+- **20 security-focused unit tests** — Auth role
+  enforcement, ACL privilege escalation prevention,
+  context access scoping, backup crypto validation.
+- **Total: 226 tests** (up from 175 at start of release).
+
+### Documentation
+
+- **6 Mermaid diagrams** — Crate dependencies, REST vs
+  DIDComm request flow, auth challenge-response sequence,
+  BIP-32 derivation tree, TEE bootstrap sequence, enclave
+  proxy architecture.
+- **Consolidated docs** — Removed ~170 lines of
+  duplicated content from README.md (feature flags, CLI
+  reference). Cross-references to canonical sources.
+- **Doc comments** on 35 public route handler functions.
+- **Expanded CONTRIBUTING.md** — Development setup, test
+  commands, PR checklist, coding guidelines.
+
 ### Architecture
 
 - **vta-service / vta-enclave split** — `vta-service` is
