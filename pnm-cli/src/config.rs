@@ -53,8 +53,8 @@ pub fn load_config() -> Result<PnmConfig, Box<dyn std::error::Error>> {
         .map_err(|e| format!("failed to parse {}: {e}", path.display()))?;
 
     // Migrate legacy single-URL config
-    if config.vtas.is_empty() {
-        if let Some(url) = config.url.take() {
+    if config.vtas.is_empty()
+        && let Some(url) = config.url.take() {
             eprintln!("\x1b[33mMigrating legacy config to multi-VTA format...\x1b[0m");
             config.vtas.insert(
                 "default".to_string(),
@@ -68,7 +68,6 @@ pub fn load_config() -> Result<PnmConfig, Box<dyn std::error::Error>> {
             save_config(&config)?;
             eprintln!("  Migrated to VTA slug: \x1b[36mdefault\x1b[0m");
         }
-    }
 
     Ok(config)
 }

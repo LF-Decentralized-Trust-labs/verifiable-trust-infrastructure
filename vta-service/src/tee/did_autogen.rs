@@ -236,8 +236,8 @@ fn build_vta_did_document(
     }
 
     // Add TeeAttestation service if configured
-    if config.tee.embed_in_did {
-        if let Some(ref public_url) = config.public_url {
+    if config.tee.embed_in_did
+        && let Some(ref public_url) = config.public_url {
             let services = did_document
                 .as_object_mut()
                 .unwrap()
@@ -249,7 +249,6 @@ fn build_vta_did_document(
                 "serviceEndpoint": format!("{}/attestation/report", public_url.trim_end_matches('/'))
             }));
         }
-    }
 
     did_document
 }

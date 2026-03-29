@@ -800,13 +800,12 @@ pub async fn resolve_vta_url(vta_did: &str) -> Result<String, Box<dyn std::error
 
     match did_resolver.resolve(vta_did).await {
         Ok(resolved) => {
-            if let Some(svc) = resolved.doc.find_service("vta-rest") {
-                if let Some(url) = svc.service_endpoint.get_uri() {
+            if let Some(svc) = resolved.doc.find_service("vta-rest")
+                && let Some(url) = svc.service_endpoint.get_uri() {
                     let url = url.trim_matches('"').trim_end_matches('/').to_string();
                     debug!(url = %url, "found VTA URL from #vta-rest service endpoint");
                     return Ok(url);
                 }
-            }
             debug!("no #vta-rest service found in DID document, falling back to DID parsing");
         }
         Err(e) => {
@@ -911,8 +910,8 @@ pub async fn resolve_mediator_did_with_resolver(
         .map_err(|e| format!("DID resolution failed: {e}"))?;
 
     for svc in &resolved.doc.service {
-        if svc.type_.iter().any(|t| t == "DIDCommMessaging") {
-            if let Some(did) = svc
+        if svc.type_.iter().any(|t| t == "DIDCommMessaging")
+            && let Some(did) = svc
                 .service_endpoint
                 .get_uris()
                 .into_iter()
@@ -921,7 +920,6 @@ pub async fn resolve_mediator_did_with_resolver(
             {
                 return Ok(Some(did));
             }
-        }
     }
 
     Ok(None)

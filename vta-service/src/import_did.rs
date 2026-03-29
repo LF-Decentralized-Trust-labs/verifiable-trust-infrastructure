@@ -26,7 +26,7 @@ pub async fn run_import_did(args: ImportDidArgs) -> Result<(), Box<dyn std::erro
 
     // Determine role
     let role = match args.role {
-        Some(r) => Role::from_str(&r)?,
+        Some(r) => Role::parse(&r)?,
         None => {
             let roles = ["admin", "initiator", "application"];
             let selection = Select::new()
@@ -34,7 +34,7 @@ pub async fn run_import_did(args: ImportDidArgs) -> Result<(), Box<dyn std::erro
                 .items(roles)
                 .default(0)
                 .interact()?;
-            Role::from_str(roles[selection])?
+            Role::parse(roles[selection])?
         }
     };
 

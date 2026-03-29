@@ -454,11 +454,10 @@ impl AppConfig {
         }
 
         // Audit
-        if let Ok(val) = std::env::var("VTA_AUDIT_RETENTION_DAYS") {
-            if let Ok(days) = val.parse::<u32>() {
+        if let Ok(val) = std::env::var("VTA_AUDIT_RETENTION_DAYS")
+            && let Ok(days) = val.parse::<u32>() {
                 config.audit.retention_days = days;
             }
-        }
 
         // TEE (non-KMS mode — all overrides allowed)
         #[cfg(feature = "tee")]

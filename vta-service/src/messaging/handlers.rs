@@ -310,7 +310,7 @@ pub async fn handle_create_acl(
     let auth = auth_from_message(&message, &state.acl_ks).await.map_err(handler_err)?;
     let body: vta_sdk::protocols::acl_management::create::CreateAclBody =
         serde_json::from_value(message.body).map_err(handler_err)?;
-    let role = Role::from_str(&body.role).map_err(handler_err)?;
+    let role = Role::parse(&body.role).map_err(handler_err)?;
     let result = operations::acl::create_acl(
         &state.acl_ks, &state.audit_ks, &auth, &body.did, role, body.label, body.allowed_contexts, "didcomm",
     ).await.map_err(handler_err)?;
@@ -352,7 +352,7 @@ pub async fn handle_update_acl(
     let body: vta_sdk::protocols::acl_management::update::UpdateAclBody =
         serde_json::from_value(message.body).map_err(handler_err)?;
     let role = match body.role {
-        Some(r) => Some(Role::from_str(&r).map_err(handler_err)?),
+        Some(r) => Some(Role::parse(&r).map_err(handler_err)?),
         None => None,
     };
     let result = operations::acl::update_acl(
@@ -465,7 +465,7 @@ pub async fn handle_generate_credentials(
     let auth = auth_from_message(&message, &state.acl_ks).await.map_err(handler_err)?;
     let body: vta_sdk::protocols::credential_management::generate::GenerateCredentialsBody =
         serde_json::from_value(message.body).map_err(handler_err)?;
-    let role = Role::from_str(&body.role).map_err(handler_err)?;
+    let role = Role::parse(&body.role).map_err(handler_err)?;
     let result = operations::credentials::generate_credentials(
         &state.acl_ks, &state.config, &auth, role, body.label, body.allowed_contexts, "didcomm",
     ).await.map_err(handler_err)?;

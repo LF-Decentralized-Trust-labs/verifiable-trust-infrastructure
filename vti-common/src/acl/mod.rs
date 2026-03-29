@@ -27,7 +27,7 @@ impl fmt::Display for Role {
 
 impl Role {
     /// Parse a role from its string representation.
-    pub fn from_str(s: &str) -> Result<Self, AppError> {
+    pub fn parse(s: &str) -> Result<Self, AppError> {
         match s {
             "admin" => Ok(Role::Admin),
             "initiator" => Ok(Role::Initiator),

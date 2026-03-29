@@ -65,10 +65,6 @@ impl Drop for BootstrappedSecrets {
 }
 
 
-/// Bootstrap secrets from KMS.
-///
-/// - If ciphertext files exist: decrypt via KMS, verify JWT fingerprint (subsequent boot)
-/// - If no ciphertext files: generate new secrets, encrypt with KMS, store ciphertext + fingerprint (first boot)
 /// Well-known keys in the bootstrap keyspace.
 ///
 /// The data key is generated via KMS `GenerateDataKey` (with attestation when
@@ -79,6 +75,10 @@ const BOOTSTRAP_SEED_CT_KEY: &str = "bootstrap:seed_ciphertext";
 const BOOTSTRAP_JWT_CT_KEY: &str = "bootstrap:jwt_ciphertext";
 const BOOTSTRAP_JWT_FINGERPRINT_KEY: &str = "bootstrap:jwt_fingerprint";
 
+/// Bootstrap secrets from KMS.
+///
+/// - If ciphertext files exist: decrypt via KMS, verify JWT fingerprint (subsequent boot)
+/// - If no ciphertext files: generate new secrets, encrypt with KMS, store (first boot)
 pub async fn bootstrap_secrets(
     kms_config: &TeeKmsConfig,
     storage_key_salt: &str,
@@ -764,27 +764,27 @@ mod cms_der {
 
         let mut ci_pos = 0;
         // contentType OID — skip
-        let _ = read_tlv(&ci_body, &mut ci_pos, "contentType OID")?;
+        let _ = read_tlv(ci_body, &mut ci_pos, "contentType OID")?;
         // content [0] EXPLICIT
-        let (_, ctx0_body) = read_tlv(&ci_body, &mut ci_pos, "[0] content")?;
+        let (_, ctx0_body) = read_tlv(ci_body, &mut ci_pos, "[0] content")?;
 
         // EnvelopedData SEQUENCE
         let mut env_pos = 0;
-        let (_, env_body) = read_tlv(&ctx0_body, &mut env_pos, "EnvelopedData")?;
+        let (_, env_body) = read_tlv(ctx0_body, &mut env_pos, "EnvelopedData")?;
 
         let mut ed_pos = 0;
         // version INTEGER — skip
-        let _ = read_tlv(&env_body, &mut ed_pos, "EnvelopedData version")?;
+        let _ = read_tlv(env_body, &mut ed_pos, "EnvelopedData version")?;
         // recipientInfos SET
-        let (_, ri_set) = read_tlv(&env_body, &mut ed_pos, "recipientInfos SET")?;
+        let (_, ri_set) = read_tlv(env_body, &mut ed_pos, "recipientInfos SET")?;
         // encryptedContentInfo SEQUENCE
-        let (_, eci_body) = read_tlv(&env_body, &mut ed_pos, "encryptedContentInfo")?;
+        let (_, eci_body) = read_tlv(env_body, &mut ed_pos, "encryptedContentInfo")?;
 
         // Parse KeyTransRecipientInfo (first element in SET)
-        let encrypted_key = parse_key_trans_ri(&ri_set)?;
+        let encrypted_key = parse_key_trans_ri(ri_set)?;
 
         // Parse EncryptedContentInfo
-        let (oid, iv, ciphertext) = parse_encrypted_content_info(&eci_body)?;
+        let (oid, iv, ciphertext) = parse_encrypted_content_info(eci_body)?;
 
         Ok(CmsFields {
             encrypted_key,
@@ -801,13 +801,13 @@ mod cms_der {
 
         let mut kp = 0;
         // version INTEGER — skip
-        let _ = read_tlv(&ktri_body, &mut kp, "KeyTransRI version")?;
+        let _ = read_tlv(ktri_body, &mut kp, "KeyTransRI version")?;
         // rid (RecipientIdentifier) — skip
-        let _ = read_tlv(&ktri_body, &mut kp, "KeyTransRI rid")?;
+        let _ = read_tlv(ktri_body, &mut kp, "KeyTransRI rid")?;
         // keyEncryptionAlgorithm — skip
-        let _ = read_tlv(&ktri_body, &mut kp, "KeyTransRI keyEncAlg")?;
+        let _ = read_tlv(ktri_body, &mut kp, "KeyTransRI keyEncAlg")?;
         // encryptedKey OCTET STRING
-        let (_, ek_value) = read_tlv(&ktri_body, &mut kp, "encryptedKey")?;
+        let (_, ek_value) = read_tlv(ktri_body, &mut kp, "encryptedKey")?;
 
         Ok(ek_value.to_vec())
     }
@@ -870,7 +870,7 @@ mod cms_der {
         };
 
         // Parse algorithm to get the OID and IV/nonce
-        let (oid, iv) = parse_content_encryption_params(&alg_body)?;
+        let (oid, iv) = parse_content_encryption_params(alg_body)?;
 
         // The ciphertext may be wrapped in an inner OCTET STRING if KMS used
         // EXPLICIT tagging on [0] instead of IMPLICIT. Unwrap if present.

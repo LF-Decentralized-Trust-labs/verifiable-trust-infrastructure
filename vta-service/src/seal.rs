@@ -125,7 +125,7 @@ pub async fn run_unseal_challenge(store: &Store) -> Result<(), AppError> {
     // Generate random challenge
     let mut challenge_bytes = [0u8; 32];
     rand::fill(&mut challenge_bytes);
-    let challenge_hex = hex::encode(&challenge_bytes);
+    let challenge_hex = hex::encode(challenge_bytes);
 
     eprintln!();
     eprintln!("=== VTA Unseal Challenge ===");

@@ -402,8 +402,8 @@ pub async fn apply_import(
     #[cfg(feature = "tee")]
     if let Some(store) = store {
         let cfg = config.read().await;
-        if let crate::config::TeeMode::Required = cfg.tee.mode {
-            if let Some(ref kms_config) = cfg.tee.kms {
+        if let crate::config::TeeMode::Required = cfg.tee.mode
+            && let Some(ref kms_config) = cfg.tee.kms {
                 let jwt_key_bytes: Option<[u8; 32]> = payload.jwt_signing_key.as_ref().and_then(|b64| {
                     base64::Engine::decode(&BASE64, b64).ok().and_then(|b| b.try_into().ok())
                 });
@@ -416,7 +416,6 @@ pub async fn apply_import(
                     info!("no JWT key in backup — skipping KMS re-encryption");
                 }
             }
-        }
     }
 
     info!(
@@ -484,14 +483,14 @@ fn encrypt_payload(
         source_version: env!("CARGO_PKG_VERSION").into(),
         kdf: KdfParams {
             algorithm: "argon2id".into(),
-            salt: BASE64.encode(&salt),
+            salt: BASE64.encode(salt),
             m_cost: ARGON2_M_COST,
             t_cost: ARGON2_T_COST,
             p_cost: ARGON2_P_COST,
         },
         encryption: EncryptionParams {
             algorithm: "aes-256-gcm".into(),
-            nonce: BASE64.encode(&nonce_bytes),
+            nonce: BASE64.encode(nonce_bytes),
         },
         includes_audit: include_audit,
         ciphertext: BASE64.encode(&ciphertext),
@@ -566,7 +565,6 @@ async fn clear_keyspace(ks: &KeyspaceHandle, prefixes: &[&str]) -> Result<(), Ap
 #[cfg(test)]
 mod tests {
     use super::*;
-    use vta_sdk::protocols::backup_management::types::*;
 
     fn test_payload() -> BackupPayload {
         BackupPayload {

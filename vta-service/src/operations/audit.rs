@@ -21,7 +21,7 @@ pub async fn list_audit_logs(
     // Any authenticated user can read audit logs (admin-level info)
     auth.require_admin()?;
 
-    let page_size = params.page_size.min(500).max(1);
+    let page_size = params.page_size.clamp(1, 500);
     let page = params.page.max(1);
 
     // Scan all audit entries
@@ -35,24 +35,18 @@ pub async fn list_audit_logs(
         };
 
         // Apply filters
-        if let Some(from) = params.from {
-            if entry.timestamp < from { continue; }
-        }
-        if let Some(to) = params.to {
-            if entry.timestamp > to { continue; }
-        }
-        if let Some(ref action) = params.action {
-            if !entry.action.contains(action.as_str()) { continue; }
-        }
-        if let Some(ref actor) = params.actor {
-            if entry.actor != *actor { continue; }
-        }
-        if let Some(ref outcome) = params.outcome {
-            if !entry.outcome.contains(outcome.as_str()) { continue; }
-        }
-        if let Some(ref ctx) = params.context_id {
-            if entry.context_id.as_deref() != Some(ctx.as_str()) { continue; }
-        }
+        if let Some(from) = params.from
+            && entry.timestamp < from { continue; }
+        if let Some(to) = params.to
+            && entry.timestamp > to { continue; }
+        if let Some(ref action) = params.action
+            && !entry.action.contains(action.as_str()) { continue; }
+        if let Some(ref actor) = params.actor
+            && entry.actor != *actor { continue; }
+        if let Some(ref outcome) = params.outcome
+            && !entry.outcome.contains(outcome.as_str()) { continue; }
+        if let Some(ref ctx) = params.context_id
+            && entry.context_id.as_deref() != Some(ctx.as_str()) { continue; }
 
         entries.push(entry);
     }
@@ -61,7 +55,7 @@ pub async fn list_audit_logs(
     entries.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
 
     let total = entries.len() as u64;
-    let total_pages = (total + page_size - 1) / page_size;
+    let total_pages = total.div_ceil(page_size);
 
     // Apply pagination
     let skip = ((page - 1) * page_size) as usize;
@@ -103,7 +97,7 @@ pub async fn update_retention(
 ) -> Result<RetentionResultBody, AppError> {
     auth.require_super_admin()?;
 
-    if retention_days < 1 || retention_days > 365 {
+    if !(1..=365).contains(&retention_days) {
         return Err(AppError::Validation(
             "retention_days must be between 1 and 365".into(),
         ));

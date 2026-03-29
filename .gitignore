@@ -5,3 +5,10 @@ target/
 !deploy/**/config.toml
 **.jsonl
 **.vtabak
+
+# OS artifacts
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~

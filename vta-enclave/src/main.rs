@@ -163,7 +163,7 @@ async fn main() {
     // ── JWT signing key + storage encryption key from bootstrap ──
     let (mut config, storage_encryption_key) = if let Some(ref bootstrap) = tee_bootstrap {
         let mut config = config;
-        let jwt_b64 = BASE64.encode(&bootstrap.jwt_signing_key);
+        let jwt_b64 = BASE64.encode(bootstrap.jwt_signing_key);
         config.auth.jwt_signing_key = Some(jwt_b64);
         (config, Some(bootstrap.storage_key))
     } else {

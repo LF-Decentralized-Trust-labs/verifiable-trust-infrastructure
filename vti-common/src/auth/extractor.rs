@@ -71,7 +71,7 @@ impl<S: AuthState> FromRequestParts<S> for AuthClaims {
             return Err(AppError::Unauthorized("session not authenticated".into()));
         }
 
-        let role = Role::from_str(&claims.role)?;
+        let role = Role::parse(&claims.role)?;
 
         Ok(AuthClaims {
             did: claims.sub,
