@@ -552,3 +552,188 @@ async fn clear_keyspace(ks: &KeyspaceHandle, prefixes: &[&str]) -> Result<(), Ap
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use vta_sdk::protocols::backup_management::types::*;
+
+    fn test_payload() -> BackupPayload {
+        BackupPayload {
+            active_seed_hex: hex::encode([42u8; 32]),
+            active_seed_id: 1,
+            seed_records: vec![SeedRecordBackup {
+                id: 0,
+                seed_hex: Some(hex::encode([1u8; 32])),
+                created_at: Utc::now(),
+                retired_at: Some(Utc::now()),
+            }],
+            jwt_signing_key: Some(BASE64.encode([99u8; 32])),
+            key_records: vec![],
+            context_records: vec![],
+            context_counter: 2,
+            acl_entries: vec![AclEntryBackup {
+                did: "did:key:z6MkTest".into(),
+                role: "Admin".into(),
+                label: Some("test admin".into()),
+                allowed_contexts: vec!["ctx1".into()],
+                created_at: 1000,
+                created_by: "did:key:z6MkSetup".into(),
+            }],
+            seal: None,
+            webvh_servers: vec![],
+            webvh_dids: vec![],
+            webvh_logs: vec![],
+            config: BackupConfig {
+                vta_did: Some("did:key:z6MkVTA".into()),
+                vta_name: Some("Test VTA".into()),
+                public_url: None,
+                mediator_url: None,
+                mediator_did: None,
+            },
+            audit_logs: vec![],
+        }
+    }
+
+    fn test_config() -> crate::config::AppConfig {
+        toml::from_str("").unwrap()
+    }
+
+    #[test]
+    fn encrypt_decrypt_roundtrip() {
+        let payload = test_payload();
+        let password = "test-password-12chars!";
+        let config = test_config();
+
+        let envelope = encrypt_payload(&payload, password, false, &config).unwrap();
+
+        assert_eq!(envelope.version, 1);
+        assert_eq!(envelope.format, "vta-backup-v1");
+        assert_eq!(envelope.kdf.algorithm, "argon2id");
+        assert_eq!(envelope.encryption.algorithm, "aes-256-gcm");
+        assert!(!envelope.ciphertext.is_empty());
+
+        let decrypted = decrypt_payload(&envelope, password).unwrap();
+
+        assert_eq!(decrypted.active_seed_hex, payload.active_seed_hex);
+        assert_eq!(decrypted.active_seed_id, payload.active_seed_id);
+        assert_eq!(decrypted.seed_records.len(), 1);
+        assert_eq!(decrypted.seed_records[0].id, 0);
+        assert_eq!(decrypted.jwt_signing_key, payload.jwt_signing_key);
+        assert_eq!(decrypted.context_counter, 2);
+        assert_eq!(decrypted.acl_entries.len(), 1);
+        assert_eq!(decrypted.acl_entries[0].did, "did:key:z6MkTest");
+        assert_eq!(decrypted.acl_entries[0].role, "Admin");
+        assert_eq!(decrypted.config.vta_did, Some("did:key:z6MkVTA".into()));
+        assert_eq!(decrypted.config.vta_name, Some("Test VTA".into()));
+    }
+
+    #[test]
+    fn wrong_password_fails() {
+        let payload = test_payload();
+        let config = test_config();
+
+        let envelope = encrypt_payload(&payload, "correct-password!!", false, &config).unwrap();
+        let result = decrypt_payload(&envelope, "wrong-password!!!");
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        // AES-GCM auth tag mismatch → authentication error
+        assert!(
+            format!("{err}").contains("incorrect backup password"),
+            "expected auth error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn tampered_ciphertext_detected() {
+        let payload = test_payload();
+        let config = test_config();
+        let password = "test-password-12chars!";
+
+        let mut envelope = encrypt_payload(&payload, password, false, &config).unwrap();
+
+        // Tamper with the ciphertext (flip a byte)
+        let mut ct_bytes = BASE64.decode(&envelope.ciphertext).unwrap();
+        if let Some(byte) = ct_bytes.last_mut() {
+            *byte ^= 0xFF;
+        }
+        envelope.ciphertext = BASE64.encode(&ct_bytes);
+
+        let result = decrypt_payload(&envelope, password);
+        assert!(result.is_err());
+        assert!(
+            format!("{}", result.unwrap_err()).contains("incorrect backup password"),
+            "tampered ciphertext should fail AES-GCM auth"
+        );
+    }
+
+    #[test]
+    fn unsupported_version_rejected() {
+        let payload = test_payload();
+        let config = test_config();
+        let password = "test-password-12chars!";
+
+        let mut envelope = encrypt_payload(&payload, password, false, &config).unwrap();
+        envelope.version = 99;
+
+        let result = decrypt_payload(&envelope, password);
+        assert!(result.is_err());
+        assert!(
+            format!("{}", result.unwrap_err()).contains("unsupported backup format"),
+            "should reject unknown version"
+        );
+    }
+
+    #[test]
+    fn unsupported_format_rejected() {
+        let payload = test_payload();
+        let config = test_config();
+        let password = "test-password-12chars!";
+
+        let mut envelope = encrypt_payload(&payload, password, false, &config).unwrap();
+        envelope.format = "unknown-format".into();
+
+        let result = decrypt_payload(&envelope, password);
+        assert!(result.is_err());
+        assert!(
+            format!("{}", result.unwrap_err()).contains("unsupported backup format"),
+            "should reject unknown format"
+        );
+    }
+
+    #[test]
+    fn envelope_serialization_roundtrip() {
+        let payload = test_payload();
+        let config = test_config();
+        let password = "test-password-12chars!";
+
+        let envelope = encrypt_payload(&payload, password, true, &config).unwrap();
+
+        // Serialize to JSON and back
+        let json = serde_json::to_string_pretty(&envelope).unwrap();
+        let deserialized: BackupEnvelope = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(deserialized.version, envelope.version);
+        assert_eq!(deserialized.format, envelope.format);
+        assert_eq!(deserialized.includes_audit, true);
+        assert_eq!(deserialized.ciphertext, envelope.ciphertext);
+
+        // Should still decrypt correctly
+        let decrypted = decrypt_payload(&deserialized, password).unwrap();
+        assert_eq!(decrypted.active_seed_hex, payload.active_seed_hex);
+    }
+
+    #[test]
+    fn different_passwords_produce_different_ciphertexts() {
+        let payload = test_payload();
+        let config = test_config();
+
+        let env1 = encrypt_payload(&payload, "password-one-12!!", false, &config).unwrap();
+        let env2 = encrypt_payload(&payload, "password-two-12!!", false, &config).unwrap();
+
+        // Different salts → different ciphertexts
+        assert_ne!(env1.kdf.salt, env2.kdf.salt);
+        assert_ne!(env1.ciphertext, env2.ciphertext);
+    }
+}
