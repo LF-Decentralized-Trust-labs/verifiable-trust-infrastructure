@@ -348,7 +348,7 @@ impl VtaClient {
 
 // ── Client implementation ───────────────────────────────────────────
 
-#[cfg(feature = "session")]
+#[cfg(feature = "client")]
 use crate::protocols::{
     acl_management, context_management, credential_management, did_management, key_management,
     seed_management, vta_management,
@@ -507,7 +507,10 @@ impl VtaClient {
             },
         }
     }
+}
 
+#[cfg(feature = "client")]
+impl VtaClient {
     // ── VTA Management ──────────────────────────────────────────────
 
     /// Trigger a soft restart of the VTA.
