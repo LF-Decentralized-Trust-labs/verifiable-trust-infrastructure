@@ -3,6 +3,7 @@ mod audit;
 #[cfg(feature = "tee")]
 mod attestation;
 mod auth;
+mod backup;
 mod cache;
 mod config;
 mod contexts;
@@ -145,7 +146,10 @@ pub fn router() -> Router<AppState> {
         );
 
     // VTA management routes
-    let router = router.route("/vta/restart", post(vta::restart));
+    let router = router
+        .route("/vta/restart", post(vta::restart))
+        .route("/backup/export", post(backup::export))
+        .route("/backup/import", post(backup::import));
 
     // Authenticated health details endpoint
     let router = router.route("/health/details", get(health::health_details));
