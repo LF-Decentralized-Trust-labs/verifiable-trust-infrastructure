@@ -69,7 +69,11 @@ pub async fn did_log(
         .map_err(|e| AppError::Internal(format!("DID log is not valid UTF-8: {e}")))
 }
 
-/// GET /attestation/admin-credential — Return the bootstrapped admin credential (unauthenticated).
+/// GET /attestation/admin-credential — Return and delete the bootstrapped admin credential.
+///
+/// Unauthenticated, one-time retrieval. The credential is deleted from the
+/// store after the first successful read to prevent repeated access. Subsequent
+/// calls return 404.
 ///
 /// Only available when the VTA auto-bootstrapped a super-admin credential
 /// on first boot via `admin_bootstrap::maybe_bootstrap_admin()`.
@@ -82,14 +86,20 @@ pub async fn admin_credential(
         .await?
         .ok_or_else(|| {
             AppError::NotFound(
-                "no bootstrapped admin credential found — the VTA may not have \
-                 been configured with KMS bootstrap"
+                "no bootstrapped admin credential found — already retrieved or \
+                 VTA was not configured with KMS bootstrap"
                     .into(),
             )
         })?;
 
-    String::from_utf8(cred_bytes)
-        .map_err(|e| AppError::Internal(format!("admin credential is not valid UTF-8: {e}")))
+    let credential = String::from_utf8(cred_bytes)
+        .map_err(|e| AppError::Internal(format!("admin credential is not valid UTF-8: {e}")))?;
+
+    // Delete from encrypted store after retrieval (one-time access)
+    let _ = state.keys_ks.remove("tee:admin_credential").await;
+    tracing::info!("admin credential retrieved and deleted from store");
+
+    Ok(credential)
 }
 
 /// GET /attestation/mnemonic — Check mnemonic export window status (super admin only).

@@ -11,6 +11,7 @@ use crate::server::AppState;
 
 // ---------- GET /audit/logs ----------
 
+/// GET /audit/logs — query audit log entries with optional filters. Auth: Admin only.
 pub async fn list_audit_logs(
     auth: AdminAuth,
     State(state): State<AppState>,
@@ -24,6 +25,7 @@ pub async fn list_audit_logs(
 
 // ---------- GET /audit/retention ----------
 
+/// GET /audit/retention — retrieve the current audit log retention policy. Auth: Admin only.
 pub async fn get_retention(
     auth: AdminAuth,
     State(state): State<AppState>,
@@ -36,6 +38,7 @@ pub async fn get_retention(
 
 // ---------- PATCH /audit/retention ----------
 
+/// PATCH /audit/retention — update the audit log retention period in days. Auth: Super Admin only.
 pub async fn update_retention(
     auth: SuperAdminAuth,
     State(state): State<AppState>,

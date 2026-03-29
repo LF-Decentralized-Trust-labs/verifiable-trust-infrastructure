@@ -128,5 +128,13 @@ COPY deploy/nitro/config.toml /etc/vta/config.toml
 # Create data directories
 RUN mkdir -p /var/lib/vta
 
+# Health check for container orchestration (port depends on config)
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD wget -qO- http://localhost:8100/health || exit 1
+
+# Note: USER nobody is not used because the enclave entrypoint needs root
+# for `ip link set lo up` and socat vsock proxy setup. The Nitro Enclave
+# isolation model provides hardware-level process isolation instead.
+
 # The entrypoint sets up lo, starts vsock proxies, then runs VTA
 ENTRYPOINT ["/usr/local/bin/enclave-entrypoint.sh"]

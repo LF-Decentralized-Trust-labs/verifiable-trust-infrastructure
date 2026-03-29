@@ -92,44 +92,72 @@ async fn main() {
     // ── Open store (vsock-proxied or local) ──
     #[cfg(feature = "vsock-store")]
     let store = if config.tee.kms.is_some() {
-        let vs = store::VsockStore::connect(None)
-            .await
-            .expect("failed to connect to vsock storage proxy");
-        store::Store::Vsock(vs)
+        match store::VsockStore::connect(None).await {
+            Ok(vs) => store::Store::Vsock(vs),
+            Err(e) => {
+                tracing::error!("failed to connect to vsock storage proxy: {e}");
+                std::process::exit(1);
+            }
+        }
     } else {
-        store::Store::open(&config.store).expect("failed to open store")
+        match store::Store::open(&config.store) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::error!("failed to open store: {e}");
+                std::process::exit(1);
+            }
+        }
     };
     #[cfg(not(feature = "vsock-store"))]
-    let store = store::Store::open(&config.store).expect("failed to open store");
+    let store = match store::Store::open(&config.store) {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::error!("failed to open store: {e}");
+            std::process::exit(1);
+        }
+    };
 
     // ── KMS secret bootstrap (uses the store for ciphertext K/V storage) ──
     let tee_bootstrap = if let Some(ref kms_config) = config.tee.kms {
-        Some(
-            tee::kms_bootstrap::bootstrap_secrets(
-                kms_config,
-                &config.tee.storage_key_salt,
-                &store,
-            )
-            .await
-            .expect("TEE KMS bootstrap failed"),
+        match tee::kms_bootstrap::bootstrap_secrets(
+            kms_config,
+            &config.tee.storage_key_salt,
+            &store,
         )
+        .await
+        {
+            Ok(secrets) => Some(secrets),
+            Err(e) => {
+                tracing::error!("TEE KMS bootstrap failed: {e}");
+                std::process::exit(1);
+            }
+        }
     } else {
         None
     };
 
     // ── Seed store ──
     let seed_store: Arc<dyn SeedStore> = if let Some(ref bootstrap) = tee_bootstrap {
-        let kms_config = config.tee.kms.as_ref().unwrap();
+        let kms_config = match config.tee.kms.as_ref() {
+            Some(c) => c,
+            None => {
+                tracing::error!("KMS config missing after successful bootstrap");
+                std::process::exit(1);
+            }
+        };
         Arc::new(KmsTeeSeedStore::new(
             bootstrap.seed.clone(),
             kms_config.key_arn.clone(),
             kms_config.region.clone(),
         ))
     } else {
-        Arc::from(
-            vta_service::keys::seed_store::create_seed_store(&config)
-                .expect("failed to create seed store"),
-        )
+        match vta_service::keys::seed_store::create_seed_store(&config) {
+            Ok(store) => Arc::from(store),
+            Err(e) => {
+                tracing::error!("failed to create seed store: {e}");
+                std::process::exit(1);
+            }
+        }
     };
 
     // ── JWT signing key + storage encryption key from bootstrap ──
@@ -185,7 +213,13 @@ async fn main() {
 
     // ── Initialize TEE provider + build context ──
     let tee_context = {
-        let tee_state = tee::init_tee(&config.tee).expect("TEE initialization failed");
+        let tee_state = match tee::init_tee(&config.tee) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::error!("TEE initialization failed: {e}");
+                std::process::exit(1);
+            }
+        };
         tee_state.map(|state| TeeContext {
             state,
             mnemonic_guard,

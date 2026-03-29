@@ -50,6 +50,12 @@ pub async fn export_backup(
 ) -> Result<BackupEnvelope, AppError> {
     auth.require_super_admin()?;
 
+    if password.len() < 12 {
+        return Err(AppError::Validation(
+            "backup password must be at least 12 characters".into(),
+        ));
+    }
+
     // 1. Collect the active seed
     let seed_bytes = seed_store
         .get()

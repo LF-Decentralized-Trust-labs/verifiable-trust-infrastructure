@@ -16,6 +16,7 @@ pub struct ListAclQuery {
     pub context: Option<String>,
 }
 
+/// GET /acl — list all ACL entries, optionally filtered by context. Auth: Admin or Initiator.
 pub async fn list_acl(
     auth: ManageAuth,
     State(state): State<AppState>,
@@ -35,6 +36,7 @@ pub struct CreateAclRequest {
     pub allowed_contexts: Vec<String>,
 }
 
+/// POST /acl — create a new ACL entry for a DID. Auth: Admin or Initiator.
 pub async fn create_acl(
     auth: ManageAuth,
     State(state): State<AppState>,
@@ -54,6 +56,7 @@ pub async fn create_acl(
     Ok((StatusCode::CREATED, Json(result)))
 }
 
+/// GET /acl/{did} — retrieve a single ACL entry by DID. Auth: Admin or Initiator.
 pub async fn get_acl(
     auth: ManageAuth,
     State(state): State<AppState>,
@@ -70,6 +73,7 @@ pub struct UpdateAclRequest {
     pub allowed_contexts: Option<Vec<String>>,
 }
 
+/// PATCH /acl/{did} — update role, label, or allowed contexts for an ACL entry. Auth: Admin or Initiator.
 pub async fn update_acl(
     auth: ManageAuth,
     State(state): State<AppState>,
@@ -92,6 +96,7 @@ pub async fn update_acl(
     Ok(Json(result))
 }
 
+/// DELETE /acl/{did} — remove an ACL entry. Auth: Admin or Initiator.
 pub async fn delete_acl(
     auth: ManageAuth,
     State(state): State<AppState>,

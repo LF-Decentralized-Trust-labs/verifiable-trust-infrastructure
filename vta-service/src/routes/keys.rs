@@ -30,6 +30,7 @@ pub struct CreateKeyRequest {
     pub context_id: Option<String>,
 }
 
+/// POST /keys — create a new key record. Auth: Admin or Initiator. Context-scoped.
 pub async fn create_key(
     auth: AdminAuth,
     State(state): State<AppState>,
@@ -55,6 +56,7 @@ pub async fn create_key(
     Ok((StatusCode::CREATED, Json(result)))
 }
 
+/// GET /keys/{key_id}/secret — retrieve private key material. Auth: Admin or Initiator.
 pub async fn get_key_secret(
     auth: AdminAuth,
     State(state): State<AppState>,
@@ -72,6 +74,7 @@ pub async fn get_key_secret(
     Ok(Json(result))
 }
 
+/// GET /keys/{key_id} — retrieve a single key record. Auth: any authenticated user.
 pub async fn get_key(
     auth: AuthClaims,
     State(state): State<AppState>,
@@ -81,6 +84,7 @@ pub async fn get_key(
     Ok(Json(result))
 }
 
+/// DELETE /keys/{key_id} — revoke/invalidate a key. Auth: Admin or Initiator.
 pub async fn invalidate_key(
     auth: AdminAuth,
     State(state): State<AppState>,
@@ -95,6 +99,7 @@ pub struct RenameKeyRequest {
     pub key_id: String,
 }
 
+/// PATCH /keys/{key_id} — rename a key's identifier. Auth: Admin or Initiator.
 pub async fn rename_key(
     auth: AdminAuth,
     State(state): State<AppState>,
@@ -114,6 +119,7 @@ pub struct ListKeysQuery {
     pub context_id: Option<String>,
 }
 
+/// GET /keys — list key records with optional filters. Auth: any authenticated user. Context-scoped.
 pub async fn list_keys(
     auth: AuthClaims,
     State(state): State<AppState>,
@@ -136,6 +142,7 @@ pub async fn list_keys(
 
 // ── Seed endpoints ────────────────────────────────────────────────
 
+/// GET /keys/seeds — list all seed records. Auth: Admin or Initiator.
 pub async fn list_seeds(
     _auth: AdminAuth,
     State(state): State<AppState>,
@@ -149,6 +156,7 @@ pub struct RotateSeedRequest {
     pub mnemonic: Option<String>,
 }
 
+/// POST /keys/seeds/rotate — rotate the active seed, optionally supplying a mnemonic. Auth: Admin or Initiator.
 pub async fn rotate_seed(
     _auth: AdminAuth,
     State(state): State<AppState>,
@@ -174,6 +182,7 @@ pub struct SignRequest {
     pub algorithm: SignAlgorithm,
 }
 
+/// POST /keys/{key_id}/sign — sign a base64url payload with the specified key. Auth: any authenticated user.
 pub async fn sign_with_key(
     auth: AuthClaims,
     State(state): State<AppState>,

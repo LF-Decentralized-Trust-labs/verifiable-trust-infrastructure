@@ -8,6 +8,7 @@ use crate::operations;
 use crate::operations::cache::{CacheGetResponse, CachePutRequest, CachePutResponse};
 use crate::server::AppState;
 
+/// GET /cache/{key} — retrieve a cached value by key. Auth: any authenticated user.
 pub async fn get_cached(
     auth: AuthClaims,
     State(state): State<AppState>,
@@ -19,6 +20,7 @@ pub async fn get_cached(
     }
 }
 
+/// PUT /cache/{key} — store or update a cached value. Auth: any authenticated user.
 pub async fn put_cached(
     auth: AuthClaims,
     State(state): State<AppState>,
@@ -29,6 +31,7 @@ pub async fn put_cached(
     Ok((StatusCode::OK, Json(resp)))
 }
 
+/// DELETE /cache/{key} — remove a cached value. Auth: any authenticated user.
 pub async fn delete_cached(
     auth: AuthClaims,
     State(state): State<AppState>,

@@ -28,6 +28,7 @@ use tracing::{info, warn};
 
 // ---------- POST /auth/challenge ----------
 
+/// POST /auth/challenge — issue a DID-auth challenge nonce for a session. Auth: unauthenticated.
 pub async fn challenge(
     State(state): State<AppState>,
     Json(req): Json<ChallengeRequest>,
@@ -137,6 +138,7 @@ pub async fn challenge(
 
 // ---------- POST /auth/ ----------
 
+/// POST /auth/ — verify a signed DIDComm challenge and issue access+refresh tokens. Auth: unauthenticated.
 pub async fn authenticate(
     State(state): State<AppState>,
     body: String,
@@ -278,6 +280,7 @@ pub struct RefreshData {
     pub access_expires_at: u64,
 }
 
+/// POST /auth/refresh — exchange a refresh token for a new access token. Auth: unauthenticated.
 pub async fn refresh(
     State(state): State<AppState>,
     body: String,
@@ -376,6 +379,7 @@ pub struct GenerateCredentialsRequest {
     pub allowed_contexts: Vec<String>,
 }
 
+/// POST /auth/credentials — generate a new DID+keypair and register an ACL entry. Auth: Admin or Initiator.
 pub async fn generate_credentials(
     auth: ManageAuth,
     State(state): State<AppState>,
@@ -420,6 +424,7 @@ impl From<Session> for SessionSummary {
     }
 }
 
+/// GET /auth/sessions — list all active sessions. Auth: Admin or Initiator.
 pub async fn session_list(
     _auth: ManageAuth,
     State(state): State<AppState>,
@@ -432,6 +437,7 @@ pub async fn session_list(
 
 // ---------- DELETE /auth/sessions/{session_id} ----------
 
+/// DELETE /auth/sessions/{session_id} — revoke a single session (own or admin). Auth: any authenticated user.
 pub async fn revoke_session(
     auth: AuthClaims,
     State(state): State<AppState>,
@@ -466,6 +472,7 @@ pub struct RevokeByDidResponse {
     pub revoked: u64,
 }
 
+/// DELETE /auth/sessions?did=X — revoke all sessions for a given DID. Auth: Admin only.
 pub async fn revoke_sessions_by_did(
     _auth: AdminAuth,
     State(state): State<AppState>,
