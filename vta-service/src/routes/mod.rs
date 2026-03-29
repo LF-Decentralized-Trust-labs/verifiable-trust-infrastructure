@@ -148,6 +148,7 @@ pub fn router() -> Router<AppState> {
     // VTA management routes
     let router = router
         .route("/vta/restart", post(vta::restart))
+        .route("/metrics", get(vta::metrics))
         .route("/backup/export", post(backup::export))
         .route("/backup/import", post(backup::import));
 

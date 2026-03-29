@@ -1,16 +1,17 @@
 //! Prometheus metrics for operational observability.
 //!
 //! Records request count and latency per endpoint. Exposed via
-//! `GET /metrics` in Prometheus text format (unauthenticated).
+//! `GET /metrics` in Prometheus text format. Requires authentication
+//! (any role including Monitor).
 
 use std::time::Instant;
 
 use axum::body::Body;
 use axum::extract::Request;
 use axum::middleware::Next;
-use axum::response::{IntoResponse, Response};
+use axum::response::Response;
 use metrics::{counter, histogram};
-use metrics_exporter_prometheus::PrometheusHandle;
+pub use metrics_exporter_prometheus::PrometheusHandle;
 
 /// Install the Prometheus metrics recorder (call once at startup).
 ///
@@ -43,11 +44,4 @@ pub async fn track_metrics(req: Request<Body>, next: Next) -> Response {
     histogram!("http_request_duration_seconds", "method" => method, "path" => path).record(duration);
 
     response
-}
-
-/// GET /metrics — render Prometheus text format.
-pub async fn metrics_handler(
-    axum::extract::State(handle): axum::extract::State<PrometheusHandle>,
-) -> impl IntoResponse {
-    handle.render()
 }

@@ -94,6 +94,7 @@ impl TestApp {
             atm: None,
             tee: None,
             restart_tx,
+            metrics_handle: None,
         };
 
         let router = routes::router()

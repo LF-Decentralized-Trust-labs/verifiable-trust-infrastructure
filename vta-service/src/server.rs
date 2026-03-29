@@ -92,6 +92,9 @@ pub struct AppState {
     pub tee: Option<TeeContext>,
     /// Send `true` to trigger a soft restart (threads shut down and re-initialize).
     pub restart_tx: watch::Sender<bool>,
+    /// Prometheus metrics handle for rendering `/metrics` endpoint.
+    #[cfg(feature = "rest")]
+    pub metrics_handle: Option<crate::metrics::PrometheusHandle>,
 }
 
 impl AuthState for AppState {
@@ -155,6 +158,8 @@ pub async fn build_app_state(
         atm,
         tee: tee_context,
         restart_tx,
+        #[cfg(feature = "rest")]
+        metrics_handle: None,
     })
 }
 
@@ -304,6 +309,7 @@ pub async fn run(
                 atm,
                 tee: tee_context.clone(),
                 restart_tx: restart_tx.clone(),
+                metrics_handle: None, // Set in REST thread after install
             };
             let mut rest_shutdown_rx = shutdown_rx.clone();
             Some(
@@ -552,7 +558,7 @@ fn run_storage_thread(
 #[cfg(feature = "rest")]
 fn run_rest_thread(
     std_listener: std::net::TcpListener,
-    state: AppState,
+    mut state: AppState,
     shutdown_rx: &mut watch::Receiver<bool>,
 ) {
     let rt = tokio::runtime::Builder::new_current_thread()
@@ -565,6 +571,7 @@ fn run_rest_thread(
 
         // Install Prometheus metrics recorder (once per process)
         let metrics_handle = crate::metrics::install();
+        state.metrics_handle = Some(metrics_handle);
 
         let listener = tokio::net::TcpListener::from_std(std_listener)
             .expect("failed to convert std TcpListener to tokio TcpListener");
@@ -579,14 +586,8 @@ fn run_rest_thread(
                     .on_response(DefaultOnResponse::new().level(Level::INFO)),
             );
 
-        // Metrics and health endpoints (unauthenticated)
-        let metrics_route = axum::Router::new()
-            .route("/metrics", axum::routing::get(crate::metrics::metrics_handler))
-            .with_state(metrics_handle);
-
         let app = traced_routes
-            .merge(routes::health_router().with_state(state))
-            .merge(metrics_route);
+            .merge(routes::health_router().with_state(state));
 
         let shutdown_rx = shutdown_rx.clone();
         axum::serve(listener, app)
