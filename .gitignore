@@ -4,3 +4,4 @@ target/
 **config.toml
 !deploy/**/config.toml
 **.jsonl
+**.vtabak

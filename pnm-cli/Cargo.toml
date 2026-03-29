@@ -24,6 +24,7 @@ azure-secrets = ["vta-sdk/azure-secrets"]
 vta-sdk = { path = "../vta-sdk", features = ["session"] }
 vta-cli-common = { path = "../vta-cli-common" }
 affinidi-did-resolver-cache-sdk = "0.8"
+chrono = { workspace = true }
 clap = { workspace = true, features = ["env"] }
 dialoguer = "0.11"
 dirs = "6"

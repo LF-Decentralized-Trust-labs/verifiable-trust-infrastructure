@@ -3,6 +3,7 @@ mod audit;
 #[cfg(feature = "tee")]
 mod attestation;
 mod auth;
+mod backup;
 mod cache;
 mod config;
 mod contexts;
@@ -10,6 +11,7 @@ mod contexts;
 mod did_webvh;
 mod health;
 pub mod keys;
+mod vta;
 
 use axum::Router;
 use axum::extract::DefaultBodyLimit;
@@ -142,6 +144,12 @@ pub fn router() -> Router<AppState> {
             "/webvh/dids/{did}/log",
             get(did_webvh::get_did_log_handler),
         );
+
+    // VTA management routes
+    let router = router
+        .route("/vta/restart", post(vta::restart))
+        .route("/backup/export", post(backup::export))
+        .route("/backup/import", post(backup::import));
 
     // Authenticated health details endpoint
     let router = router.route("/health/details", get(health::health_details));

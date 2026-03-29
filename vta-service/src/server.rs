@@ -80,6 +80,8 @@ pub struct AppState {
     pub jwt_keys: Option<Arc<JwtKeys>>,
     pub atm: Option<ATM>,
     pub tee: Option<TeeContext>,
+    /// Send `true` to trigger a soft restart (threads shut down and re-initialize).
+    pub restart_tx: watch::Sender<bool>,
 }
 
 impl AuthState for AppState {
@@ -102,6 +104,7 @@ pub async fn build_app_state(
     seed_store: Arc<dyn SeedStore>,
     storage_encryption_key: Option<[u8; 32]>,
     tee_context: Option<TeeContext>,
+    restart_tx: watch::Sender<bool>,
 ) -> Result<AppState, AppError> {
     let apply_encryption = |ks: KeyspaceHandle| -> KeyspaceHandle {
         if let Some(key) = storage_encryption_key {
@@ -141,14 +144,15 @@ pub async fn build_app_state(
         jwt_keys,
         atm,
         tee: tee_context,
+        restart_tx,
     })
 }
 
 pub async fn run(
-    config: AppConfig,
+    mut config: AppConfig,
     store: Store,
     seed_store: Arc<dyn SeedStore>,
-    storage_encryption_key: Option<[u8; 32]>,
+    mut storage_encryption_key: Option<[u8; 32]>,
     tee_context: Option<TeeContext>,
 ) -> Result<(), AppError> {
     // Determine which services will actually start (feature flag AND config)
@@ -163,41 +167,7 @@ pub async fn run(
         ));
     }
 
-    // Open cached keyspace handles with optional encryption.
-    let apply_encryption = |ks: KeyspaceHandle| -> KeyspaceHandle {
-        match storage_encryption_key {
-            Some(key) => {
-                info!("storage encryption enabled for keyspace");
-                ks.with_encryption(key)
-            }
-            None => ks,
-        }
-    };
-
-    let keys_ks = apply_encryption(store.keyspace("keys")?);
-    let sessions_ks = apply_encryption(store.keyspace("sessions")?);
-    let acl_ks = apply_encryption(store.keyspace("acl")?);
-    let contexts_ks = apply_encryption(store.keyspace("contexts")?);
-    let audit_ks = apply_encryption(store.keyspace("audit")?);
-    let cache_ks = store.keyspace("cache")?;
-    #[cfg(feature = "webvh")]
-    let webvh_ks = apply_encryption(store.keyspace("webvh")?);
-
-    // Initialize auth infrastructure
-    let (did_resolver, secrets_resolver, jwt_keys, atm) =
-        init_auth(&config, &*seed_store, &keys_ks).await;
-
-    // In TEE required mode, warn if auth isn't initialized.
-    #[cfg(feature = "tee")]
-    if config.tee.mode == crate::config::TeeMode::Required && jwt_keys.is_none() {
-        warn!(
-            "TEE mode is 'required' but authentication is not initialized \
-             (vta_did not configured). The VTA will start but authenticated \
-             endpoints will return 401."
-        );
-    }
-
-    // Bind TCP listener only if REST is enabled
+    // Bind TCP listener once (persists across soft restarts)
     #[cfg(feature = "rest")]
     let std_listener = if config.services.rest {
         let addr = format!("{}:{}", config.server.host, config.server.port);
@@ -209,241 +179,313 @@ pub async fn run(
         None
     };
 
-    // Shutdown coordination
-    let (shutdown_tx, shutdown_rx) = watch::channel(false);
-
-    // Spawn signal handler on the main tokio runtime
-    #[cfg(feature = "didcomm")]
-    let didcomm_shutdown = CancellationToken::new();
-    tokio::spawn({
-        let shutdown_tx = shutdown_tx.clone();
-        #[cfg(feature = "didcomm")]
-        let didcomm_shutdown = didcomm_shutdown.clone();
-        async move {
-            shutdown_signal().await;
-            let _ = shutdown_tx.send(true);
-            #[cfg(feature = "didcomm")]
-            didcomm_shutdown.cancel();
-        }
-    });
-
-    // Gather storage thread inputs
-    let storage_sessions_ks = sessions_ks.clone();
-    let storage_audit_ks = audit_ks.clone();
-    let storage_audit_config = config.audit.clone();
-    let storage_auth_config = config.auth.clone();
-    let has_auth = jwt_keys.is_some();
-
-    // Shared DIDComm bridge (still used by REST handlers for WebVH request-response)
-    #[cfg(feature = "didcomm")]
-    let didcomm_bridge: Arc<tokio::sync::RwLock<Option<DIDCommBridge>>> = Arc::new(tokio::sync::RwLock::new(None));
-
-    // Build VtaState for the DIDComm service router
-    #[cfg(feature = "didcomm")]
-    let vta_state = if config.services.didcomm {
-        Some(Arc::new(messaging::router::VtaState {
-            keys_ks: keys_ks.clone(),
-            acl_ks: acl_ks.clone(),
-            contexts_ks: contexts_ks.clone(),
-            audit_ks: audit_ks.clone(),
-            #[cfg(feature = "webvh")]
-            webvh_ks: webvh_ks.clone(),
-            seed_store: seed_store.clone(),
-            config: Arc::new(RwLock::new(config.clone())),
-            did_resolver: did_resolver.clone(),
-            #[cfg(feature = "tee")]
-            tee_state: tee_context.as_ref().map(|tc| tc.state.clone()),
-        }))
-    } else {
-        None
-    };
-
-    // Spawn REST thread (conditional)
-    #[cfg(feature = "rest")]
-    let rest_handle = if let Some(listener) = std_listener {
-        // Build AppState for the REST thread
-        let state = AppState {
-            keys_ks,
-            sessions_ks,
-            acl_ks,
-            contexts_ks,
-            audit_ks,
-            cache_ks,
-            #[cfg(feature = "webvh")]
-            webvh_ks,
-            config: Arc::new(RwLock::new(config.clone())),
-            seed_store,
-            did_resolver,
-            secrets_resolver: secrets_resolver.clone(),
-            #[cfg(feature = "didcomm")]
-            didcomm_bridge: didcomm_bridge.clone(),
-            jwt_keys,
-            atm,
-            tee: tee_context.clone(),
+    // ── Restart loop ──────────────────────────────────────────────
+    // Each iteration starts all service threads, waits for shutdown
+    // or restart signal, tears everything down, then either exits
+    // or loops back to re-initialize with updated state.
+    loop {
+        // Open cached keyspace handles with optional encryption.
+        let apply_encryption = |ks: KeyspaceHandle| -> KeyspaceHandle {
+            match storage_encryption_key {
+                Some(key) => {
+                    info!("storage encryption enabled for keyspace");
+                    ks.with_encryption(key)
+                }
+                None => ks,
+            }
         };
-        let mut rest_shutdown_rx = shutdown_rx.clone();
-        Some(
-            std::thread::Builder::new()
-                .name("vta-rest".into())
-                .spawn(move || run_rest_thread(listener, state, &mut rest_shutdown_rx))
-                .map_err(|e| AppError::Internal(format!("failed to spawn REST thread: {e}")))?,
-        )
-    } else {
-        None
-    };
-    #[cfg(not(feature = "rest"))]
-    let rest_handle: Option<std::thread::JoinHandle<()>> = None;
 
-    // Start DIDComm service (conditional)
-    #[cfg(feature = "didcomm")]
-    let didcomm_service: Option<DIDCommService> = if let Some(ref vta_state) = vta_state {
-        match (&secrets_resolver, &config.vta_did, &config.messaging) {
-            (Some(sr), Some(vta_did), Some(messaging_config)) => {
-                // Collect secrets from the resolver for the TDKProfile
-                let mut secrets = Vec::new();
-                let signing_id = format!("{vta_did}#key-0");
-                let ka_id = format!("{vta_did}#key-1");
-                if let Some(s) = sr.get_secret(&signing_id).await {
-                    secrets.push(s);
-                }
-                if let Some(s) = sr.get_secret(&ka_id).await {
-                    secrets.push(s);
-                }
+        let keys_ks = apply_encryption(store.keyspace("keys")?);
+        let sessions_ks = apply_encryption(store.keyspace("sessions")?);
+        let acl_ks = apply_encryption(store.keyspace("acl")?);
+        let contexts_ks = apply_encryption(store.keyspace("contexts")?);
+        let audit_ks = apply_encryption(store.keyspace("audit")?);
+        let cache_ks = store.keyspace("cache")?;
+        #[cfg(feature = "webvh")]
+        let webvh_ks = apply_encryption(store.keyspace("webvh")?);
 
-                let profile = TDKProfile::new(
-                    "VTA",
-                    vta_did,
-                    Some(&messaging_config.mediator_did),
-                    secrets,
-                );
+        // Initialize auth infrastructure
+        let (did_resolver, secrets_resolver, jwt_keys, atm) =
+            init_auth(&config, &*seed_store, &keys_ks).await;
 
-                // Build a TDKConfig for the DIDComm listener so it uses the
-                // same resolver mode as the VTA (network-mode in TEE enclaves).
-                // Without this, the listener defaults to local-mode and every
-                // JWE encrypt/decrypt triggers a fresh HTTP fetch through the
-                // HTTPS proxy — adding ~1s per message.
-                let listener_tdk_config = {
-                    let mut builder = affinidi_tdk::common::config::TDKConfig::builder()
-                        .with_load_environment(false);
-                    if let Some(ref url) = config.resolver_url {
-                        let resolver_config = DIDCacheConfigBuilder::default()
-                            .with_network_mode(url)
-                            .build();
-                        builder = builder.with_did_resolver_config(resolver_config);
-                    }
-                    builder.build().ok()
-                };
-
-                let service_config = DIDCommServiceConfig {
-                    listeners: vec![ListenerConfig {
-                        id: "vta-main".into(),
-                        profile,
-                        restart_policy: RestartPolicy::Always {
-                            backoff: RetryConfig {
-                                initial_delay_secs: 5,
-                                max_delay_secs: 60,
-                            },
-                        },
-                        tdk_config: listener_tdk_config,
-                        ..Default::default()
-                    }],
-                };
-
-                let router = messaging::router::build_router(Arc::clone(vta_state))
-                    .map_err(|e| AppError::Internal(format!("failed to build DIDComm router: {e}")))?;
-
-                match DIDCommService::start(service_config, router, didcomm_shutdown.clone()).await {
-                    Ok(service) => {
-                        info!("DIDComm service started");
-                        Some(service)
-                    }
-                    Err(e) => {
-                        warn!("failed to start DIDComm service: {e}");
-                        None
-                    }
-                }
-            }
-            _ => {
-                info!("DIDComm not configured — service not started");
-                None
-            }
+        // In TEE required mode, warn if auth isn't initialized.
+        #[cfg(feature = "tee")]
+        if config.tee.mode == crate::config::TeeMode::Required && jwt_keys.is_none() {
+            warn!(
+                "TEE mode is 'required' but authentication is not initialized \
+                 (vta_did not configured). The VTA will start but authenticated \
+                 endpoints will return 401."
+            );
         }
-    } else {
-        None
-    };
-    #[cfg(not(feature = "didcomm"))]
-    let didcomm_service: Option<()> = None;
 
-    // Storage thread always runs
-    let mut storage_shutdown_rx = shutdown_rx.clone();
-    let storage_handle = std::thread::Builder::new()
-        .name("vta-storage".into())
-        .spawn(move || {
-            run_storage_thread(
-                store,
-                storage_sessions_ks,
-                storage_audit_ks,
-                storage_audit_config,
-                storage_auth_config,
-                has_auth,
-                &mut storage_shutdown_rx,
+        // Shutdown + restart coordination
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let (restart_tx, mut restart_rx) = watch::channel(false);
+
+        #[cfg(feature = "didcomm")]
+        let didcomm_shutdown = CancellationToken::new();
+
+        // Spawn signal handler
+        tokio::spawn({
+            let shutdown_tx = shutdown_tx.clone();
+            #[cfg(feature = "didcomm")]
+            let didcomm_shutdown = didcomm_shutdown.clone();
+            async move {
+                shutdown_signal().await;
+                let _ = shutdown_tx.send(true);
+                #[cfg(feature = "didcomm")]
+                didcomm_shutdown.cancel();
+            }
+        });
+
+        // Gather storage thread inputs
+        let storage_store = store.clone();
+        let storage_sessions_ks = sessions_ks.clone();
+        let storage_audit_ks = audit_ks.clone();
+        let storage_audit_config = config.audit.clone();
+        let storage_auth_config = config.auth.clone();
+        let has_auth = jwt_keys.is_some();
+
+        // Shared DIDComm bridge (still used by REST handlers for WebVH request-response)
+        #[cfg(feature = "didcomm")]
+        let didcomm_bridge: Arc<tokio::sync::RwLock<Option<DIDCommBridge>>> = Arc::new(tokio::sync::RwLock::new(None));
+
+        // Build VtaState for the DIDComm service router
+        #[cfg(feature = "didcomm")]
+        let vta_state = if config.services.didcomm {
+            Some(Arc::new(messaging::router::VtaState {
+                keys_ks: keys_ks.clone(),
+                acl_ks: acl_ks.clone(),
+                contexts_ks: contexts_ks.clone(),
+                audit_ks: audit_ks.clone(),
+                #[cfg(feature = "webvh")]
+                webvh_ks: webvh_ks.clone(),
+                seed_store: seed_store.clone(),
+                config: Arc::new(RwLock::new(config.clone())),
+                did_resolver: did_resolver.clone(),
+                #[cfg(feature = "tee")]
+                tee_state: tee_context.as_ref().map(|tc| tc.state.clone()),
+                restart_tx: restart_tx.clone(),
+            }))
+        } else {
+            None
+        };
+
+        // Spawn REST thread (conditional)
+        #[cfg(feature = "rest")]
+        let rest_handle = if let Some(ref listener_ref) = std_listener {
+            let listener = listener_ref.try_clone().map_err(AppError::Io)?;
+            let state = AppState {
+                keys_ks,
+                sessions_ks,
+                acl_ks,
+                contexts_ks,
+                audit_ks,
+                cache_ks,
+                #[cfg(feature = "webvh")]
+                webvh_ks,
+                config: Arc::new(RwLock::new(config.clone())),
+                seed_store: seed_store.clone(),
+                did_resolver,
+                secrets_resolver: secrets_resolver.clone(),
+                #[cfg(feature = "didcomm")]
+                didcomm_bridge: didcomm_bridge.clone(),
+                jwt_keys,
+                atm,
+                tee: tee_context.clone(),
+                restart_tx: restart_tx.clone(),
+            };
+            let mut rest_shutdown_rx = shutdown_rx.clone();
+            Some(
+                std::thread::Builder::new()
+                    .name("vta-rest".into())
+                    .spawn(move || run_rest_thread(listener, state, &mut rest_shutdown_rx))
+                    .map_err(|e| AppError::Internal(format!("failed to spawn REST thread: {e}")))?,
             )
-        })
-        .map_err(|e| AppError::Internal(format!("failed to spawn storage thread: {e}")))?;
+        } else {
+            None
+        };
+        #[cfg(not(feature = "rest"))]
+        let rest_handle: Option<std::thread::JoinHandle<()>> = None;
 
-    // Wait for shutdown signal (blocks until SIGINT/SIGTERM or a service thread exits)
-    let mut any_panic = false;
+        // Start DIDComm service (conditional)
+        #[cfg(feature = "didcomm")]
+        let didcomm_service: Option<DIDCommService> = if let Some(ref vta_state) = vta_state {
+            match (&secrets_resolver, &config.vta_did, &config.messaging) {
+                (Some(sr), Some(vta_did), Some(messaging_config)) => {
+                    // Collect secrets from the resolver for the TDKProfile
+                    let mut secrets = Vec::new();
+                    let signing_id = format!("{vta_did}#key-0");
+                    let ka_id = format!("{vta_did}#key-1");
+                    if let Some(s) = sr.get_secret(&signing_id).await {
+                        secrets.push(s);
+                    }
+                    if let Some(s) = sr.get_secret(&ka_id).await {
+                        secrets.push(s);
+                    }
 
-    // If REST is running, wait for it to stop (it blocks on its own shutdown_rx).
-    // If REST is not running, wait directly for the shutdown signal.
-    if let Some(handle) = rest_handle {
-        match tokio::task::spawn_blocking(move || handle.join()).await {
-            Ok(Ok(())) => info!("REST thread stopped"),
-            Ok(Err(_panic)) => {
-                error!("REST thread panicked");
-                any_panic = true;
+                    let profile = TDKProfile::new(
+                        "VTA",
+                        vta_did,
+                        Some(&messaging_config.mediator_did),
+                        secrets,
+                    );
+
+                    // Build a TDKConfig for the DIDComm listener so it uses the
+                    // same resolver mode as the VTA (network-mode in TEE enclaves).
+                    let listener_tdk_config = {
+                        let mut builder = affinidi_tdk::common::config::TDKConfig::builder()
+                            .with_load_environment(false);
+                        if let Some(ref url) = config.resolver_url {
+                            let resolver_config = DIDCacheConfigBuilder::default()
+                                .with_network_mode(url)
+                                .build();
+                            builder = builder.with_did_resolver_config(resolver_config);
+                        }
+                        builder.build().ok()
+                    };
+
+                    let service_config = DIDCommServiceConfig {
+                        listeners: vec![ListenerConfig {
+                            id: "vta-main".into(),
+                            profile,
+                            restart_policy: RestartPolicy::Always {
+                                backoff: RetryConfig {
+                                    initial_delay_secs: 5,
+                                    max_delay_secs: 60,
+                                },
+                            },
+                            tdk_config: listener_tdk_config,
+                            ..Default::default()
+                        }],
+                    };
+
+                    let router = messaging::router::build_router(Arc::clone(vta_state))
+                        .map_err(|e| AppError::Internal(format!("failed to build DIDComm router: {e}")))?;
+
+                    match DIDCommService::start(service_config, router, didcomm_shutdown.clone()).await {
+                        Ok(service) => {
+                            info!("DIDComm service started");
+                            Some(service)
+                        }
+                        Err(e) => {
+                            warn!("failed to start DIDComm service: {e}");
+                            None
+                        }
+                    }
+                }
+                _ => {
+                    info!("DIDComm not configured — service not started");
+                    None
+                }
             }
-            Err(e) => {
-                error!("failed to join REST thread: {e}");
+        } else {
+            None
+        };
+        #[cfg(not(feature = "didcomm"))]
+        let didcomm_service: Option<()> = None;
+
+        // Storage thread always runs
+        let mut storage_shutdown_rx = shutdown_rx.clone();
+        let storage_handle = std::thread::Builder::new()
+            .name("vta-storage".into())
+            .spawn(move || {
+                run_storage_thread(
+                    storage_store,
+                    storage_sessions_ks,
+                    storage_audit_ks,
+                    storage_audit_config,
+                    storage_auth_config,
+                    has_auth,
+                    &mut storage_shutdown_rx,
+                )
+            })
+            .map_err(|e| AppError::Internal(format!("failed to spawn storage thread: {e}")))?;
+
+        // ── Wait for shutdown or restart ──────────────────────────
+        let mut any_panic = false;
+        let is_restart;
+
+        if let Some(handle) = rest_handle {
+            // REST thread blocks — wait for it, or for restart signal
+            tokio::select! {
+                result = tokio::task::spawn_blocking(move || handle.join()) => {
+                    match result {
+                        Ok(Ok(())) => info!("REST thread stopped"),
+                        Ok(Err(_panic)) => { error!("REST thread panicked"); any_panic = true; }
+                        Err(e) => { error!("failed to join REST thread: {e}"); any_panic = true; }
+                    }
+                    is_restart = false;
+                }
+                _ = restart_rx.changed() => {
+                    info!("soft restart requested — shutting down services");
+                    let _ = shutdown_tx.send(true);
+                    is_restart = true;
+                }
+            }
+        } else {
+            // No REST thread — wait for shutdown or restart
+            tokio::select! {
+                _ = async {
+                    let mut wait_rx = shutdown_rx.clone();
+                    let _ = wait_rx.changed().await;
+                } => {
+                    is_restart = false;
+                }
+                _ = restart_rx.changed() => {
+                    info!("soft restart requested — shutting down services");
+                    let _ = shutdown_tx.send(true);
+                    is_restart = true;
+                }
+            }
+        }
+
+        // Signal DIDComm service to stop and wait for graceful shutdown
+        #[cfg(feature = "didcomm")]
+        if let Some(service) = didcomm_service {
+            didcomm_shutdown.cancel();
+            service.shutdown().await;
+            info!("DIDComm service stopped");
+        }
+        #[cfg(not(feature = "didcomm"))]
+        drop(didcomm_service);
+
+        if any_panic {
+            let _ = shutdown_tx.send(true);
+        }
+
+        // Join storage last — guarantees all writes flushed before database closes
+        match storage_handle.join() {
+            Ok(()) => info!("storage thread stopped"),
+            Err(_panic) => {
+                error!("storage thread panicked");
                 any_panic = true;
             }
         }
-    } else {
-        // No REST thread — wait for the shutdown signal directly so the DIDComm
-        // service stays alive until SIGINT/SIGTERM.
-        let mut wait_rx = shutdown_rx.clone();
-        let _ = wait_rx.changed().await;
-    }
 
-    // Signal DIDComm service to stop and wait for graceful shutdown
-    #[cfg(feature = "didcomm")]
-    if let Some(service) = didcomm_service {
-        didcomm_shutdown.cancel();
-        service.shutdown().await;
-        info!("DIDComm service stopped");
-    }
-    #[cfg(not(feature = "didcomm"))]
-    drop(didcomm_service);
-
-    if any_panic {
-        let _ = shutdown_tx.send(true);
-    }
-
-    // Join storage last — guarantees all writes flushed before database closes
-    match storage_handle.join() {
-        Ok(()) => info!("storage thread stopped"),
-        Err(_panic) => {
-            error!("storage thread panicked");
-            any_panic = true;
+        if any_panic {
+            return Err(AppError::Internal("one or more threads panicked".into()));
         }
-    }
 
-    if any_panic {
-        return Err(AppError::Internal("one or more threads panicked".into()));
-    }
+        if !is_restart {
+            info!("server shut down");
+            return Ok(());
+        }
 
-    info!("server shut down");
-    Ok(())
+        // ── Soft restart: reload config and re-derive keys ───────
+        info!("soft restart: re-initializing services");
+
+        // Re-read config from the store (import may have updated it)
+        // For now, config is in-memory only — future phases will persist
+        // config changes to the store during import. The seed_store and
+        // storage_encryption_key are already updated by the import handler.
+        //
+        // Re-derive storage encryption key if the seed changed.
+        // The import handler updates seed_store and can update
+        // storage_encryption_key via a shared mechanism. For now,
+        // the key doesn't change during restart (it will in Phase 5).
+        let _ = (&mut config, &mut storage_encryption_key); // suppress unused-mut
+    }
 }
 
 /// Storage thread: runs session cleanup loop and persists the store on shutdown.

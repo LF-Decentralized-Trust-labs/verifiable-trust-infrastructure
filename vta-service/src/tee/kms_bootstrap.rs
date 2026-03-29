@@ -180,6 +180,50 @@ pub async fn bootstrap_secrets(
 }
 
 // ---------------------------------------------------------------------------
+// Re-encrypt secrets for backup import
+// ---------------------------------------------------------------------------
+
+/// Re-encrypt an imported seed and JWT key with KMS.
+///
+/// Called during backup import in TEE mode. Generates a new KMS data key,
+/// AES-GCM encrypts both secrets, and stores the ciphertexts in the bootstrap
+/// keyspace. On next restart, `bootstrap_secrets()` finds existing ciphertexts
+/// and takes the normal "subsequent boot" decrypt path.
+pub async fn re_encrypt_bootstrap_secrets(
+    kms_config: &TeeKmsConfig,
+    store: &crate::store::Store,
+    seed: &[u8],
+    jwt_key: &[u8; 32],
+) -> Result<(), AppError> {
+    let bs_ks = store.keyspace("bootstrap")?;
+
+    // Clear any existing ciphertexts first
+    let _ = bs_ks.remove(BOOTSTRAP_DK_CT_KEY).await;
+    let _ = bs_ks.remove(BOOTSTRAP_SEED_CT_KEY).await;
+    let _ = bs_ks.remove(BOOTSTRAP_JWT_CT_KEY).await;
+    let _ = bs_ks.remove(BOOTSTRAP_JWT_FINGERPRINT_KEY).await;
+
+    // Generate a new data key via KMS (with attestation if on real Nitro)
+    let (dk_ciphertext, data_key) = kms_generate_data_key(kms_config).await?;
+
+    // AES-GCM encrypt both secrets with the data key
+    let seed_ciphertext = aes_gcm_encrypt(&data_key, seed)?;
+    let jwt_ciphertext = aes_gcm_encrypt(&data_key, jwt_key)?;
+
+    // Store everything in the bootstrap keyspace
+    bs_ks.insert_raw(BOOTSTRAP_DK_CT_KEY, dk_ciphertext).await?;
+    bs_ks.insert_raw(BOOTSTRAP_SEED_CT_KEY, seed_ciphertext).await?;
+    bs_ks.insert_raw(BOOTSTRAP_JWT_CT_KEY, jwt_ciphertext).await?;
+    store_jwt_fingerprint(&bs_ks, jwt_key).await?;
+
+    // Flush immediately so ciphertexts survive if enclave restarts
+    store.persist().await?;
+
+    info!("imported secrets re-encrypted to KMS — stored in bootstrap keyspace");
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // JWT key fingerprint (tamper detection)
 // ---------------------------------------------------------------------------
 

@@ -90,10 +90,37 @@ enum Commands {
         command: AuditCommands,
     },
 
+    /// Backup and restore VTA data
+    Backup {
+        #[command(subcommand)]
+        command: BackupCommands,
+    },
+
     /// VTA connection management
     Vta {
         #[command(subcommand)]
         command: VtaCommands,
+    },
+}
+
+#[derive(Subcommand)]
+enum BackupCommands {
+    /// Export VTA state to an encrypted backup file
+    Export {
+        /// Include audit logs in the backup
+        #[arg(long)]
+        include_audit: bool,
+        /// Output file path (default: vta-backup-<timestamp>.vtabak)
+        #[arg(short, long)]
+        output: Option<std::path::PathBuf>,
+    },
+    /// Import VTA state from an encrypted backup file
+    Import {
+        /// Path to the .vtabak backup file
+        file: std::path::PathBuf,
+        /// Preview only — show what would be imported without applying
+        #[arg(long)]
+        preview: bool,
     },
 }
 
@@ -107,6 +134,8 @@ enum VtaCommands {
     Remove { slug: String },
     /// Show current VTA details
     Info,
+    /// Restart the VTA service (soft restart — reloads config and reconnects)
+    Restart,
 }
 
 #[derive(Subcommand)]
@@ -545,6 +574,10 @@ fn print_banner() {
 
 /// Returns true if this command requires authentication.
 fn requires_auth(cmd: &Commands) -> bool {
+    // VTA restart requires auth; other VTA subcommands don't
+    if matches!(cmd, Commands::Vta { command: VtaCommands::Restart }) {
+        return true;
+    }
     !matches!(
         cmd,
         Commands::Health
@@ -677,8 +710,14 @@ async fn main() {
                         }
                     }
                 }
+                VtaCommands::Restart => {
+                    // Fall through to authenticated command handling below
+                }
             }
-            return;
+            // Restart needs VTA connectivity — don't return early
+            if !matches!(cli.command, Commands::Vta { command: VtaCommands::Restart }) {
+                return;
+            }
         }
         _ => {}
     }
@@ -717,7 +756,9 @@ async fn main() {
     };
 
     let result = match cli.command {
-        Commands::Setup { .. } | Commands::Vta { .. } => unreachable!(),
+        Commands::Setup { .. } => unreachable!(),
+        Commands::Vta { command: VtaCommands::Restart } => cmd_restart(&client).await,
+        Commands::Vta { .. } => unreachable!(),
         Commands::Health => cmd_health(&client, &keyring_key).await,
         Commands::Auth { command } => match command {
             AuthCommands::Login { credential } => {
@@ -927,6 +968,14 @@ async fn main() {
                 }
             },
         },
+        Commands::Backup { command } => match command {
+            BackupCommands::Export { include_audit, output } => {
+                cmd_backup_export(&client, include_audit, output).await
+            }
+            BackupCommands::Import { file, preview } => {
+                cmd_backup_import(&client, file, preview).await
+            }
+        },
         Commands::Keys { command } => match command {
             KeyCommands::Create {
                 key_type,
@@ -975,6 +1024,126 @@ async fn main() {
         eprintln!("Error: {e}");
         std::process::exit(1);
     }
+}
+
+async fn cmd_restart(client: &VtaClient) -> Result<(), Box<dyn std::error::Error>> {
+    println!("Requesting VTA restart...");
+    client.restart().await?;
+    println!("{GREEN}✓{RESET} Restart initiated");
+
+    // Wait briefly, then check health
+    println!("Waiting for VTA to come back...");
+    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+
+    for attempt in 1..=5 {
+        match client.health().await {
+            Ok(resp) => {
+                println!("{GREEN}✓{RESET} VTA is back (v{})", resp.version);
+                return Ok(());
+            }
+            Err(_) if attempt < 5 => {
+                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            }
+            Err(e) => {
+                println!("{RED}✗{RESET} VTA did not come back after restart: {e}");
+                println!("  The VTA may still be restarting. Try `pnm health` in a few seconds.");
+            }
+        }
+    }
+    Ok(())
+}
+
+async fn cmd_backup_export(
+    client: &VtaClient,
+    include_audit: bool,
+    output: Option<std::path::PathBuf>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // Prompt for password
+    let password = dialoguer::Password::new()
+        .with_prompt("Backup password (min 12 chars)")
+        .with_confirmation("Confirm password", "Passwords do not match")
+        .interact()?;
+    if password.len() < 12 {
+        return Err("password must be at least 12 characters".into());
+    }
+
+    println!("Exporting backup...");
+    let envelope = client.backup_export(&password, include_audit).await?;
+
+    // Determine output path
+    let path = output.unwrap_or_else(|| {
+        let ts = chrono::Utc::now().format("%Y%m%d-%H%M%S");
+        let slug = envelope
+            .source_did
+            .as_deref()
+            .and_then(|d| d.rsplit(':').next())
+            .unwrap_or("vta");
+        std::path::PathBuf::from(format!("vta-backup-{slug}-{ts}.vtabak"))
+    });
+
+    let json = serde_json::to_string_pretty(&envelope)?;
+    std::fs::write(&path, &json)?;
+
+    println!("{GREEN}✓{RESET} Backup saved to {}", path.display());
+    println!("  Source DID: {}", envelope.source_did.as_deref().unwrap_or("(none)"));
+    println!("  Includes audit: {}", envelope.includes_audit);
+    println!("  File size: {} bytes", json.len());
+    Ok(())
+}
+
+async fn cmd_backup_import(
+    client: &VtaClient,
+    file: std::path::PathBuf,
+    preview_only: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let json = std::fs::read_to_string(&file)?;
+    let envelope: vta_sdk::protocols::backup_management::types::BackupEnvelope =
+        serde_json::from_str(&json)?;
+
+    println!("Backup file: {}", file.display());
+    println!("  Source DID:  {}", envelope.source_did.as_deref().unwrap_or("(none)"));
+    println!("  Created:     {}", envelope.created_at);
+    println!("  Version:     {}", envelope.source_version);
+    println!("  Audit:       {}", envelope.includes_audit);
+
+    let password = dialoguer::Password::new()
+        .with_prompt("Backup password")
+        .interact()?;
+
+    // Preview first
+    let preview = client.backup_import(&envelope, &password, false).await?;
+    println!();
+    println!("  Keys:        {}", preview.key_count);
+    println!("  ACL entries: {}", preview.acl_count);
+    println!("  Contexts:    {}", preview.context_count);
+    println!("  Audit logs:  {}", preview.audit_count);
+
+    if preview_only {
+        println!("\n{DIM}Preview only — no changes applied.{RESET}");
+        return Ok(());
+    }
+
+    // Confirm
+    println!();
+    println!("{RED}WARNING: This will REPLACE ALL DATA in the VTA.{RESET}");
+    print!("Type 'yes' to confirm: ");
+    std::io::Write::flush(&mut std::io::stdout())?;
+    let mut input = String::new();
+    std::io::stdin().read_line(&mut input)?;
+    if input.trim() != "yes" {
+        println!("Import cancelled.");
+        return Ok(());
+    }
+
+    println!("Importing...");
+    let result = client.backup_import(&envelope, &password, true).await?;
+    println!("{GREEN}✓{RESET} {}", result.message.as_deref().unwrap_or("Import complete"));
+
+    if result.status == "imported" {
+        println!("  VTA is restarting with the new identity.");
+        println!("  You may need to re-authenticate if the VTA DID changed.");
+    }
+    Ok(())
 }
 
 use vta_cli_common::render::print_section;
