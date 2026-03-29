@@ -691,6 +691,75 @@ pub async fn handle_restart(
 }
 
 // ---------------------------------------------------------------------------
+// Backup management
+// ---------------------------------------------------------------------------
+
+pub async fn handle_backup_export(
+    _ctx: HandlerContext,
+    message: Message,
+    Extension(state): Extension<Arc<VtaState>>,
+) -> HandlerResult {
+    let auth = auth_from_message(&message, &state.acl_ks).await.map_err(handler_err)?;
+    let body: vta_sdk::protocols::backup_management::types::ExportRequest =
+        serde_json::from_value(message.body).map_err(handler_err)?;
+    let config = state.config.read().await;
+    let envelope = operations::backup::export_backup(
+        &state.keys_ks, &state.acl_ks, &state.contexts_ks, &state.audit_ks,
+        #[cfg(feature = "webvh")]
+        &state.webvh_ks,
+        &*state.seed_store, &config, &auth, &body.password, body.include_audit,
+    ).await.map_err(handler_err)?;
+    let _ = crate::audit::record(
+        &state.audit_ks, "backup.export", &auth.did, None, "success", Some("didcomm"), None,
+    ).await;
+    response(vta_sdk::protocols::backup_management::EXPORT_BACKUP_RESULT, &envelope)
+}
+
+pub async fn handle_backup_import(
+    _ctx: HandlerContext,
+    message: Message,
+    Extension(state): Extension<Arc<VtaState>>,
+) -> HandlerResult {
+    let auth = auth_from_message(&message, &state.acl_ks).await.map_err(handler_err)?;
+    auth.require_admin().map_err(handler_err)?;
+    let body: vta_sdk::protocols::backup_management::types::ImportRequest =
+        serde_json::from_value(message.body).map_err(handler_err)?;
+
+    if !body.confirm {
+        let (_payload, preview) =
+            operations::backup::preview_import(&body.backup, &body.password)
+                .await.map_err(handler_err)?;
+        return response(vta_sdk::protocols::backup_management::IMPORT_BACKUP_RESULT, &preview);
+    }
+
+    let (payload, _) =
+        operations::backup::preview_import(&body.backup, &body.password)
+            .await.map_err(handler_err)?;
+
+    let result = operations::backup::apply_import(
+        &payload,
+        &state.keys_ks, &state.acl_ks, &state.contexts_ks, &state.audit_ks,
+        #[cfg(feature = "webvh")]
+        &state.webvh_ks,
+        &state.seed_store, &state.config,
+    ).await.map_err(handler_err)?;
+
+    let _ = crate::audit::record(
+        &state.audit_ks, "backup.import", &auth.did,
+        payload.config.vta_did.as_deref(), "success", Some("didcomm"), None,
+    ).await;
+
+    // Trigger soft restart after response is sent
+    let restart_tx = state.restart_tx.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        let _ = restart_tx.send(true);
+    });
+
+    response(vta_sdk::protocols::backup_management::IMPORT_BACKUP_RESULT, &result)
+}
+
+// ---------------------------------------------------------------------------
 // Problem report & fallback
 // ---------------------------------------------------------------------------
 

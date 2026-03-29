@@ -90,7 +90,10 @@ pub fn build_router(state: Arc<VtaState>) -> Result<Router, DIDCommServiceError>
         // Problem reports
         .route(protocols::PROBLEM_REPORT_TYPE, handler_fn(handlers::handle_problem_report))?
         // VTA management — restart
-        .route(vta_management::RESTART, handler_fn(handlers::handle_restart))?;
+        .route(vta_management::RESTART, handler_fn(handlers::handle_restart))?
+        // Backup management
+        .route(protocols::backup_management::EXPORT_BACKUP, handler_fn(handlers::handle_backup_export))?
+        .route(protocols::backup_management::IMPORT_BACKUP, handler_fn(handlers::handle_backup_import))?;
 
     // WebVH handlers (feature-gated)
     #[cfg(feature = "webvh")]
