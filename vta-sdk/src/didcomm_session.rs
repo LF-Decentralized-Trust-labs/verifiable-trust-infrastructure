@@ -5,7 +5,6 @@ use affinidi_tdk::didcomm::Message;
 use affinidi_tdk::messaging::ATM;
 use affinidi_tdk::messaging::config::ATMConfig;
 use affinidi_tdk::messaging::profiles::ATMProfile;
-use affinidi_tdk::messaging::transports::SendMessageResponse;
 use affinidi_tdk::secrets_resolver::SecretsResolver;
 use tracing::{debug, info, warn};
 
@@ -13,8 +12,8 @@ use crate::protocols::PROBLEM_REPORT_TYPE;
 
 /// Client-side DIDComm session for request-response messaging via ATM.
 ///
-/// Uses REST-based message send/receive through the mediator (no WebSocket).
-/// Designed for short-lived CLI tools that send a request and wait for a reply.
+/// Uses WebSocket streaming to receive responses from the mediator.
+/// Designed for CLI tools that send a request and wait for a reply.
 pub struct DIDCommSession {
     atm: Arc<ATM>,
     profile: Arc<ATMProfile>,
@@ -57,7 +56,6 @@ impl DIDCommSession {
         .await?;
         let profile = Arc::new(profile);
 
-        // No WebSocket — REST-only transport for CLI use
         let atm = Arc::new(atm);
 
         // Flush stale messages from the inbox (accumulated between CLI runs)
@@ -86,7 +84,12 @@ impl DIDCommSession {
             }
         }
 
-        debug!("DIDComm session connected via mediator {mediator_did} (REST mode)");
+        // Enable WebSocket for streaming message delivery from mediator.
+        // Without this, the ATM can only poll via REST and may miss responses
+        // that arrive after the initial send_message call returns.
+        atm.profile_enable_websocket(&profile).await?;
+
+        debug!("DIDComm session connected via mediator {mediator_did} (WebSocket mode)");
 
         Ok(Self {
             atm,
@@ -98,8 +101,9 @@ impl DIDCommSession {
 
     /// Send a DIDComm message and wait for a matching response.
     ///
-    /// Packs the message, sends it via the mediator's REST API, and polls
-    /// for the response. No WebSocket needed.
+    /// Packs the message, sends it to the mediator, then uses the WebSocket
+    /// live stream to wait for the response. This handles asynchronous
+    /// processing where the VTA takes time to respond.
     pub async fn send_and_wait<T: serde::de::DeserializeOwned>(
         &self,
         msg_type: &str,
@@ -125,43 +129,82 @@ impl DIDCommSession {
             .await
             .map_err(|e| format!("failed to pack message: {e}"))?;
 
-        debug!(msg_type, msg_id, "sending via DIDComm REST");
+        debug!(msg_type, msg_id, "sending via DIDComm");
 
-        // Send and wait for response via REST (mediator holds the response
-        // until it arrives, then returns it in the same HTTP response)
-        let response = tokio::time::timeout(
-            std::time::Duration::from_secs(timeout_secs),
-            self.atm.send_message(&self.profile, &packed, &msg_id, true, true),
-        )
-        .await
-        .map_err(|_| "timeout waiting for DIDComm response")?
-        .map_err(|e| format!("failed to send/receive message: {e}"))?;
+        // Send the message (fire-and-forget to mediator, don't wait for response)
+        self.atm
+            .send_message(&self.profile, &packed, &msg_id, false, false)
+            .await
+            .map_err(|e| format!("failed to send message: {e}"))?;
 
-        let response_msg = match response {
-            SendMessageResponse::Message(msg) => *msg,
-            _ => return Err("no response message received from mediator".into()),
-        };
+        // Wait for the response via WebSocket live stream
+        let timeout = std::time::Duration::from_secs(timeout_secs);
+        let wait_duration = std::time::Duration::from_secs(5);
+        let deadline = tokio::time::Instant::now() + timeout;
 
-        debug!(response_type = %response_msg.typ, "received DIDComm response");
+        loop {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            if remaining.is_zero() {
+                return Err("timeout waiting for DIDComm response".into());
+            }
+            let wait = wait_duration.min(remaining);
 
-        // Check for problem report
-        if response_msg.typ == PROBLEM_REPORT_TYPE || response_msg.typ.contains("problem-report") {
-            let code = response_msg.body.get("code").and_then(|v| v.as_str()).unwrap_or("unknown");
-            let comment = response_msg.body.get("comment").and_then(|v| v.as_str()).unwrap_or("");
-            return Err(format!("{code}: {comment}").into());
+            let next = self
+                .atm
+                .message_pickup()
+                .live_stream_next(&self.profile, Some(wait), true)
+                .await
+                .map_err(|e| format!("message pickup error: {e}"))?;
+
+            let (response_msg, _meta) = match next {
+                Some(pair) => pair,
+                None => continue, // No message yet, keep waiting
+            };
+
+            // Check if this is the response we're waiting for (matching thread ID)
+            let response_thid = response_msg.thid.as_deref().unwrap_or("");
+            if response_thid != msg_id {
+                debug!(
+                    response_thid,
+                    expected = msg_id,
+                    response_type = %response_msg.typ,
+                    "received message with non-matching thread ID — skipping"
+                );
+                continue;
+            }
+
+            debug!(response_type = %response_msg.typ, "received DIDComm response");
+
+            // Check for problem report
+            if response_msg.typ == PROBLEM_REPORT_TYPE
+                || response_msg.typ.contains("problem-report")
+            {
+                let code = response_msg
+                    .body
+                    .get("code")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown");
+                let comment = response_msg
+                    .body
+                    .get("comment")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                return Err(format!("{code}: {comment}").into());
+            }
+
+            // Verify expected type
+            if response_msg.typ != expected_result_type {
+                return Err(format!(
+                    "unexpected response type: expected {expected_result_type}, got {}",
+                    response_msg.typ
+                )
+                .into());
+            }
+
+            // Deserialize response body
+            return serde_json::from_value(response_msg.body)
+                .map_err(|e| format!("failed to deserialize DIDComm response: {e}").into());
         }
-
-        // Verify expected type
-        if response_msg.typ != expected_result_type {
-            return Err(format!(
-                "unexpected response type: expected {expected_result_type}, got {}",
-                response_msg.typ
-            ).into());
-        }
-
-        // Deserialize response body
-        serde_json::from_value(response_msg.body)
-            .map_err(|e| format!("failed to deserialize DIDComm response: {e}").into())
     }
 
     /// Gracefully shut down the DIDComm session.
