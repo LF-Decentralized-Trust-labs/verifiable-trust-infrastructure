@@ -1,9 +1,10 @@
 [package]
 name = "didcomm-test"
 description = "Standalone DIDComm connectivity test — mimics VTA TEE key + messaging flow"
+readme = "README.md"
 version.workspace = true
 edition.workspace = true
-publish.workspace = true
+publish = false
 rust-version.workspace = true
 license.workspace = true
 
@@ -12,7 +13,7 @@ name = "didcomm-test"
 path = "src/main.rs"
 
 [dependencies]
-vta-sdk = { path = "../vta-sdk", features = ["didcomm"] }
+vta-sdk = { path = "../vta-sdk", version = "0.2.0", features = ["didcomm"] }
 affinidi-tdk = { workspace = true }
 affinidi-did-resolver-cache-sdk = { version = "0.8", features = ["network"] }
 tokio = { workspace = true }
