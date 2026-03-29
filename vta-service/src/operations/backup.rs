@@ -226,7 +226,7 @@ pub async fn preview_import(
     envelope: &BackupEnvelope,
     password: &str,
 ) -> Result<(BackupPayload, ImportResult), AppError> {
-    let payload = decrypt_payload(envelope, password)?;
+    let payload = decrypt_backup(envelope, password)?;
 
     let result = ImportResult {
         status: "preview".into(),
@@ -492,7 +492,11 @@ fn encrypt_payload(
     })
 }
 
-fn decrypt_payload(
+/// Decrypt a backup envelope and return the payload.
+///
+/// Use this for confirmed imports to avoid the overhead of building an
+/// `ImportResult` preview. For preview mode, use `preview_import()`.
+pub fn decrypt_backup(
     envelope: &BackupEnvelope,
     password: &str,
 ) -> Result<BackupPayload, AppError> {
@@ -613,7 +617,7 @@ mod tests {
         assert_eq!(envelope.encryption.algorithm, "aes-256-gcm");
         assert!(!envelope.ciphertext.is_empty());
 
-        let decrypted = decrypt_payload(&envelope, password).unwrap();
+        let decrypted = decrypt_backup(&envelope, password).unwrap();
 
         assert_eq!(decrypted.active_seed_hex, payload.active_seed_hex);
         assert_eq!(decrypted.active_seed_id, payload.active_seed_id);
@@ -634,7 +638,7 @@ mod tests {
         let config = test_config();
 
         let envelope = encrypt_payload(&payload, "correct-password!!", false, &config).unwrap();
-        let result = decrypt_payload(&envelope, "wrong-password!!!");
+        let result = decrypt_backup(&envelope, "wrong-password!!!");
 
         assert!(result.is_err());
         let err = result.unwrap_err();
@@ -660,7 +664,7 @@ mod tests {
         }
         envelope.ciphertext = BASE64.encode(&ct_bytes);
 
-        let result = decrypt_payload(&envelope, password);
+        let result = decrypt_backup(&envelope, password);
         assert!(result.is_err());
         assert!(
             format!("{}", result.unwrap_err()).contains("incorrect backup password"),
@@ -677,7 +681,7 @@ mod tests {
         let mut envelope = encrypt_payload(&payload, password, false, &config).unwrap();
         envelope.version = 99;
 
-        let result = decrypt_payload(&envelope, password);
+        let result = decrypt_backup(&envelope, password);
         assert!(result.is_err());
         assert!(
             format!("{}", result.unwrap_err()).contains("unsupported backup format"),
@@ -694,7 +698,7 @@ mod tests {
         let mut envelope = encrypt_payload(&payload, password, false, &config).unwrap();
         envelope.format = "unknown-format".into();
 
-        let result = decrypt_payload(&envelope, password);
+        let result = decrypt_backup(&envelope, password);
         assert!(result.is_err());
         assert!(
             format!("{}", result.unwrap_err()).contains("unsupported backup format"),
@@ -720,7 +724,7 @@ mod tests {
         assert_eq!(deserialized.ciphertext, envelope.ciphertext);
 
         // Should still decrypt correctly
-        let decrypted = decrypt_payload(&deserialized, password).unwrap();
+        let decrypted = decrypt_backup(&deserialized, password).unwrap();
         assert_eq!(decrypted.active_seed_hex, payload.active_seed_hex);
     }
 

@@ -61,6 +61,16 @@ pub struct TeeContext {
 pub struct TeeContext(());
 
 
+/// Trigger a soft restart after a short delay, allowing the current
+/// response to be sent before threads shut down.
+pub fn trigger_restart(restart_tx: &watch::Sender<bool>) {
+    let tx = restart_tx.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        let _ = tx.send(true);
+    });
+}
+
 #[derive(Clone)]
 pub struct AppState {
     pub keys_ks: KeyspaceHandle,
@@ -149,10 +159,10 @@ pub async fn build_app_state(
 }
 
 pub async fn run(
-    mut config: AppConfig,
+    config: AppConfig,
     store: Store,
     seed_store: Arc<dyn SeedStore>,
-    mut storage_encryption_key: Option<[u8; 32]>,
+    storage_encryption_key: Option<[u8; 32]>,
     tee_context: Option<TeeContext>,
 ) -> Result<(), AppError> {
     // Determine which services will actually start (feature flag AND config)
@@ -475,16 +485,9 @@ pub async fn run(
         // ── Soft restart: reload config and re-derive keys ───────
         info!("soft restart: re-initializing services");
 
-        // Re-read config from the store (import may have updated it)
-        // For now, config is in-memory only — future phases will persist
-        // config changes to the store during import. The seed_store and
-        // storage_encryption_key are already updated by the import handler.
-        //
-        // Re-derive storage encryption key if the seed changed.
-        // The import handler updates seed_store and can update
-        // storage_encryption_key via a shared mechanism. For now,
-        // the key doesn't change during restart (it will in Phase 5).
-        let _ = (&mut config, &mut storage_encryption_key); // suppress unused-mut
+        // Config and seed are updated in-memory by the import handler.
+        // The restart loop re-initializes auth and keyspace handles from
+        // the current config and seed_store on the next iteration.
     }
 }
 

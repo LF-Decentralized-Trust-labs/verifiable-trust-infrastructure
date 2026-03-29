@@ -61,9 +61,8 @@ pub async fn import(
         return Ok(Json(preview));
     }
 
-    // Full import
-    let (payload, _preview) =
-        operations::backup::preview_import(&req.backup, &req.password).await?;
+    // Full import — decrypt once (skip building a throwaway preview)
+    let payload = operations::backup::decrypt_backup(&req.backup, &req.password)?;
 
     let result = operations::backup::apply_import(
         &payload,
@@ -90,12 +89,7 @@ pub async fn import(
     )
     .await;
 
-    // Trigger soft restart after response is sent
-    let restart_tx = state.restart_tx.clone();
-    tokio::spawn(async move {
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-        let _ = restart_tx.send(true);
-    });
+    crate::server::trigger_restart(&state.restart_tx);
 
     Ok(Json(result))
 }

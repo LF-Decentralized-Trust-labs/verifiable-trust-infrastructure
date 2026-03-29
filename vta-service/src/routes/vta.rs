@@ -33,12 +33,7 @@ pub async fn restart(
     )
     .await;
 
-    // Signal the restart after a short delay so the response can be sent first
-    let restart_tx = state.restart_tx.clone();
-    tokio::spawn(async move {
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-        let _ = restart_tx.send(true);
-    });
+    crate::server::trigger_restart(&state.restart_tx);
 
     Ok(Json(RestartResponse {
         status: "restarting",

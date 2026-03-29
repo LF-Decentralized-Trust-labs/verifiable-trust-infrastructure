@@ -679,12 +679,7 @@ pub async fn handle_restart(
     let _ = crate::audit::record(
         &state.audit_ks, "vta.restart", &auth.did, None, "success", Some("didcomm"), None,
     ).await;
-    // Trigger restart after a short delay so the response can be sent first
-    let restart_tx = state.restart_tx.clone();
-    tokio::spawn(async move {
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-        let _ = restart_tx.send(true);
-    });
+    crate::server::trigger_restart(&state.restart_tx);
     response(vta_sdk::protocols::vta_management::RESTART_RESULT, &vta_sdk::protocols::vta_management::restart::RestartResult {
         status: "restarting".into(),
     })
@@ -712,9 +707,8 @@ pub async fn handle_backup_export(
     let _ = crate::audit::record(
         &state.audit_ks, "backup.export", &auth.did, None, "success", Some("didcomm"), None,
     ).await;
-    let response_json = serde_json::to_string(&envelope).unwrap_or_default();
     info!(
-        response_bytes = response_json.len(),
+        ciphertext_bytes = envelope.ciphertext.len(),
         "backup export DIDComm response size"
     );
     response(vta_sdk::protocols::backup_management::EXPORT_BACKUP_RESULT, &envelope)
@@ -737,9 +731,9 @@ pub async fn handle_backup_import(
         return response(vta_sdk::protocols::backup_management::IMPORT_BACKUP_RESULT, &preview);
     }
 
-    let (payload, _) =
-        operations::backup::preview_import(&body.backup, &body.password)
-            .await.map_err(handler_err)?;
+    let payload =
+        operations::backup::decrypt_backup(&body.backup, &body.password)
+            .map_err(handler_err)?;
 
     let result = operations::backup::apply_import(
         &payload,
@@ -755,13 +749,7 @@ pub async fn handle_backup_import(
         payload.config.vta_did.as_deref(), "success", Some("didcomm"), None,
     ).await;
 
-    // Trigger soft restart after response is sent
-    let restart_tx = state.restart_tx.clone();
-    tokio::spawn(async move {
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-        let _ = restart_tx.send(true);
-    });
-
+    crate::server::trigger_restart(&state.restart_tx);
     response(vta_sdk::protocols::backup_management::IMPORT_BACKUP_RESULT, &result)
 }
 
