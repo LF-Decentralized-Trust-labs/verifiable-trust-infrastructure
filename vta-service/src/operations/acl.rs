@@ -1,14 +1,15 @@
 use tracing::info;
 
+use crate::audit::{self, audit};
 use vta_sdk::protocols::acl_management::{
     create::CreateAclResultBody, delete::DeleteAclResultBody, list::ListAclResultBody,
 };
 
 use crate::acl::{
     AclEntry, Role, delete_acl_entry, get_acl_entry, is_acl_entry_visible, list_acl_entries,
-    store_acl_entry, validate_acl_modification,
+    store_acl_entry, validate_acl_modification, validate_role_assignment,
 };
-use crate::auth::extractor::AuthClaims;
+use crate::auth::AuthClaims;
 use crate::auth::session::now_epoch;
 use crate::error::AppError;
 use crate::store::KeyspaceHandle;
@@ -32,6 +33,7 @@ fn to_result_body(e: &AclEntry) -> CreateAclResultBody {
 
 pub async fn create_acl(
     acl_ks: &KeyspaceHandle,
+    audit_ks: &KeyspaceHandle,
     auth: &AuthClaims,
     did: &str,
     role: Role,
@@ -40,6 +42,7 @@ pub async fn create_acl(
     channel: &str,
 ) -> Result<CreateAclResultBody, AppError> {
     auth.require_manage()?;
+    validate_role_assignment(auth, &role)?;
     validate_acl_modification(auth, &allowed_contexts)?;
 
     if get_acl_entry(acl_ks, did).await?.is_some() {
@@ -60,6 +63,8 @@ pub async fn create_acl(
     store_acl_entry(acl_ks, &entry).await?;
 
     info!(channel, caller = %auth.did, did = %entry.did, role = %entry.role, "ACL entry created");
+    audit!("acl.create", actor = &auth.did, resource = did, outcome = "success");
+    let _ = audit::record(audit_ks, "acl.create", &auth.did, Some(did), "success", Some(channel), None).await;
     Ok(to_result_body(&entry))
 }
 
@@ -107,6 +112,7 @@ pub async fn list_acl(
 
 pub async fn update_acl(
     acl_ks: &KeyspaceHandle,
+    audit_ks: &KeyspaceHandle,
     auth: &AuthClaims,
     did: &str,
     params: UpdateAclParams,
@@ -124,8 +130,9 @@ pub async fn update_acl(
         )));
     }
 
-    if let Some(role) = params.role {
-        entry.role = role;
+    if let Some(ref role) = params.role {
+        validate_role_assignment(auth, role)?;
+        entry.role = role.clone();
     }
     if let Some(label) = params.label {
         entry.label = Some(label);
@@ -138,11 +145,14 @@ pub async fn update_acl(
     store_acl_entry(acl_ks, &entry).await?;
 
     info!(channel, did = %did, "ACL entry updated");
+    audit!("acl.update", actor = &auth.did, resource = did, outcome = "success");
+    let _ = audit::record(audit_ks, "acl.update", &auth.did, Some(did), "success", Some(channel), None).await;
     Ok(to_result_body(&entry))
 }
 
 pub async fn delete_acl(
     acl_ks: &KeyspaceHandle,
+    audit_ks: &KeyspaceHandle,
     auth: &AuthClaims,
     did: &str,
     channel: &str,
@@ -167,6 +177,8 @@ pub async fn delete_acl(
     delete_acl_entry(acl_ks, did).await?;
 
     info!(channel, caller = %auth.did, did = %did, "ACL entry deleted");
+    audit!("acl.delete", actor = &auth.did, resource = did, outcome = "success");
+    let _ = audit::record(audit_ks, "acl.delete", &auth.did, Some(did), "success", Some(channel), None).await;
     Ok(DeleteAclResultBody {
         did: did.to_string(),
         deleted: true,

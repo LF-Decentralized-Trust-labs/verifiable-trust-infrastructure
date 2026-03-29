@@ -7,14 +7,18 @@ level, which is reserved for the First Person Network.
 
 ## Path Hierarchy
 
-```
-m/26'
-  |
-  +-- 2'/N'/K'    Application context keys
-       |
-       +-- 0'     VTA (created at setup)
-       |
-       +-- 1'+    Additional contexts (created via setup, API, or CLI)
+```mermaid
+graph TD
+    Root["m (BIP-39 seed)"] --> Purpose["26' (VTI purpose)"]
+    Purpose --> CoinType["2' (Ed25519)"]
+    CoinType --> Ctx0["0' (Context 0)"]
+    CoinType --> Ctx1["1' (Context 1)"]
+    CoinType --> CtxN["N' (Context N)"]
+    Ctx0 --> Key0["0' (Key 0)"]
+    Ctx0 --> Key1["1' (Key 1)"]
+    Purpose --> P256["256' (P-256 domain)"]
+    P256 --> P256Ctx["N' (Context)"]
+    P256Ctx --> P256Key["K' (Key)"]
 ```
 
 ## Application Contexts
@@ -42,6 +46,22 @@ keyspace under the key `path_counter:{base_path}`. Every key allocation:
 
 All key types within a context (signing, key-agreement, pre-rotation) share
 **one counter**, so indices are unique and never reused.
+
+### P-256 Domain-Separated Derivation
+
+P-256 keys share the same BIP-32 path namespace as Ed25519/X25519 but use
+**HMAC-SHA512 domain separation** to produce independent key material:
+
+1. Derive the BIP-32 path normally (SLIP-0010 for Ed25519).
+2. Compute `HMAC-SHA512(key="p256-key-derivation", data=signing_key_bytes || chain_code)`.
+3. Take the first 32 bytes as the P-256 scalar (reduced mod n automatically).
+
+This ensures:
+- **No cross-curve key reuse** — Ed25519 and P-256 keys at the same path are
+  cryptographically independent.
+- **No Ed25519 clamping artifacts** — the HMAC output is uniformly distributed.
+- **No group-order bias** — the P-256 group order (~2²⁵⁶) accommodates 32
+  random bytes with negligible bias (~2⁻³²).
 
 ```
 allocate_path(keys_ks, "m/26'/2'/0'")   ->  m/26'/2'/0'/0'   (counter: 0 -> 1)

@@ -548,11 +548,15 @@ pub async fn run_setup_wizard(
             public_url: None,
             server: ServerConfig::default(),
             log: LogConfig::default(),
-            store: StoreConfig::default(),
+            store: StoreConfig { data_dir: PathBuf::from("data/vta") },
             services: ServicesConfig::default(),
             messaging: None,
             auth: AuthConfig::default(),
+            audit: Default::default(),
             secrets: secrets_config.clone(),
+            #[cfg(feature = "tee")]
+            tee: Default::default(),
+            resolver_url: None,
             config_path: config_path.clone(),
         })
         .map_err(|e| format!("{e}"))?;
@@ -648,7 +652,11 @@ pub async fn run_setup_wizard(
             jwt_signing_key: Some(jwt_signing_key),
             ..AuthConfig::default()
         },
+        audit: Default::default(),
         secrets: secrets_config,
+        #[cfg(feature = "tee")]
+        tee: Default::default(),
+        resolver_url: None,
         config_path: config_path.clone(),
     };
     config.save()?;
@@ -946,6 +954,7 @@ async fn configure_messaging(
             Ok(Some(MessagingConfig {
                 mediator_url: String::new(),
                 mediator_did: did,
+                mediator_host: None,
             }))
         }
         // Create new did:webvh — needs a mediator context
@@ -987,6 +996,7 @@ async fn configure_messaging(
             Ok(Some(MessagingConfig {
                 mediator_url,
                 mediator_did,
+                mediator_host: None,
             }))
         }
         // Skip DIDComm

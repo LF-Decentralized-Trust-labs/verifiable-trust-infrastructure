@@ -27,9 +27,9 @@ impl AzureSeedStore {
 
     fn client(&self) -> Result<SecretClient, AppError> {
         let credential = DeveloperToolsCredential::new(None)
-            .map_err(|e| AppError::SeedStore(format!("Azure credential error: {e}")))?;
+            .map_err(|e| AppError::SecretStore(format!("Azure credential error: {e}")))?;
         SecretClient::new(&self.vault_url, credential, None)
-            .map_err(|e| AppError::SeedStore(format!("Azure Key Vault client error: {e}")))
+            .map_err(|e| AppError::SecretStore(format!("Azure Key Vault client error: {e}")))
     }
 }
 
@@ -43,12 +43,12 @@ impl super::SeedStore for AzureSeedStore {
                 Ok(response) => {
                     let secret = response
                         .into_model()
-                        .map_err(|e| AppError::SeedStore(format!("Azure response error: {e}")))?;
+                        .map_err(|e| AppError::SecretStore(format!("Azure response error: {e}")))?;
                     let hex_seed = secret.value.ok_or_else(|| {
-                        AppError::SeedStore("Azure secret exists but has no value".into())
+                        AppError::SecretStore("Azure secret exists but has no value".into())
                     })?;
                     let bytes = hex::decode(&hex_seed).map_err(|e| {
-                        AppError::SeedStore(format!("failed to decode hex seed from Azure: {e}"))
+                        AppError::SecretStore(format!("failed to decode hex seed from Azure: {e}"))
                     })?;
                     debug!(secret_name = %self.secret_name, "seed loaded from Azure Key Vault");
                     Ok(Some(bytes))
@@ -59,7 +59,7 @@ impl super::SeedStore for AzureSeedStore {
                         debug!(secret_name = %self.secret_name, "secret not found in Azure Key Vault");
                         Ok(None)
                     } else {
-                        Err(AppError::SeedStore(format!("Azure Key Vault error: {e}")))
+                        Err(AppError::SecretStore(format!("Azure Key Vault error: {e}")))
                     }
                 }
             }
@@ -78,12 +78,12 @@ impl super::SeedStore for AzureSeedStore {
             };
             let body = params
                 .try_into()
-                .map_err(|e| AppError::SeedStore(format!("Azure request error: {e}")))?;
+                .map_err(|e| AppError::SecretStore(format!("Azure request error: {e}")))?;
             client
                 .set_secret(&self.secret_name, body, None)
                 .await
                 .map_err(|e| {
-                    AppError::SeedStore(format!("failed to store seed in Azure Key Vault: {e}"))
+                    AppError::SecretStore(format!("failed to store seed in Azure Key Vault: {e}"))
                 })?;
 
             debug!(secret_name = %self.secret_name, "seed stored in Azure Key Vault");

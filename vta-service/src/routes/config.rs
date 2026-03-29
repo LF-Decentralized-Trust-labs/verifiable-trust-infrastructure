@@ -16,6 +16,7 @@ pub struct UpdateConfigRequest {
     pub public_url: Option<String>,
 }
 
+/// GET /config — retrieve the current VTA configuration. Auth: any authenticated user.
 pub async fn get_config(
     auth: AuthClaims,
     State(state): State<AppState>,
@@ -24,6 +25,7 @@ pub async fn get_config(
     Ok(Json(result))
 }
 
+/// PATCH /config — update VTA name, DID, or public URL. Auth: Super Admin only.
 pub async fn update_config(
     auth: SuperAdminAuth,
     State(state): State<AppState>,

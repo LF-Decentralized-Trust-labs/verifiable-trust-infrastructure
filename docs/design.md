@@ -7,17 +7,39 @@ control for a Verifiable Trust Community as part of the
 
 ## Workspace
 
-The repository is a Rust workspace with three crates:
+The repository is a Rust workspace with nine crates:
 
 ```
-vtc-vta-rs/
-  vta-sdk/           Shared types (KeyRecord, ContextRecord, protocol constants)
+verifiable-trust-infrastructure/
+  vti-common/         Shared error types, utilities, and constants
+  vta-sdk/            Data model (KeyRecord, ContextRecord, protocol constants)
   vta-service/        Axum HTTP service (this document's focus)
+  vta-enclave/        TEE enclave wrapper (Nitro Enclaves / vsock proxy)
+  vtc-service/        Verifiable Trust Community service
+  vta-cli-common/     Shared CLI auth, config, and HTTP helpers
+  pnm-cli/            Personal Network Manager CLI
   cnm-cli/            Community Network Manager CLI
+  didcomm-test/       DIDComm integration test harness
 ```
 
-`vta-sdk` defines the data model. Both the service and CLI depend on it so
-request/response types stay in sync.
+`vti-common` provides foundational types used across the stack. `vta-sdk`
+defines the data model; both the service and CLIs depend on it so
+request/response types stay in sync. `vta-cli-common` factors out shared
+CLI logic (authentication, HTTP client, credential management) consumed by
+both `pnm-cli` and `cnm-cli`.
+
+```mermaid
+graph LR
+    vti-common --> vta-sdk
+    vti-common --> vta-service
+    vti-common --> vtc-service
+    vta-sdk --> vta-service
+    vta-sdk --> vta-cli-common
+    vta-sdk --> didcomm-test
+    vta-service --> vta-enclave["vta-enclave (TEE)"]
+    vta-cli-common --> pnm-cli
+    vta-cli-common --> cnm-cli
+```
 
 ## Technology Stack
 
@@ -26,7 +48,7 @@ request/response types stay in sync.
 | Web framework  | Axum 0.8                                 |
 | Async runtime  | Tokio                                    |
 | Storage        | fjall (embedded LSM key-value store)     |
-| Cryptography   | ed25519-dalek, ed25519-dalek-bip32       |
+| Cryptography   | ed25519-dalek, ed25519-dalek-bip32, p256 |
 | DID resolution | affinidi-did-resolver-cache-sdk          |
 | DIDComm        | affinidi-tdk (didcomm, secrets_resolver) |
 | JWT            | jsonwebtoken (EdDSA / Ed25519)           |
@@ -43,6 +65,7 @@ AppState
   sessions_ks      KeyspaceHandle                         "sessions" partition
   acl_ks           KeyspaceHandle                         "acl" partition
   contexts_ks      KeyspaceHandle                         "contexts" partition
+  cache_ks         KeyspaceHandle                         "cache" partition
   config           Arc<RwLock<AppConfig>>                  runtime-mutable config
   seed_store       Arc<KeyringSeedStore>                   OS keyring for master seed
   did_resolver     Option<DIDCacheClient>                  DID resolution (None before setup)
@@ -85,21 +108,38 @@ vta-service/src/
     mod.rs         Application context CRUD, index allocation
 
   keys/
-    derivation.rs  BIP-32 Ed25519/X25519 derivation trait
+    derivation.rs  BIP-32 Ed25519/X25519/P-256 derivation trait
     paths.rs       Sequential path counter allocation
     seed_store.rs  OS keyring read/write for master seed
 
   store/
     mod.rs         fjall wrapper (Store, KeyspaceHandle)
 
+  messaging/
+    mod.rs         DIDComm router (route by message type)
+    handlers/      Per-type DIDComm message handlers
+
+  operations/
+    backup.rs      Encrypted backup export/import logic
+
+  metrics.rs       Prometheus-compatible metrics collection
+
+  tee/
+    mod.rs         TEE abstraction layer
+    kms_bootstrap.rs   KMS-based seed unsealing for enclaves
+    did_autogen.rs     Auto-generate VTA DID on first boot
+    admin_bootstrap.rs Admin credential bootstrap in TEE mode
+    mnemonic_guard.rs  Mnemonic access policy (TEE vs. dev)
+
   routes/
     mod.rs         Route table
     health.rs      GET /health
     auth.rs        Challenge-response, token issue/refresh, sessions
     config.rs      GET/PATCH /config
-    keys.rs        Key CRUD
+    keys.rs        Key CRUD + signing oracle
     contexts.rs    Context CRUD
     acl.rs         ACL CRUD
+    cache.rs       Token cache (GET/PUT/DELETE)
 ```
 
 ## API Surface
@@ -131,13 +171,23 @@ vta-service/src/
 
 ### Keys
 
-| Method | Path           | Auth  | Purpose                                 |
-| ------ | -------------- | ----- | --------------------------------------- |
-| GET    | /keys          | Auth  | List (filtered by context access)       |
-| POST   | /keys          | Admin | Create (context access checked)         |
-| GET    | /keys/{key_id} | Auth  | Get key record (context access checked) |
-| DELETE | /keys/{key_id} | Admin | Invalidate key (context access checked) |
-| PATCH  | /keys/{key_id} | Admin | Rename key (context access checked)     |
+| Method | Path                  | Auth  | Purpose                                 |
+| ------ | --------------------- | ----- | --------------------------------------- |
+| GET    | /keys                 | Auth  | List (filtered by context access)       |
+| POST   | /keys                 | Admin | Create (context access checked)         |
+| GET    | /keys/{key_id}        | Auth  | Get key record (context access checked) |
+| DELETE | /keys/{key_id}        | Admin | Invalidate key (context access checked) |
+| PATCH  | /keys/{key_id}        | Admin | Rename key (context access checked)     |
+| GET    | /keys/{key_id}/secret | Admin | Export private key material              |
+| POST   | /keys/{key_id}/sign   | Auth  | Sign payload (signing oracle)           |
+
+### Cache
+
+| Method | Path         | Auth | Purpose                         |
+| ------ | ------------ | ---- | ------------------------------- |
+| GET    | /cache/{key} | Auth | Retrieve cached value           |
+| PUT    | /cache/{key} | Auth | Store value with TTL            |
+| DELETE | /cache/{key} | Auth | Delete cached value             |
 
 ### Contexts
 
@@ -159,6 +209,19 @@ vta-service/src/
 | PATCH  | /acl/{did} | Manage | Update entry |
 | DELETE | /acl/{did} | Manage | Delete entry |
 
+### VTA Management
+
+| Method | Path            | Auth  | Purpose                     |
+| ------ | --------------- | ----- | --------------------------- |
+| POST   | /vta/restart    | Admin | Trigger soft restart        |
+
+### Backup
+
+| Method | Path            | Auth  | Purpose                     |
+| ------ | --------------- | ----- | --------------------------- |
+| POST   | /backup/export  | Admin | Export encrypted backup      |
+| POST   | /backup/import  | Admin | Import encrypted backup      |
+
 Auth levels: **Auth** = any valid JWT, **Manage** = Admin or Initiator,
 **Admin** = Admin role only, **Super Admin** = Admin with empty
 `allowed_contexts`.
@@ -167,32 +230,19 @@ Auth levels: **Auth** = any valid JWT, **Manage** = Admin or Initiator,
 
 Authentication uses a DIDComm-based challenge-response flow:
 
-```
-Client                                 VTA
-  |                                     |
-  |  POST /auth/challenge {did}         |
-  |------------------------------------>|
-  |  {sessionId, challenge}             |
-  |<------------------------------------|
-  |                                     |
-  |  Build DIDComm message:             |
-  |    type: .../authenticate           |
-  |    body: {challenge, session_id}    |
-  |    from: client_did                 |
-  |    to:   vta_did                    |
-  |  Sign + encrypt (pack_encrypted)   |
-  |                                     |
-  |  POST /auth/ {packed_message}       |
-  |------------------------------------>|
-  |  Unpack, verify challenge+DID       |
-  |  Look up ACL (role, contexts)       |
-  |  Issue JWT + refresh token          |
-  |  {accessToken, refreshToken, ...}   |
-  |<------------------------------------|
-  |                                     |
-  |  Authorization: Bearer {JWT}        |
-  |------------------------------------>|
-  |  (protected API calls)              |
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant V as VTA
+    C->>V: POST /auth/challenge {did}
+    V->>V: Generate random challenge + session
+    V-->>C: {session_id, challenge}
+    C->>C: Build DIDComm message with challenge
+    C->>C: Sign with DID private key
+    C->>V: POST /auth/ (packed DIDComm message)
+    V->>V: Unpack + verify signature
+    V->>V: Verify challenge matches session
+    V-->>C: {access_token, refresh_token}
 ```
 
 ### JWT Claims
@@ -301,6 +351,9 @@ See [`bip32_paths.md`](bip32_paths.md) for the full specification.
 - **Ed25519** -- signing, authentication, assertion. Multibase prefix `z6Mk`.
 - **X25519** -- key agreement (Diffie-Hellman). Derived from Ed25519 private
   key via clamping. Multibase prefix `z6LS`.
+- **P-256** -- ECDSA signing (ES256). Used for PAT JWT signing and other
+  standards requiring NIST curves. Derived via HMAC-SHA512 domain separation
+  from BIP-32 path material (see [`bip32_paths.md`](bip32_paths.md)).
 
 ### Key Record
 
@@ -308,7 +361,7 @@ See [`bip32_paths.md`](bip32_paths.md) for the full specification.
 KeyRecord {
     key_id:          String,          // "did:webvh:...#key-0"
     derivation_path: String,          // "m/26'/2'/0'/0'"
-    key_type:        KeyType,         // Ed25519 | X25519
+    key_type:        KeyType,         // Ed25519 | X25519 | P256
     status:          KeyStatus,       // Active | Revoked
     public_key:      String,          // multibase
     label:           Option<String>,
@@ -371,6 +424,30 @@ A typical DID document includes:
 - `keyAgreement` referencing the X25519 key.
 - `service` with a `DIDCommMessaging` endpoint routing through the mediator.
 
+## Request Flow
+
+The VTA exposes two parallel ingress paths that converge on a shared
+operations layer:
+
+```mermaid
+graph TD
+    subgraph Client
+        REST_Client[REST Client]
+        DIDComm_Client[DIDComm Client]
+    end
+    subgraph VTA
+        REST_Routes[REST Routes + Auth Extractors]
+        DIDComm_Router[DIDComm Router + MessagePolicy]
+        Operations[Shared Operations Layer]
+        Store[(fjall Store)]
+    end
+    REST_Client -->|HTTP + JWT| REST_Routes
+    DIDComm_Client -->|Mediator + JWE| DIDComm_Router
+    REST_Routes --> Operations
+    DIDComm_Router --> Operations
+    Operations --> Store
+```
+
 ## DIDComm Messaging
 
 The VTA uses DIDComm v2 for authenticated communication:
@@ -390,6 +467,33 @@ Message types used:
 | --------------------------------------------------- | ------------------ |
 | `https://affinidi.com/atm/1.0/authenticate`         | Challenge response |
 | `https://affinidi.com/atm/1.0/authenticate/refresh` | Token refresh      |
+
+### Signing Oracle
+
+The VTA can act as a **signing oracle**: clients send unsigned payloads to
+`POST /keys/{key_id}/sign` (or the DIDComm `sign-request` message type),
+and the VTA derives the key from BIP-32, signs in memory, and returns the
+base64url-encoded signature. Key material never leaves VTA and is dropped
+immediately after signing.
+
+Supported algorithms:
+
+| Algorithm | Key Type | Signature Format |
+| --------- | -------- | ---------------- |
+| `eddsa`   | Ed25519  | 64-byte Ed25519  |
+| `es256`   | P256     | 64-byte ECDSA    |
+
+### Token Cache
+
+The VTA provides a simple key-value cache scoped per caller DID for storing
+short-lived tokens (PATs, access tokens). Entries support TTL-based expiry
+with lazy cleanup on read.
+
+| Method | Path         | Purpose                |
+| ------ | ------------ | ---------------------- |
+| GET    | /cache/{key} | Read (404 if expired)  |
+| PUT    | /cache/{key} | Write with TTL         |
+| DELETE | /cache/{key} | Delete                 |
 
 ## Configuration
 
@@ -438,6 +542,7 @@ All data lives in fjall keyspaces:
 | acl      | `acl:{did}`                | AclEntry (JSON)      |
 | contexts | `ctx:{id}`                 | ContextRecord (JSON) |
 | contexts | `ctx_counter`              | u32 (LE bytes)       |
+| cache    | `cache:{did}:{key}`        | CacheEntry (JSON)    |
 
 ## VTA CLI
 
@@ -458,38 +563,6 @@ vta acl update <did> [--role ...]       Update ACL entry
 vta acl delete <did> [--yes]            Delete ACL entry
 ```
 
-## CNM CLI (cnm-cli)
+## CLI References
 
-The Community Network Manager CLI is the primary network client:
-
-```
-cnm setup                               First-time setup wizard
-cnm health                               Health check (community + personal VTA)
-cnm community list|use|add|remove|status Multi-community management
-cnm auth login <credential>              Import credential and authenticate
-cnm auth status                          Show current session
-cnm auth logout                          Clear session
-cnm config get                           Show VTA config
-cnm config update [--name ...] ...       Update config fields
-cnm keys list [--status ...]             List keys
-cnm keys create [--context-id ...]       Create key
-cnm keys get <key_id>                    Get key
-cnm keys revoke <key_id>                 Invalidate key
-cnm keys rename <key_id> <new_id>        Rename key
-cnm contexts list                        List contexts
-cnm contexts get <id>                    Get context
-cnm contexts create --id ... ...         Create context
-cnm contexts update <id> [...]           Update context
-cnm contexts delete <id>                 Delete context
-cnm contexts bootstrap --id ... ...      Create context + first admin credential
-cnm acl list [--context ...]             List ACL entries
-cnm acl get <did>                        Get ACL entry
-cnm acl create --did ... --role ...      Create ACL entry
-cnm acl update <did> [--role ...]        Update ACL entry
-cnm acl delete <did>                     Delete ACL entry
-cnm auth-credential create --role ...    Generate did:key credential with ACL entry
-```
-
-The CLI caches authentication state (tokens, credential) in the OS keyring.
-Protected commands auto-authenticate via challenge-response and refresh
-tokens when the access token nears expiry.
+See [pnm-cli/README.md](../pnm-cli/README.md) and [cnm-cli/README.md](../cnm-cli/README.md) for CLI references.

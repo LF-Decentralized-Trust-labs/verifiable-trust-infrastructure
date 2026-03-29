@@ -1,18 +1,30 @@
 mod acl;
+mod audit;
+#[cfg(feature = "tee")]
+mod attestation;
 mod auth;
+mod backup;
+mod cache;
 mod config;
 mod contexts;
 #[cfg(feature = "webvh")]
 mod did_webvh;
 mod health;
 pub mod keys;
+mod vta;
 
 use axum::Router;
+use axum::extract::DefaultBodyLimit;
 use axum::routing::{delete, get, post};
 
 use crate::server::AppState;
 
+/// Maximum request body size (1 MB). Protects against memory exhaustion,
+/// especially critical in TEE deployments where enclave memory is limited.
+const MAX_BODY_SIZE: usize = 1024 * 1024;
+
 /// Health-check route — served without the request/response trace layer.
+/// Minimal response only; detailed info requires authentication.
 pub fn health_router() -> Router<AppState> {
     Router::new().route("/health", get(health::health))
 }
@@ -41,6 +53,7 @@ pub fn router() -> Router<AppState> {
                 .patch(keys::rename_key),
         )
         .route("/keys/{key_id}/secret", get(keys::get_key_secret))
+        .route("/keys/{key_id}/sign", post(keys::sign_with_key))
         .route("/keys/seeds", get(keys::list_seeds))
         .route("/keys/seeds/rotate", post(keys::rotate_seed))
         // Context routes
@@ -65,6 +78,46 @@ pub fn router() -> Router<AppState> {
             get(acl::get_acl)
                 .patch(acl::update_acl)
                 .delete(acl::delete_acl),
+        )
+        // Audit log routes
+        .route("/audit/logs", get(audit::list_audit_logs))
+        .route(
+            "/audit/retention",
+            get(audit::get_retention).patch(audit::update_retention),
+        )
+        // Cache routes (token caching / key-value store)
+        .route(
+            "/cache/{key}",
+            get(cache::get_cached)
+                .put(cache::put_cached)
+                .delete(cache::delete_cached),
+        );
+
+    // TEE attestation routes (feature-gated)
+    #[cfg(feature = "tee")]
+    let router = router
+        .route(
+            "/attestation/status",
+            get(attestation::status),
+        )
+        .route(
+            "/attestation/report",
+            get(attestation::cached_report).post(attestation::generate_report),
+        )
+        // Mnemonic export (super admin only, time-limited)
+        .route(
+            "/attestation/mnemonic",
+            get(attestation::mnemonic_status).post(attestation::mnemonic_export),
+        )
+        // Auto-generated DID log (unauthenticated — public data)
+        .route(
+            "/attestation/did-log",
+            get(attestation::did_log),
+        )
+        // Bootstrapped admin credential (unauthenticated — one-time retrieval)
+        .route(
+            "/attestation/admin-credential",
+            get(attestation::admin_credential),
         );
 
     // WebVH routes (feature-gated)
@@ -92,5 +145,16 @@ pub fn router() -> Router<AppState> {
             get(did_webvh::get_did_log_handler),
         );
 
-    router
+    // VTA management routes
+    let router = router
+        .route("/vta/restart", post(vta::restart))
+        .route("/metrics", get(vta::metrics))
+        .route("/backup/export", post(backup::export))
+        .route("/backup/import", post(backup::import));
+
+    // Authenticated health details endpoint
+    let router = router.route("/health/details", get(health::health_details));
+
+    // Apply global request body size limit to protect enclave memory
+    router.layer(DefaultBodyLimit::max(MAX_BODY_SIZE))
 }

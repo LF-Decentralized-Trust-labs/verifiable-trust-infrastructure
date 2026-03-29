@@ -1,6 +1,14 @@
 target/
 .git/
-Cargo.lock
 **data/
 **config.toml
+!deploy/**/config.toml
 **.jsonl
+**.vtabak
+
+# OS artifacts
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~

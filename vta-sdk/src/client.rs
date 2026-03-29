@@ -1,4 +1,5 @@
 use crate::keys::{KeyRecord, KeyStatus, KeyType};
+use crate::protocols::key_management::sign::SignAlgorithm;
 use chrono::{DateTime, Utc};
 use reqwest::{Client, RequestBuilder};
 use serde::{Deserialize, Serialize};
@@ -142,6 +143,14 @@ pub struct GetKeySecretResponse {
     pub key_type: KeyType,
     pub public_key_multibase: String,
     pub private_key_multibase: String,
+}
+
+/// Response from `POST /keys/{key_id}/sign`.
+#[derive(Debug, Deserialize)]
+pub struct SignResponse {
+    pub key_id: String,
+    pub signature: String,
+    pub algorithm: SignAlgorithm,
 }
 
 #[derive(Debug, Deserialize)]
@@ -499,6 +508,61 @@ impl VtaClient {
         }
     }
 
+    // ── VTA Management ──────────────────────────────────────────────
+
+    /// Trigger a soft restart of the VTA.
+    pub async fn restart(&self) -> Result<vta_management::restart::RestartResult, Box<dyn std::error::Error>> {
+        self.rpc(
+            vta_management::RESTART,
+            serde_json::json!({}),
+            vta_management::RESTART_RESULT,
+            30,
+            |c, url| c.post(format!("{url}/vta/restart")).json(&serde_json::json!({})),
+        )
+        .await
+    }
+
+    // ── Backup Management ───────────────────────────────────────────
+
+    /// Export VTA state to an encrypted backup.
+    pub async fn backup_export(
+        &self,
+        password: &str,
+        include_audit: bool,
+    ) -> Result<crate::protocols::backup_management::types::BackupEnvelope, Box<dyn std::error::Error>> {
+        self.rpc(
+            crate::protocols::backup_management::EXPORT_BACKUP,
+            serde_json::json!({ "password": password, "include_audit": include_audit }),
+            crate::protocols::backup_management::EXPORT_BACKUP_RESULT,
+            120, // backup can take longer
+            |c, url| {
+                c.post(format!("{url}/backup/export"))
+                    .json(&serde_json::json!({ "password": password, "include_audit": include_audit }))
+            },
+        )
+        .await
+    }
+
+    /// Import VTA state from an encrypted backup.
+    pub async fn backup_import(
+        &self,
+        backup: &crate::protocols::backup_management::types::BackupEnvelope,
+        password: &str,
+        confirm: bool,
+    ) -> Result<crate::protocols::backup_management::types::ImportResult, Box<dyn std::error::Error>> {
+        self.rpc(
+            crate::protocols::backup_management::IMPORT_BACKUP,
+            serde_json::json!({ "backup": backup, "password": password, "confirm": confirm }),
+            crate::protocols::backup_management::IMPORT_BACKUP_RESULT,
+            120,
+            |c, url| {
+                c.post(format!("{url}/backup/import"))
+                    .json(&serde_json::json!({ "backup": backup, "password": password, "confirm": confirm }))
+            },
+        )
+        .await
+    }
+
     // ── Config ──────────────────────────────────────────────────────
 
     pub async fn get_config(&self) -> Result<ConfigResponse, Box<dyn std::error::Error>> {
@@ -600,6 +664,38 @@ impl VtaClient {
             key_management::GET_KEY_SECRET_RESULT,
             30,
             |c, url| c.get(format!("{url}/keys/{}/secret", encode_path_segment(key_id))),
+        )
+        .await
+    }
+
+    /// Sign a payload using a VTA-managed key.
+    ///
+    /// Sends the base64url-encoded payload to the VTA, which derives the key,
+    /// signs in memory, and returns the signature. Key material never leaves VTA.
+    pub async fn sign(
+        &self,
+        key_id: &str,
+        payload: &[u8],
+        algorithm: SignAlgorithm,
+    ) -> Result<SignResponse, Box<dyn std::error::Error>> {
+        use base64::Engine;
+        let payload_b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(payload);
+        self.rpc(
+            key_management::SIGN_REQUEST,
+            serde_json::json!({
+                "key_id": key_id,
+                "payload": payload_b64,
+                "algorithm": algorithm,
+            }),
+            key_management::SIGN_RESULT,
+            30,
+            |c, url| {
+                c.post(format!("{url}/keys/{}/sign", encode_path_segment(key_id)))
+                    .json(&serde_json::json!({
+                        "payload": payload_b64,
+                        "algorithm": algorithm,
+                    }))
+            },
         )
         .await
     }
@@ -1010,6 +1106,68 @@ impl VtaClient {
             did_management::DELETE_DID_WEBVH_RESULT,
             60,
             |c, url| c.delete(format!("{url}/webvh/dids/{}", encode_path_segment(did))),
+        )
+        .await
+    }
+
+    // ── Audit Management ───────────────────────────────────────────
+
+    /// List audit logs with optional filtering and pagination.
+    pub async fn list_audit_logs(
+        &self,
+        params: &crate::protocols::audit_management::list::ListAuditLogsBody,
+    ) -> Result<crate::protocols::audit_management::list::ListAuditLogsResultBody, Box<dyn std::error::Error>> {
+        use crate::protocols::audit_management;
+        self.rpc(
+            audit_management::LIST_LOGS,
+            serde_json::to_value(params)?,
+            audit_management::LIST_LOGS_RESULT,
+            30,
+            |c, url| {
+                let mut qs = vec![
+                    format!("page={}", params.page),
+                    format!("page_size={}", params.page_size),
+                ];
+                if let Some(from) = params.from { qs.push(format!("from={from}")); }
+                if let Some(to) = params.to { qs.push(format!("to={to}")); }
+                if let Some(ref action) = params.action { qs.push(format!("action={action}")); }
+                if let Some(ref actor) = params.actor { qs.push(format!("actor={actor}")); }
+                if let Some(ref outcome) = params.outcome { qs.push(format!("outcome={outcome}")); }
+                if let Some(ref ctx) = params.context_id { qs.push(format!("context_id={ctx}")); }
+                c.get(format!("{url}/audit/logs?{}", qs.join("&")))
+            },
+        )
+        .await
+    }
+
+    /// Get the current audit log retention period.
+    pub async fn get_audit_retention(
+        &self,
+    ) -> Result<crate::protocols::audit_management::retention::RetentionResultBody, Box<dyn std::error::Error>> {
+        use crate::protocols::audit_management;
+        self.rpc(
+            audit_management::GET_RETENTION,
+            serde_json::json!({}),
+            audit_management::GET_RETENTION_RESULT,
+            30,
+            |c, url| c.get(format!("{url}/audit/retention")),
+        )
+        .await
+    }
+
+    /// Update the audit log retention period (super-admin only).
+    pub async fn update_audit_retention(
+        &self,
+        retention_days: u32,
+    ) -> Result<crate::protocols::audit_management::retention::RetentionResultBody, Box<dyn std::error::Error>> {
+        use crate::protocols::audit_management;
+        let body = audit_management::retention::UpdateRetentionBody { retention_days };
+        self.rpc(
+            audit_management::UPDATE_RETENTION,
+            serde_json::to_value(&body)?,
+            audit_management::UPDATE_RETENTION_RESULT,
+            30,
+            |c, url| c.patch(format!("{url}/audit/retention")).json(&body),
         )
         .await
     }

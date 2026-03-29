@@ -358,7 +358,7 @@ pub async fn run_setup_wizard(
             public_url: None,
             server: ServerConfig::default(),
             log: LogConfig::default(),
-            store: StoreConfig::default(),
+            store: StoreConfig { data_dir: PathBuf::from("data/vtc") },
             messaging: None,
             auth: AuthConfig::default(),
             secrets: secrets_config.clone(),
@@ -399,6 +399,7 @@ pub async fn run_setup_wizard(
                     Some(MessagingConfig {
                         mediator_url: String::new(),
                         mediator_did: mediator,
+                        mediator_host: None,
                     })
                 } else {
                     configure_messaging().await?
@@ -691,6 +692,7 @@ async fn configure_messaging() -> Result<Option<MessagingConfig>, Box<dyn std::e
             Ok(Some(MessagingConfig {
                 mediator_url: String::new(),
                 mediator_did: did,
+                mediator_host: None,
             }))
         }
         // Skip DIDComm

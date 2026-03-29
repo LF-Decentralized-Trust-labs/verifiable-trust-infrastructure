@@ -1,39 +1,22 @@
-mod acl;
+// CLI-only modules (not part of the library)
 mod acl_cli;
-mod auth;
-mod config;
-mod contexts;
 mod did_key;
 #[cfg(feature = "setup")]
 mod did_webvh;
-pub(crate) mod didcomm_bridge;
-mod error;
 mod import_did;
-mod keys;
 mod keys_cli;
-#[cfg(feature = "didcomm")]
-mod messaging;
-mod operations;
-#[cfg(feature = "rest")]
-mod routes;
-mod server;
 #[cfg(feature = "setup")]
 mod setup;
-mod status;
-mod store;
 #[cfg(feature = "webvh")]
 mod webvh_cli;
-#[cfg(feature = "webvh")]
-mod webvh_client;
-#[cfg(feature = "webvh")]
-mod webvh_didcomm;
-#[cfg(feature = "webvh")]
-mod webvh_store;
+
+// Re-export library modules for use by CLI commands
+use vta_service::*;
 
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD as BASE64;
 use clap::{Parser, Subcommand};
-use config::{AppConfig, LogFormat};
+use config::AppConfig;
 use ed25519_dalek::SigningKey;
 use ed25519_dalek_bip32::{DerivationPath, ExtendedSigningKey};
 use keys::seed_store::create_seed_store;
@@ -41,7 +24,6 @@ use keys::seeds::load_seed_bytes;
 use multibase::Base;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tracing_subscriber::EnvFilter;
 
 // There must be a valid mix of transports for the VTA Service
 // The following checks if a valid set of features is enabled at compile time and produces a
@@ -64,7 +46,26 @@ struct Cli {
 enum Commands {
     /// Run the interactive setup wizard
     Setup,
-    /// Export admin DID and credential
+    /// Bootstrap the first admin and seal the VTA against offline CLI modifications.
+    ///
+    /// This is a ONE-TIME operation. After sealing, all CLI commands that modify
+    /// state (ACL, keys, import, export) are disabled. Management is only possible
+    /// via the authenticated REST API or DIDComm.
+    BootstrapAdmin {
+        /// DID to grant super admin access (must be a DID you control)
+        #[arg(long)]
+        did: String,
+        /// Human-readable label for the admin ACL entry
+        #[arg(long)]
+        label: Option<String>,
+    },
+    /// Unseal the VTA — re-enables offline CLI commands (emergency recovery).
+    ///
+    /// Requires proof of super admin key ownership via challenge-response:
+    /// the VTA generates a random challenge, you sign it with your admin
+    /// private key using `pnm auth sign-challenge`, and paste the signature.
+    Unseal,
+    /// Export admin DID and credential (blocked when sealed)
     ExportAdmin,
     /// Show VTA status and statistics
     Status,
@@ -285,7 +286,29 @@ async fn main() {
                 std::process::exit(1);
             }
         }
+        Some(Commands::BootstrapAdmin { did, label }) => {
+            if let Err(e) = run_bootstrap_admin(cli.config, did, label).await {
+                eprintln!("Error: {e}");
+                std::process::exit(1);
+            }
+        }
+        Some(Commands::Unseal) => {
+            let config = match AppConfig::load(cli.config) {
+                Ok(c) => c,
+                Err(e) => {
+                    eprintln!("Error: {e}");
+                    std::process::exit(1);
+                }
+            };
+            let store = store::Store::open(&config.store).expect("failed to open store");
+            if let Err(e) = seal::run_unseal_challenge(&store).await {
+                eprintln!("Error: {e}");
+                std::process::exit(1);
+            }
+        }
         Some(Commands::ExportAdmin) => {
+            // SEALED CHECK: export-admin leaks private keys
+            check_seal(&cli.config).await;
             if let Err(e) = export_admin(cli.config).await {
                 eprintln!("Error: {e}");
                 std::process::exit(1);
@@ -305,6 +328,8 @@ async fn main() {
             admin,
             label,
         }) => {
+            // SEALED CHECK: creates keys and optionally admin ACL entries
+            check_seal(&cli.config).await;
             let args = did_key::CreateDidKeyArgs {
                 config_path: cli.config,
                 context,
@@ -317,6 +342,8 @@ async fn main() {
             }
         }
         Some(Commands::CreateDidWebvh { context, label }) => {
+            // SEALED CHECK: creates keys and DIDs
+            check_seal(&cli.config).await;
             #[cfg(feature = "setup")]
             {
                 let args = did_webvh::CreateDidWebvhArgs {
@@ -342,6 +369,8 @@ async fn main() {
             label,
             context,
         }) => {
+            // SEALED CHECK: imports DIDs with arbitrary roles
+            check_seal(&cli.config).await;
             let args = import_did::ImportDidArgs {
                 config_path: cli.config,
                 did,
@@ -355,6 +384,13 @@ async fn main() {
             }
         }
         Some(Commands::Keys { command }) => {
+            // SEALED CHECK: secrets export and seed rotation
+            match &command {
+                KeyCliCommands::List { .. } | KeyCliCommands::Seeds => {}
+                KeyCliCommands::Secrets { .. } | KeyCliCommands::RotateSeed { .. } => {
+                    check_seal(&cli.config).await;
+                }
+            }
             let result = match command {
                 KeyCliCommands::List { context, status } => {
                     keys_cli::run_keys_list(cli.config, context, status).await
@@ -373,6 +409,13 @@ async fn main() {
             }
         }
         Some(Commands::Acl { command }) => {
+            // SEALED CHECK: update and delete modify ACL
+            match &command {
+                AclCommands::List { .. } | AclCommands::Get { .. } => {}
+                AclCommands::Update { .. } | AclCommands::Delete { .. } => {
+                    check_seal(&cli.config).await;
+                }
+            }
             let result = match command {
                 AclCommands::List { context, role } => {
                     acl_cli::run_acl_list(cli.config, context, role).await
@@ -395,6 +438,11 @@ async fn main() {
         }
         #[cfg(feature = "webvh")]
         Some(Commands::Webvh { command }) => {
+            // SEALED CHECK: webvh commands modify servers and DIDs
+            match &command {
+                WebvhCommands::ListServers | WebvhCommands::ListDids { .. } => {}
+                _ => check_seal(&cli.config).await,
+            }
             let result = match command {
                 WebvhCommands::AddServer { id, did, label } => {
                     webvh_cli::run_add_server(cli.config, id, did, label).await
@@ -462,7 +510,15 @@ async fn main() {
             let seed_store: Arc<dyn keys::seed_store::SeedStore> =
                 Arc::from(create_seed_store(&config).expect("failed to create seed store"));
 
-            if let Err(e) = server::run(config, store, seed_store).await {
+            if let Err(e) = server::run(
+                config,
+                store,
+                seed_store,
+                None, // no storage encryption (non-TEE mode)
+                None, // no TEE context (use vta-enclave for TEE mode)
+            )
+            .await
+            {
                 tracing::error!("server error: {e}");
                 std::process::exit(1);
             }
@@ -491,17 +547,99 @@ fn print_banner() {
     );
 }
 
-fn init_tracing(config: &AppConfig) {
-    let filter =
-        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(&config.log.level));
-
-    let subscriber = tracing_subscriber::fmt().with_env_filter(filter);
-
-    match config.log.format {
-        LogFormat::Json => subscriber.json().init(),
-        LogFormat::Text => subscriber.init(),
+/// Check if the VTA is sealed; exit with an error if so.
+/// Called before any CLI command that modifies state.
+async fn check_seal(config_path: &Option<PathBuf>) {
+    let config = match AppConfig::load(config_path.clone()) {
+        Ok(c) => c,
+        Err(_) => return, // Config not loadable — let the actual command handle it
+    };
+    let store = match store::Store::open(&config.store) {
+        Ok(s) => s,
+        Err(_) => return, // Store not openable — let the actual command handle it
+    };
+    if let Err(e) = seal::require_unsealed(&store).await {
+        eprintln!("Error: {e}");
+        std::process::exit(1);
     }
 }
+
+/// Bootstrap the first super admin and seal the VTA.
+async fn run_bootstrap_admin(
+    config_path: Option<PathBuf>,
+    did: String,
+    label: Option<String>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let config = AppConfig::load(config_path)?;
+    let store = store::Store::open(&config.store)?;
+    let acl_ks = store.keyspace("acl")?;
+
+    // Check if already sealed
+    if let Some(existing) = seal::get_seal(&acl_ks).await? {
+        eprintln!(
+            "VTA is already sealed (by {} on {}).",
+            existing.sealed_by,
+            existing.sealed_at.format("%Y-%m-%d %H:%M:%S UTC")
+        );
+        eprintln!("Cannot bootstrap again. Manage admins via the REST API or DIDComm.");
+        std::process::exit(1);
+    }
+
+    // Check no existing super admins
+    let entries = acl::list_acl_entries(&acl_ks).await?;
+    let existing_super_admins: Vec<_> = entries
+        .iter()
+        .filter(|e| e.role == acl::Role::Admin && e.allowed_contexts.is_empty())
+        .collect();
+
+    if !existing_super_admins.is_empty() {
+        eprintln!("WARNING: {} existing super admin(s) found:", existing_super_admins.len());
+        for admin in &existing_super_admins {
+            eprintln!("  - {} ({})", admin.did, admin.label.as_deref().unwrap_or("no label"));
+        }
+        eprintln!();
+        eprintln!("Proceeding will add another super admin and seal the VTA.");
+        eprintln!("Press Ctrl+C to cancel, or Enter to continue...");
+        let mut buf = String::new();
+        std::io::stdin().read_line(&mut buf)?;
+    }
+
+    // Create the super admin ACL entry
+    let entry = acl::AclEntry {
+        did: did.clone(),
+        role: acl::Role::Admin,
+        label,
+        allowed_contexts: vec![], // Empty = super admin
+        created_at: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs(),
+        created_by: "cli:bootstrap-admin".into(),
+    };
+    acl::store_acl_entry(&acl_ks, &entry).await?;
+
+    // Seal the VTA
+    let seal_record = seal::seal(&acl_ks, &did).await?;
+
+    store.persist().await?;
+
+    eprintln!();
+    eprintln!("=== VTA Bootstrapped and Sealed ===");
+    eprintln!();
+    eprintln!("  Admin DID: {}", did);
+    eprintln!("  Sealed at: {}", seal_record.sealed_at.format("%Y-%m-%d %H:%M:%S UTC"));
+    eprintln!();
+    eprintln!("  The VTA is now sealed. Offline CLI commands that modify state are disabled.");
+    eprintln!("  All management must go through the authenticated REST API or DIDComm.");
+    eprintln!();
+    eprintln!("  To start the VTA server:");
+    eprintln!("    vta --config config.toml");
+    eprintln!();
+
+    Ok(())
+}
+
+// init_tracing is now in vta_service::init_tracing (lib.rs)
 
 async fn export_admin(config_path: Option<PathBuf>) -> Result<(), Box<dyn std::error::Error>> {
     let config = AppConfig::load(config_path)?;

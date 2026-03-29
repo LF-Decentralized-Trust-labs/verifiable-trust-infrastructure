@@ -5,7 +5,7 @@ use tracing::info;
 
 use vta_sdk::protocols::vta_management::get_config::GetConfigResultBody;
 
-use crate::auth::extractor::AuthClaims;
+use crate::auth::AuthClaims;
 use crate::config::AppConfig;
 use crate::error::AppError;
 

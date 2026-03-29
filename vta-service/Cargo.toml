@@ -1,7 +1,7 @@
 [package]
 name = "vta-service"
 description = "Service for Verifiable Trust Agents operating in Verifiable Trust Communities"
-version = "0.1.2"
+version = "0.2.0"
 edition.workspace = true
 publish.workspace = true
 authors.workspace = true
@@ -25,22 +25,41 @@ gcp-secrets = [
   "dep:bytes",
 ]
 azure-secrets = ["dep:azure_security_keyvault_secrets", "dep:azure_identity"]
+tee = [
+  "dep:libc",
+  "dep:aws-sdk-kms",
+  "dep:aws-config",
+  "dep:rsa",
+  "dep:didwebvh-rs",
+  "dep:cbc",
+  "dep:aes",
+]
+vsock-store = ["vti-common/vsock-store"]
+
+[lib]
+name = "vta_service"
+path = "src/lib.rs"
 
 [[bin]]
 name = "vta"
 path = "src/main.rs"
 
 [dependencies]
+vti-common = { path = "../vti-common", features = ["encryption"] }
 vta-sdk = { path = "../vta-sdk", features = ["didcomm"] }
 affinidi-tdk = { workspace = true }
-affinidi-did-resolver-cache-sdk = "0.8"
+affinidi-messaging-didcomm = "0.13"
+affinidi-messaging-didcomm-service = { workspace = true }
+affinidi-tdk-common = "0.5"
+affinidi-did-resolver-cache-sdk = { version = "0.8", features = ["network"] }
+tokio-util = { version = "0.7", features = ["rt"] }
 base64 = { workspace = true }
 axum = "0.8"
 axum-extra = { workspace = true }
 jsonwebtoken = { workspace = true }
 fjall = { workspace = true }
 toml = "1.0"
-tower-http = { version = "0.6", features = ["trace"] }
+tower-http = { version = "0.6", features = ["trace", "limit"] }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -67,9 +86,28 @@ rand = { workspace = true }
 dialoguer = "0.12"
 azure_security_keyvault_secrets = { version = "0.12", optional = true }
 azure_identity = { version = "0.33", optional = true }
+sha1 = "0.10"
 sha2 = { workspace = true }
+cbc = { version = "0.1", optional = true }
+aes = { version = "0.8", optional = true }
 x25519-dalek = { workspace = true }
 multibase = { workspace = true }
+p256 = "0.13"
 url = { workspace = true, optional = true }
 reqwest = { workspace = true, optional = true }
 tempfile = { version = "3", optional = true }
+libc = { version = "0.2", optional = true }
+zeroize = { version = "1", features = ["derive"] }
+tower = { version = "0.5", features = ["limit"] }
+metrics = "0.24"
+metrics-exporter-prometheus = { version = "0.16", default-features = false }
+aes-gcm = "0.10"
+argon2 = "0.5"
+hmac = "0.12"
+aws-sdk-kms = { version = "1", optional = true }
+rsa = { version = "0.9", optional = true, features = ["sha2"] }
+
+[dev-dependencies]
+tempfile = "3"
+http-body-util = "0.1"
+urlencoding = "2"

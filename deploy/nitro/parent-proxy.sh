@@ -1,0 +1,244 @@
+#!/bin/bash
+# =============================================================================
+# VTA Nitro Enclave — Parent Instance Proxy
+# =============================================================================
+#
+# This script runs on the PARENT EC2 instance (not inside the enclave).
+# It manages all networking for the enclave:
+#
+#   1. INBOUND:   External clients → TCP:8443 → vsock → Enclave VTA
+#   2. MEDIATOR:  Enclave DIDComm → vsock → TLS → mediator
+#   3. RESOLVER:  Enclave DID resolution → vsock → local DID resolver
+#   4. HTTPS:     Enclave general HTTPS → vsock → allowlisted endpoints
+#
+# Configuration is auto-read from deploy/nitro/config.toml (the same config
+# baked into the EIF). Override any value with environment variables.
+#
+# Prerequisites:
+#   sudo yum install -y socat aws-nitro-enclaves-cli
+#
+# Usage:
+#   ./parent-proxy.sh                          # Auto-detect everything from config
+#   ./parent-proxy.sh webvh.example.com:443    # Add extra allowlisted hosts
+#
+# Environment variable overrides:
+#   MEDIATOR_HOST     Override mediator hostname (default: from config.toml)
+#   MEDIATOR_PORT     Override mediator port (default: 443)
+#   RESOLVER_URL      DID resolver URL (default: https://did.server.affinidi.io)
+#   RESOLVER_PORT     Local DID resolver port (default: 8200)
+#   LISTEN_PORT       External REST API port (default: 8443)
+# =============================================================================
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CONFIG_FILE="${VTA_CONFIG:-${SCRIPT_DIR}/config.toml}"
+
+# ---------------------------------------------------------------------------
+# Read mediator from config.toml (if available)
+# ---------------------------------------------------------------------------
+read_config_value() {
+    local key="$1"
+    local default="$2"
+    if [ -f "$CONFIG_FILE" ]; then
+        # Simple TOML value extraction (handles: key = "value" and key = value)
+        local val
+        val=$(grep -E "^\s*${key}\s*=" "$CONFIG_FILE" 2>/dev/null | head -1 | sed 's/.*=\s*//;s/"//g;s/#.*//' | xargs)
+        if [ -n "$val" ]; then
+            echo "$val"
+            return
+        fi
+    fi
+    echo "$default"
+}
+
+# Auto-detect mediator from config.toml [messaging] section
+CONFIG_MEDIATOR_DID=$(read_config_value "mediator_did" "")
+CONFIG_REGION=$(read_config_value "region" "us-east-1")
+
+# For the mediator URL, the config has the enclave-local proxy URL (ws://127.0.0.1:4443).
+# We need the REAL mediator host. Extract it from the mediator DID if possible,
+# or use the MEDIATOR_HOST env var.
+extract_host_from_did() {
+    local did="$1"
+    # did:web:example.com → example.com
+    # did:web:example.com%3A8080 → example.com (port stripped)
+    echo "$did" | sed -n 's|^did:web:\([^:%%]*\).*|\1|p'
+}
+
+if [ -n "${MEDIATOR_HOST:-}" ]; then
+    # Explicit override
+    :
+elif [ -n "$CONFIG_MEDIATOR_DID" ]; then
+    MEDIATOR_HOST=$(extract_host_from_did "$CONFIG_MEDIATOR_DID")
+    if [ -n "$MEDIATOR_HOST" ]; then
+        echo "Auto-detected mediator host from config.toml: $MEDIATOR_HOST"
+    fi
+fi
+
+# Collect extra allowlisted hosts from CLI args
+EXTRA_HOSTS=("$@")
+
+# ---------------------------------------------------------------------------
+# Port assignments (must match enclave-entrypoint.sh)
+# ---------------------------------------------------------------------------
+VSOCK_INBOUND_PORT="${VSOCK_INBOUND_PORT:-5100}"      # Inbound REST
+VSOCK_MEDIATOR_PORT="${VSOCK_MEDIATOR_PORT:-5200}"     # Outbound mediator
+VSOCK_HTTPS_PORT="${VSOCK_HTTPS_PORT:-5300}"            # Outbound HTTPS
+VSOCK_RESOLVER_PORT="${VSOCK_RESOLVER_PORT:-5400}"      # Outbound DID resolver
+
+LISTEN_PORT="${LISTEN_PORT:-8443}"                      # External REST API port
+MEDIATOR_PORT="${MEDIATOR_PORT:-443}"                   # Mediator WSS port
+RESOLVER_PORT="${RESOLVER_PORT:-8200}"                  # Local DID resolver port
+RESOLVER_URL="${RESOLVER_URL:-https://did.server.affinidi.io}"  # Upstream DID resolver
+
+REGION="${CONFIG_REGION}"
+
+# ---------------------------------------------------------------------------
+# Auto-detect enclave CID
+# ---------------------------------------------------------------------------
+ENCLAVE_CID=""
+echo "Auto-detecting enclave CID..."
+ENCLAVE_CID=$(nitro-cli describe-enclaves | python3 -c "
+import sys, json
+enclaves = json.load(sys.stdin)
+running = [e for e in enclaves if e.get('State') == 'RUNNING']
+if not running:
+    print('NONE', file=sys.stderr)
+    sys.exit(1)
+print(running[0]['EnclaveCID'])
+" 2>/dev/null) || {
+    echo "ERROR: No running enclave found. Start one first:"
+    echo "  nitro-cli run-enclave --eif-path vta.eif --cpu-count 1 --memory 512"
+    exit 1
+}
+
+echo ""
+echo "========================================="
+echo "  VTA Nitro Enclave — Parent Proxy"
+echo "========================================="
+echo ""
+echo "  Config:      ${CONFIG_FILE}"
+echo "  Enclave CID: ${ENCLAVE_CID}"
+echo ""
+echo "  [1] INBOUND  REST:     0.0.0.0:${LISTEN_PORT} → vsock:${VSOCK_INBOUND_PORT} → Enclave :8100"
+[ -n "${MEDIATOR_HOST:-}" ] && \
+echo "  [2] OUTBOUND MEDIATOR: vsock:${VSOCK_MEDIATOR_PORT} → ${MEDIATOR_HOST}:${MEDIATOR_PORT}"
+echo "  [3] OUTBOUND RESOLVER: vsock:${VSOCK_RESOLVER_PORT} → localhost:${RESOLVER_PORT} (DID resolver)"
+echo "  [4] OUTBOUND HTTPS:    vsock:${VSOCK_HTTPS_PORT} → allowlisted endpoints"
+echo ""
+echo "  Test:"
+echo "    curl http://localhost:${LISTEN_PORT}/health"
+echo "    curl http://localhost:${LISTEN_PORT}/attestation/status"
+echo ""
+
+# ---------------------------------------------------------------------------
+# Cleanup on exit
+# ---------------------------------------------------------------------------
+PIDS=()
+cleanup() {
+    echo ""
+    echo "Shutting down proxies..."
+    for pid in "${PIDS[@]}"; do
+        kill "$pid" 2>/dev/null || true
+    done
+    wait 2>/dev/null || true
+    echo "Done."
+}
+trap cleanup EXIT INT TERM
+
+# ---------------------------------------------------------------------------
+# [1] INBOUND: External TCP → vsock → Enclave REST API
+# ---------------------------------------------------------------------------
+echo "Starting inbound proxy: TCP:${LISTEN_PORT} → vsock CID ${ENCLAVE_CID}:${VSOCK_INBOUND_PORT}"
+socat TCP-LISTEN:${LISTEN_PORT},reuseaddr,fork \
+    VSOCK-CONNECT:${ENCLAVE_CID}:${VSOCK_INBOUND_PORT} &
+PIDS+=($!)
+
+# ---------------------------------------------------------------------------
+# [2] OUTBOUND: Enclave DIDComm → vsock → Mediator WebSocket
+# ---------------------------------------------------------------------------
+if [ -n "${MEDIATOR_HOST:-}" ]; then
+    echo "Starting mediator proxy: vsock:${VSOCK_MEDIATOR_PORT} → ${MEDIATOR_HOST}:${MEDIATOR_PORT}"
+    socat VSOCK-LISTEN:${VSOCK_MEDIATOR_PORT},reuseaddr,fork \
+        OPENSSL:${MEDIATOR_HOST}:${MEDIATOR_PORT},verify=1 &
+    PIDS+=($!)
+else
+    echo "SKIP mediator proxy — no MEDIATOR_HOST set and none found in config.toml"
+    echo "     Set MEDIATOR_HOST=mediator.example.com or configure [messaging] in config.toml"
+fi
+
+# ---------------------------------------------------------------------------
+# [3] OUTBOUND: Enclave DID resolution → vsock → Local resolver proxy
+# ---------------------------------------------------------------------------
+# The enclave VTA connects to localhost:4444 for HTTPS (via HTTPS_PROXY).
+# For DID resolution, this proxies to a local or remote resolver.
+#
+# For production: run an Affinidi DID resolver instance on the parent and
+# point RESOLVER_URL to it (e.g., http://localhost:8200). The VTA's
+# did-resolver uses network mode through the proxy to reach it.
+#
+# For simplicity: proxy directly to the Universal Resolver.
+echo "Starting resolver proxy: vsock:${VSOCK_RESOLVER_PORT} → ${RESOLVER_URL}"
+
+# ---------------------------------------------------------------------------
+# [4] OUTBOUND: Enclave HTTPS → vsock → Allowlisted endpoints
+# ---------------------------------------------------------------------------
+if command -v vsock-proxy &>/dev/null; then
+    echo "Starting HTTPS proxy (vsock-proxy): vsock:${VSOCK_HTTPS_PORT} → allowlisted endpoints"
+
+    # Build the allowlist
+    ALLOWLIST_FILE=$(mktemp /tmp/vsock-allowlist-XXXXXX.yaml)
+    cat > "$ALLOWLIST_FILE" <<EOF
+allowlist:
+- {address: "kms.${REGION}.amazonaws.com", port: 443}
+EOF
+
+    # Add mediator if configured
+    [ -n "${MEDIATOR_HOST:-}" ] && \
+        echo "- {address: \"${MEDIATOR_HOST}\", port: ${MEDIATOR_PORT}}" >> "$ALLOWLIST_FILE"
+
+    # Add resolver host
+    RESOLVER_HOST=$(echo "$RESOLVER_URL" | sed -n 's|https\?://\([^:/]*\).*|\1|p')
+    RESOLVER_HOST_PORT=$(echo "$RESOLVER_URL" | sed -n 's|.*:\([0-9]*\)$|\1|p')
+    [ -z "$RESOLVER_HOST_PORT" ] && RESOLVER_HOST_PORT=443
+    [ -n "$RESOLVER_HOST" ] && \
+        echo "- {address: \"${RESOLVER_HOST}\", port: ${RESOLVER_HOST_PORT}}" >> "$ALLOWLIST_FILE"
+
+    # Add extra hosts from CLI args
+    for hostport in "${EXTRA_HOSTS[@]}"; do
+        host="${hostport%%:*}"
+        port="${hostport##*:}"
+        [ "$port" = "$host" ] && port=443
+        echo "- {address: \"${host}\", port: ${port}}" >> "$ALLOWLIST_FILE"
+        echo "  Allowlisted: ${host}:${port}"
+    done
+
+    # Add hosts from ALLOWLIST_HOSTS env var
+    if [ -n "${ALLOWLIST_HOSTS:-}" ]; then
+        IFS=',' read -ra AHOSTS <<< "$ALLOWLIST_HOSTS"
+        for hostport in "${AHOSTS[@]}"; do
+            hostport=$(echo "$hostport" | xargs)
+            host="${hostport%%:*}"
+            port="${hostport##*:}"
+            [ "$port" = "$host" ] && port=443
+            echo "- {address: \"${host}\", port: ${port}}" >> "$ALLOWLIST_FILE"
+        done
+    fi
+
+    echo "  Allowlist: $(grep -c 'address:' "$ALLOWLIST_FILE") hosts"
+    # Default target is the resolver host (most common outbound call)
+    vsock-proxy ${VSOCK_HTTPS_PORT} "${RESOLVER_HOST:-did.server.affinidi.io}" ${RESOLVER_HOST_PORT:-443} \
+        --config "$ALLOWLIST_FILE" &
+    PIDS+=($!)
+else
+    echo "WARNING: vsock-proxy not found — HTTPS proxy disabled"
+    echo "         Install aws-nitro-enclaves-cli for outbound HTTPS support"
+fi
+
+# ---------------------------------------------------------------------------
+# Wait for all proxies
+# ---------------------------------------------------------------------------
+echo ""
+echo "All proxies started. Press Ctrl+C to stop."
+wait

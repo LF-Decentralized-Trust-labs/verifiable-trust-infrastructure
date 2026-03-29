@@ -16,6 +16,7 @@ pub struct ListAclQuery {
     pub context: Option<String>,
 }
 
+/// GET /acl — list all ACL entries, optionally filtered by context. Auth: Admin or Initiator.
 pub async fn list_acl(
     auth: ManageAuth,
     State(state): State<AppState>,
@@ -35,6 +36,7 @@ pub struct CreateAclRequest {
     pub allowed_contexts: Vec<String>,
 }
 
+/// POST /acl — create a new ACL entry for a DID. Auth: Admin or Initiator.
 pub async fn create_acl(
     auth: ManageAuth,
     State(state): State<AppState>,
@@ -42,6 +44,7 @@ pub async fn create_acl(
 ) -> Result<(StatusCode, Json<CreateAclResultBody>), AppError> {
     let result = operations::acl::create_acl(
         &state.acl_ks,
+        &state.audit_ks,
         &auth.0,
         &req.did,
         req.role,
@@ -53,6 +56,7 @@ pub async fn create_acl(
     Ok((StatusCode::CREATED, Json(result)))
 }
 
+/// GET /acl/{did} — retrieve a single ACL entry by DID. Auth: Admin or Initiator.
 pub async fn get_acl(
     auth: ManageAuth,
     State(state): State<AppState>,
@@ -69,6 +73,7 @@ pub struct UpdateAclRequest {
     pub allowed_contexts: Option<Vec<String>>,
 }
 
+/// PATCH /acl/{did} — update role, label, or allowed contexts for an ACL entry. Auth: Admin or Initiator.
 pub async fn update_acl(
     auth: ManageAuth,
     State(state): State<AppState>,
@@ -77,6 +82,7 @@ pub async fn update_acl(
 ) -> Result<Json<CreateAclResultBody>, AppError> {
     let result = operations::acl::update_acl(
         &state.acl_ks,
+        &state.audit_ks,
         &auth.0,
         &did,
         operations::acl::UpdateAclParams {
@@ -90,11 +96,12 @@ pub async fn update_acl(
     Ok(Json(result))
 }
 
+/// DELETE /acl/{did} — remove an ACL entry. Auth: Admin or Initiator.
 pub async fn delete_acl(
     auth: ManageAuth,
     State(state): State<AppState>,
     Path(did): Path<String>,
 ) -> Result<StatusCode, AppError> {
-    operations::acl::delete_acl(&state.acl_ks, &auth.0, &did, "rest").await?;
+    operations::acl::delete_acl(&state.acl_ks, &state.audit_ks, &auth.0, &did, "rest").await?;
     Ok(StatusCode::NO_CONTENT)
 }

@@ -99,6 +99,7 @@ All protocol URIs are under `https://firstperson.network/protocols/`.
 | `.../rename-key` | `.../rename-key-result` | Admin | Rename a key |
 | `.../revoke-key` | `.../revoke-key-result` | Admin | Revoke a key |
 | `.../get-key-secret` | `.../get-key-secret-result` | Admin | Export secret key material |
+| `.../sign-request` | `.../sign-result` | Auth + context | Sign payload (signing oracle) |
 
 #### create-key
 
@@ -221,6 +222,31 @@ Response body:
   "key_type": "ed25519",
   "public_key_multibase": "z6Mk...",
   "private_key_multibase": "z..."
+}
+```
+
+#### sign-request
+
+Request body:
+
+```json
+{
+  "key_id": "did:webvh:example.com#key-0",
+  "payload": "<base64url-encoded-bytes>",
+  "algorithm": "es256"
+}
+```
+
+The `algorithm` field must match the key type: `"eddsa"` for Ed25519 keys,
+`"es256"` for P-256 keys.
+
+Response body:
+
+```json
+{
+  "key_id": "did:webvh:example.com#key-0",
+  "signature": "<base64url-encoded-signature>",
+  "algorithm": "es256"
 }
 ```
 
@@ -521,6 +547,78 @@ persisted to the config file.
 
 Response body: same format as `get-config-result`.
 
+### VTA Management — Restart (`vta-management/1.0`)
+
+| Request Type | Response Type | Auth | Description |
+|---|---|---|---|
+| `.../restart` | `.../restart-result` | Admin | Trigger a soft restart |
+
+#### restart
+
+Request body: `{}` (empty)
+
+Response body:
+
+```json
+{
+  "status": "restarting"
+}
+```
+
+The VTA sends the response before restarting. Service threads shut down,
+auth/crypto re-initialize, and threads restart without a process restart.
+
+### Backup Management (`backup-management/1.0`)
+
+| Request Type | Response Type | Auth | Description |
+|---|---|---|---|
+| `.../export` | `.../export-result` | Admin | Export encrypted backup |
+| `.../import` | `.../import-result` | Admin | Import encrypted backup |
+
+#### export
+
+Request body:
+
+```json
+{
+  "password": "minimum-12-characters",
+  "include_audit": false
+}
+```
+
+Response body: A `BackupEnvelope` JSON object containing the Argon2id KDF
+parameters, AES-256-GCM encryption parameters, and the base64url-encoded
+ciphertext of all VTA state.
+
+#### import
+
+Request body:
+
+```json
+{
+  "backup": { "...BackupEnvelope..." },
+  "password": "the-export-password",
+  "confirm": true
+}
+```
+
+With `confirm: false`, returns a preview without modifying state.
+With `confirm: true`, replaces all VTA state and triggers a soft restart.
+
+Response body:
+
+```json
+{
+  "status": "imported",
+  "source_did": "did:webvh:...",
+  "key_count": 5,
+  "acl_count": 2,
+  "context_count": 3,
+  "audit_count": 0,
+  "message": "Import complete. VTA will restart with new identity."
+}
+```
+
 ### Credential Management (`credential-management/1.0`)
 
 | Request Type | Response Type | Auth | Description |
@@ -610,6 +708,8 @@ https://firstperson.network/protocols/key-management/1.0/revoke-key
 https://firstperson.network/protocols/key-management/1.0/revoke-key-result
 https://firstperson.network/protocols/key-management/1.0/get-key-secret
 https://firstperson.network/protocols/key-management/1.0/get-key-secret-result
+https://firstperson.network/protocols/key-management/1.0/sign-request
+https://firstperson.network/protocols/key-management/1.0/sign-result
 
 # Seed Management
 https://firstperson.network/protocols/seed-management/1.0/list-seeds

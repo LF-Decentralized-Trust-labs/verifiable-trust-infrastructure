@@ -1,0 +1,26 @@
+[package]
+name = "didcomm-test"
+description = "Standalone DIDComm connectivity test — mimics VTA TEE key + messaging flow"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "didcomm-test"
+path = "src/main.rs"
+
+[dependencies]
+vta-sdk = { path = "../vta-sdk", features = ["didcomm"] }
+affinidi-tdk = { workspace = true }
+affinidi-did-resolver-cache-sdk = { version = "0.8", features = ["network"] }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+rand = { workspace = true }
+clap = { workspace = true }
+ed25519-dalek-bip32 = { workspace = true }
+multibase = { workspace = true }
+ed25519-dalek = "2"
+hex = "0.4"

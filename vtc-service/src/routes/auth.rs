@@ -5,8 +5,6 @@ use axum::response::IntoResponse;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use affinidi_tdk::didcomm::Message;
-use affinidi_tdk::didcomm::UnpackOptions;
 use vta_sdk::credentials::CredentialBundle;
 use vta_sdk::protocols::auth::{
     AuthenticateData, AuthenticateResponse, ChallengeData, ChallengeRequest, ChallengeResponse,
@@ -16,8 +14,7 @@ use crate::acl::{
     AclEntry, Role, check_acl, check_acl_full, store_acl_entry, validate_acl_modification,
 };
 use crate::auth::credentials::generate_did_key;
-use crate::auth::extractor::{AdminAuth, AuthClaims, ManageAuth};
-use crate::auth::jwt::JwtKeys;
+use crate::auth::{AdminAuth, AuthClaims, ManageAuth};
 use crate::auth::session::{
     Session, SessionState, delete_session, get_session, get_session_by_refresh, list_sessions,
     now_epoch, store_refresh_index, store_session, update_session,
@@ -60,7 +57,10 @@ pub async fn challenge(
 
     Ok(Json(ChallengeResponse {
         session_id,
-        data: ChallengeData { challenge },
+        data: ChallengeData {
+            challenge,
+            tee_attestation: None,
+        },
     }))
 }
 
@@ -70,34 +70,26 @@ pub async fn authenticate(
     State(state): State<AppState>,
     body: String,
 ) -> Result<Json<AuthenticateResponse>, AppError> {
-    let did_resolver = state
-        .did_resolver
+    let atm = state
+        .atm
         .as_ref()
-        .ok_or_else(|| AppError::Authentication("DID resolver not configured".into()))?;
-    let secrets_resolver = state
-        .secrets_resolver
-        .as_ref()
-        .ok_or_else(|| AppError::Authentication("secrets resolver not configured".into()))?;
+        .ok_or_else(|| AppError::Authentication("ATM not configured".into()))?;
     let jwt_keys = state
         .jwt_keys
         .as_ref()
         .ok_or_else(|| AppError::Authentication("JWT keys not configured".into()))?;
 
     // Unpack the DIDComm message
-    let (msg, _metadata) = Message::unpack_string(
-        &body,
-        did_resolver,
-        secrets_resolver.as_ref(),
-        &UnpackOptions::default(),
-    )
-    .await
-    .map_err(|e| AppError::Authentication(format!("failed to unpack message: {e}")))?;
+    let (msg, _metadata) = atm
+        .unpack(&body)
+        .await
+        .map_err(|e| AppError::Authentication(format!("failed to unpack message: {e}")))?;
 
     // Validate message type
-    if msg.type_ != "https://affinidi.com/atm/1.0/authenticate" {
+    if msg.typ != "https://affinidi.com/atm/1.0/authenticate" {
         return Err(AppError::Authentication(format!(
             "unexpected message type: {}",
-            msg.type_
+            msg.typ
         )));
     }
 
@@ -159,12 +151,13 @@ pub async fn authenticate(
     let refresh_expiry = config.auth.refresh_token_expiry;
     drop(config);
 
-    let claims = JwtKeys::new_claims(
+    let claims = jwt_keys.new_claims(
         session.did.clone(),
         session.session_id.clone(),
         role.to_string(),
         allowed_contexts,
         access_expiry,
+        false,
     );
     let access_expires_at = claims.exp;
     let access_token = jwt_keys.encode(&claims)?;
@@ -214,34 +207,26 @@ pub async fn refresh(
     State(state): State<AppState>,
     body: String,
 ) -> Result<Json<RefreshResponse>, AppError> {
-    let did_resolver = state
-        .did_resolver
+    let atm = state
+        .atm
         .as_ref()
-        .ok_or_else(|| AppError::Authentication("DID resolver not configured".into()))?;
-    let secrets_resolver = state
-        .secrets_resolver
-        .as_ref()
-        .ok_or_else(|| AppError::Authentication("secrets resolver not configured".into()))?;
+        .ok_or_else(|| AppError::Authentication("ATM not configured".into()))?;
     let jwt_keys = state
         .jwt_keys
         .as_ref()
         .ok_or_else(|| AppError::Authentication("JWT keys not configured".into()))?;
 
     // Unpack the DIDComm message
-    let (msg, _metadata) = Message::unpack_string(
-        &body,
-        did_resolver,
-        secrets_resolver.as_ref(),
-        &UnpackOptions::default(),
-    )
-    .await
-    .map_err(|e| AppError::Authentication(format!("failed to unpack message: {e}")))?;
+    let (msg, _metadata) = atm
+        .unpack(&body)
+        .await
+        .map_err(|e| AppError::Authentication(format!("failed to unpack message: {e}")))?;
 
     // Validate message type
-    if msg.type_ != "https://affinidi.com/atm/1.0/authenticate/refresh" {
+    if msg.typ != "https://affinidi.com/atm/1.0/authenticate/refresh" {
         return Err(AppError::Authentication(format!(
             "unexpected message type: {}",
-            msg.type_
+            msg.typ
         )));
     }
 
@@ -280,12 +265,13 @@ pub async fn refresh(
     let access_expiry = config.auth.access_token_expiry;
     drop(config);
 
-    let claims = JwtKeys::new_claims(
+    let claims = jwt_keys.new_claims(
         session.did.clone(),
         session.session_id.clone(),
         role.to_string(),
         allowed_contexts,
         access_expiry,
+        false,
     );
     let access_expires_at = claims.exp;
     let access_token = jwt_keys.encode(&claims)?;

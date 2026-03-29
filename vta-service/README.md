@@ -171,6 +171,19 @@ All routes except `/health` and `/auth/*` require a valid JWT bearer token (`Aut
 | `GET` | `/config` | Get current configuration |
 | `PATCH` | `/config` | Update configuration |
 
+### Backup & Restore
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/backup/export` | Export encrypted backup (Admin) |
+| `POST` | `/backup/import` | Import encrypted backup (Admin) |
+
+### VTA Management
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/vta/restart` | Trigger soft restart (Admin) |
+
 ## Configuration
 
 Configuration is loaded from a TOML file (default: `config.toml`). Every field can be overridden with an environment variable.

@@ -2,8 +2,8 @@ use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use affinidi_did_resolver_cache_sdk::{DIDCacheClient, config::DIDCacheConfigBuilder};
-use affinidi_tdk::didcomm::{Message, PackEncryptedOptions};
-use affinidi_tdk::secrets_resolver::{SecretsResolver, ThreadedSecretsResolver};
+use affinidi_tdk::didcomm::Message;
+use affinidi_tdk::secrets_resolver::SecretsResolver;
 use serde::{Deserialize, Serialize};
 use serde_json;
 use tracing::debug;
@@ -622,24 +622,37 @@ pub async fn challenge_response(
     );
 
     // Step 2: Build DIDComm message
-    debug!("initializing DID resolver");
-    let did_resolver = DIDCacheClient::new(DIDCacheConfigBuilder::default().build())
+    debug!("initializing DID resolver and ATM for message packing");
+
+    use std::sync::Arc;
+    use affinidi_tdk::common::TDKSharedState;
+    use affinidi_tdk::common::config::TDKConfig;
+    use affinidi_tdk::messaging::ATM;
+    use affinidi_tdk::messaging::config::ATMConfig;
+
+    let tdk = TDKSharedState::new(TDKConfig::builder().build()
+        .map_err(|e| format!("TDK config build failed: {e}"))?)
         .await
-        .map_err(|e| format!("DID resolver init failed: {e}"))?;
-    let (secrets_resolver, _handle) = ThreadedSecretsResolver::new(None).await;
+        .map_err(|e| format!("TDK init failed: {e}"))?;
 
     // Build DIDComm secrets from the private key
     let seed = crate::did_key::decode_private_key_multibase(private_key_multibase)?;
     let secrets = crate::did_key::secrets_from_did_key(client_did, &seed)?;
     debug!(signing_id = %secrets.signing.id, ka_id = %secrets.key_agreement.id, "inserting DIDComm secrets");
-    secrets_resolver.insert(secrets.signing).await;
-    secrets_resolver.insert(secrets.key_agreement).await;
+    tdk.secrets_resolver.insert(secrets.signing).await;
+    tdk.secrets_resolver.insert(secrets.key_agreement).await;
+
+    let atm = ATM::new(ATMConfig::builder().build()
+        .map_err(|e| format!("ATM config build failed: {e}"))?,
+        Arc::new(tdk),
+    ).await
+    .map_err(|e| format!("ATM init failed: {e}"))?;
 
     // Build the authenticate message
     debug!(
         from = client_did,
         to = vta_did,
-        "building DIDComm authenticate message (forward=false)"
+        "building DIDComm authenticate message"
     );
     let msg = Message::build(
         uuid::Uuid::new_v4().to_string(),
@@ -654,28 +667,12 @@ pub async fn challenge_response(
     .finalize();
 
     // Pack the message (encrypted)
-    let (packed, metadata) = msg
-        .pack_encrypted(
-            vta_did,
-            Some(client_did),
-            None,
-            &did_resolver,
-            &secrets_resolver,
-            &PackEncryptedOptions {
-                forward: false,
-                ..PackEncryptedOptions::default()
-            },
-        )
+    let (packed, _metadata) = atm
+        .pack_encrypted(&msg, vta_did, Some(client_did), None)
         .await
         .map_err(|e| format!("DIDComm pack failed: {e}"))?;
 
-    debug!(
-        from_kid = ?metadata.from_kid,
-        to_kids = ?metadata.to_kids,
-        messaging_service = ?metadata.messaging_service,
-        packed_len = packed.len(),
-        "message packed"
-    );
+    debug!(packed_len = packed.len(), "message packed");
 
     // Step 3: Authenticate
     let auth_url = format!("{base_url}/auth/");
@@ -803,13 +800,12 @@ pub async fn resolve_vta_url(vta_did: &str) -> Result<String, Box<dyn std::error
 
     match did_resolver.resolve(vta_did).await {
         Ok(resolved) => {
-            if let Some(svc) = resolved.doc.find_service("vta-rest") {
-                if let Some(url) = svc.service_endpoint.get_uri() {
+            if let Some(svc) = resolved.doc.find_service("vta-rest")
+                && let Some(url) = svc.service_endpoint.get_uri() {
                     let url = url.trim_matches('"').trim_end_matches('/').to_string();
                     debug!(url = %url, "found VTA URL from #vta-rest service endpoint");
                     return Ok(url);
                 }
-            }
             debug!("no #vta-rest service found in DID document, falling back to DID parsing");
         }
         Err(e) => {
@@ -900,15 +896,22 @@ pub async fn resolve_mediator_did(
     let did_resolver = DIDCacheClient::new(DIDCacheConfigBuilder::default().build())
         .await
         .map_err(|e| format!("DID resolver init failed: {e}"))?;
+    resolve_mediator_did_with_resolver(vta_did, &did_resolver).await
+}
 
-    let resolved = did_resolver
+/// Resolve the mediator DID using an existing resolver (avoids re-creating one).
+pub async fn resolve_mediator_did_with_resolver(
+    vta_did: &str,
+    resolver: &DIDCacheClient,
+) -> Result<Option<String>, Box<dyn std::error::Error>> {
+    let resolved = resolver
         .resolve(vta_did)
         .await
         .map_err(|e| format!("DID resolution failed: {e}"))?;
 
     for svc in &resolved.doc.service {
-        if svc.type_.iter().any(|t| t == "DIDCommMessaging") {
-            if let Some(did) = svc
+        if svc.type_.iter().any(|t| t == "DIDCommMessaging")
+            && let Some(did) = svc
                 .service_endpoint
                 .get_uris()
                 .into_iter()
@@ -917,10 +920,83 @@ pub async fn resolve_mediator_did(
             {
                 return Ok(Some(did));
             }
-        }
     }
 
     Ok(None)
+}
+
+/// A reusable DIDComm session for sending multiple trust-pings through
+/// the same ATM + WebSocket connection.
+///
+/// Eliminates per-ping overhead of TDK init, ATM creation, profile setup,
+/// and WebSocket handshake (~4 seconds saved per additional ping).
+pub struct TrustPingSession {
+    atm: affinidi_tdk::messaging::ATM,
+    profile: std::sync::Arc<affinidi_tdk::messaging::profiles::ATMProfile>,
+    mediator_did: String,
+}
+
+impl TrustPingSession {
+    /// Create a new session connected to the mediator via WebSocket.
+    pub async fn new(
+        client_did: &str,
+        private_key_multibase: &str,
+        mediator_did: &str,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        use std::sync::Arc;
+        use affinidi_tdk::common::TDKSharedState;
+        use affinidi_tdk::messaging::ATM;
+        use affinidi_tdk::messaging::config::ATMConfig;
+        use affinidi_tdk::messaging::profiles::ATMProfile;
+
+        let seed = crate::did_key::decode_private_key_multibase(private_key_multibase)?;
+        let secrets = crate::did_key::secrets_from_did_key(client_did, &seed)?;
+
+        let tdk = TDKSharedState::default().await;
+        tdk.secrets_resolver.insert(secrets.signing).await;
+        tdk.secrets_resolver.insert(secrets.key_agreement).await;
+
+        let atm = ATM::new(ATMConfig::builder().build()?, Arc::new(tdk)).await?;
+
+        let profile = ATMProfile::new(
+            &atm,
+            None,
+            client_did.to_string(),
+            Some(mediator_did.to_string()),
+        )
+        .await?;
+        let profile = Arc::new(profile);
+
+        atm.profile_enable_websocket(&profile).await?;
+
+        Ok(Self {
+            atm,
+            profile,
+            mediator_did: mediator_did.to_string(),
+        })
+    }
+
+    /// Send a trust-ping to a target (or the mediator if `target_did` is None).
+    /// Returns latency in milliseconds.
+    pub async fn ping(
+        &self,
+        target_did: Option<&str>,
+    ) -> Result<u128, Box<dyn std::error::Error>> {
+        use std::time::Instant;
+        use affinidi_tdk::messaging::protocols::trust_ping::TrustPing;
+
+        let target = target_did.unwrap_or(&self.mediator_did);
+        let start = Instant::now();
+        TrustPing::default()
+            .send_ping(&self.atm, &self.profile, target, true, true, true)
+            .await?;
+        Ok(start.elapsed().as_millis())
+    }
+
+    /// Gracefully shut down the ATM connection.
+    pub async fn shutdown(self) {
+        self.atm.graceful_shutdown().await;
+    }
 }
 
 fn now_epoch() -> u64 {

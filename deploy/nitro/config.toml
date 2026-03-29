@@ -1,0 +1,115 @@
+# =============================================================================
+# VTA Configuration — AWS Nitro Enclave
+# =============================================================================
+#
+# This file is baked into the Enclave Image File (EIF) at docker build time.
+# Changing any value requires rebuilding the EIF (which changes PCR0).
+#
+# QUICK START — You only need to set TWO values:
+#   1. key_arn       — Your KMS key ARN (in [tee.kms])
+#   2. mediator_did  — Your mediator's DID (in [messaging])
+#
+# Everything else has sensible defaults for TEE operation.
+#
+# SECRETS: The VTA generates its own seed and JWT key inside the TEE on
+# first boot, encrypts them with KMS, and stores the ciphertexts in the
+# vsock-proxied persistent store. Never put secrets in this file.
+#
+# IDENTITY: The VTA auto-generates its did:webvh identity on first boot
+# using vta_did_template (see [tee.kms]). The DID is persisted in the
+# encrypted store. Retrieve the did.jsonl via GET /attestation/did-log.
+#
+# NETWORKING: The enclave has no direct network access. All traffic is
+# proxied through vsock to the parent EC2 instance:
+#   REST API      → 127.0.0.1:8100  (served directly, proxied inbound)
+#   HTTPS + WSS   → 127.0.0.1:4444  (HTTP CONNECT proxy to parent)
+#   DID resolver  → 127.0.0.1:4445  (WebSocket to resolver sidecar)
+#   IMDS          → 169.254.169.254  (AWS credentials via parent)
+# =============================================================================
+
+
+# ── Top-level settings ──────────────────────────────────────────────────────
+
+# DID resolver — connects to the resolver sidecar on the parent via vsock.
+# Only change this if you use a different resolver port.
+resolver_url = "ws://127.0.0.1:4445/did/v1/ws"
+
+# Uncomment to set the VTA's public REST URL (used in DID documents for
+# the TeeAttestation service endpoint). Not needed for DIDComm-only mode.
+# public_url = "https://vta.example.com"
+
+# Uncomment to set a manually-created VTA DID instead of auto-generating.
+# When set, vta_did_template is ignored.
+# vta_did = "did:webvh:..."
+
+
+# ── REQUIRED: KMS bootstrap ─────────────────────────────────────────────────
+#
+# The VTA uses AWS KMS to protect its secrets. On first boot it generates
+# a seed + JWT key inside the TEE, encrypts them with this KMS key, and
+# stores the ciphertexts persistently. On subsequent boots it decrypts
+# them using Nitro attestation-conditioned KMS access.
+#
+# Prerequisites:
+#   1. Create a KMS key in your AWS account
+#   2. Attach the Nitro attestation policy (see deploy guide)
+#   3. Paste the key ARN below
+#
+[tee.kms]
+region = "us-east-1"
+key_arn = "REPLACE_WITH_KMS_KEY_ARN"
+
+# Super-admin DID — grants unrestricted access to this VTA on first boot.
+# Generate a did:key locally (e.g., via `pnm setup`) and paste it here.
+# The private key stays on your machine — it never touches the TEE or parent.
+#
+# If omitted, the VTA generates a random did:key and stores the credential
+# in the bootstrap keyspace (retrievable via GET /attestation/admin-credential
+# when REST is enabled).
+# admin_did = "did:key:z6Mk..."
+
+# Template for auto-generating the VTA's did:webvh identity on first boot.
+# {SCID} is replaced with the self-certifying identifier at creation time.
+# The domain must match where you'll host the did.jsonl file.
+#
+# Examples:
+#   "did:webvh:{SCID}:vta.example.com"
+#   "did:webvh:{SCID}:example.com:agents:vta-1"
+#   "did:webvh:{SCID}:example.com%3A8080:vta"    (with port)
+#
+# Ignored if vta_did is set (either in this file or in the encrypted store).
+# vta_did_template = "did:webvh:{SCID}:example.com:vta"
+
+
+# ── REQUIRED: DIDComm mediator ──────────────────────────────────────────────
+#
+# The VTA communicates via DIDComm through a mediator. Set mediator_did to
+# the DID of your Affinidi Messaging mediator. The TDK resolves this DID
+# to discover the mediator's WebSocket endpoint automatically.
+#
+# WebSocket traffic is routed through the enclave's HTTPS_PROXY (set by
+# the entrypoint) via the parent's HTTP CONNECT proxy. The mediator host
+# is auto-added to the proxy allowlist from the DID.
+#
+[messaging]
+mediator_did = "REPLACE_WITH_MEDIATOR_DID"
+
+
+# ── TEE settings ────────────────────────────────────────────────────────────
+
+[tee]
+mode = "required"
+embed_in_did = true
+
+# ── Server (rarely need to change) ──────────────────────────────────────────
+
+[server]
+host = "127.0.0.1"
+port = 8100
+
+[log]
+level = "info"
+format = "json"
+
+[store]
+data_dir = "/var/lib/vta/data"

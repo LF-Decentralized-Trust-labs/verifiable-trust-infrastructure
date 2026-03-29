@@ -2,6 +2,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use affinidi_did_resolver_cache_sdk::{DIDCacheClient, config::DIDCacheConfigBuilder};
+use affinidi_tdk::common::TDKSharedState;
+use affinidi_tdk::common::config::TDKConfig;
+use affinidi_tdk::messaging::ATM;
+use affinidi_tdk::messaging::config::ATMConfig;
 use affinidi_tdk::secrets_resolver::{SecretsResolver, ThreadedSecretsResolver, secrets::Secret};
 
 use base64::Engine;
@@ -9,6 +13,7 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD as BASE64;
 
 use crate::auth::jwt::JwtKeys;
 use crate::auth::session::cleanup_expired_sessions;
+use crate::auth::AuthState;
 use crate::config::{AppConfig, AuthConfig};
 use crate::error::AppError;
 use crate::keys::seed_store::SecretStore;
@@ -28,6 +33,16 @@ pub struct AppState {
     pub did_resolver: Option<DIDCacheClient>,
     pub secrets_resolver: Option<Arc<ThreadedSecretsResolver>>,
     pub jwt_keys: Option<Arc<JwtKeys>>,
+    pub atm: Option<ATM>,
+}
+
+impl AuthState for AppState {
+    fn jwt_keys(&self) -> Option<&Arc<JwtKeys>> {
+        self.jwt_keys.as_ref()
+    }
+    fn sessions_ks(&self) -> &KeyspaceHandle {
+        &self.sessions_ks
+    }
 }
 
 pub async fn run(
@@ -40,7 +55,7 @@ pub async fn run(
     let acl_ks = store.keyspace("acl")?;
 
     // Initialize auth infrastructure
-    let (did_resolver, secrets_resolver, jwt_keys) = init_auth(&config, &*secret_store).await;
+    let (did_resolver, secrets_resolver, jwt_keys, atm) = init_auth(&config, &*secret_store).await;
 
     // Bind TCP listener on the main thread for early port validation
     let addr = format!("{}:{}", config.server.host, config.server.port);
@@ -78,6 +93,7 @@ pub async fn run(
         did_resolver,
         secrets_resolver,
         jwt_keys,
+        atm,
     };
 
     // Spawn three named OS threads
@@ -309,12 +325,13 @@ async fn init_auth(
     Option<DIDCacheClient>,
     Option<Arc<ThreadedSecretsResolver>>,
     Option<Arc<JwtKeys>>,
+    Option<ATM>,
 ) {
     let vtc_did = match &config.vtc_did {
         Some(did) => did.clone(),
         None => {
             warn!("vtc_did not configured — auth endpoints will not work (run setup first)");
-            return (None, None, None);
+            return (None, None, None, None);
         }
     };
 
@@ -323,11 +340,11 @@ async fn init_auth(
         Ok(Some(s)) => s,
         Ok(None) => {
             warn!("no key material found — auth endpoints will not work (run setup first)");
-            return (None, None, None);
+            return (None, None, None, None);
         }
         Err(e) => {
             warn!("failed to load key material: {e} — auth endpoints will not work");
-            return (None, None, None);
+            return (None, None, None, None);
         }
     };
 
@@ -336,7 +353,7 @@ async fn init_auth(
             "key material is {} bytes, expected 64 — auth endpoints will not work",
             key_material.len()
         );
-        return (None, None, None);
+        return (None, None, None, None);
     }
 
     let ed25519_bytes: &[u8; 32] = key_material[..32].try_into().unwrap();
@@ -347,7 +364,7 @@ async fn init_auth(
         Ok(r) => r,
         Err(e) => {
             warn!("failed to create DID resolver: {e} — auth endpoints will not work");
-            return (None, None, None);
+            return (None, None, None, None);
         }
     };
 
@@ -372,14 +389,43 @@ async fn init_auth(
             Ok(k) => k,
             Err(e) => {
                 warn!("failed to load JWT signing key: {e} — auth endpoints will not work");
-                return (Some(did_resolver), Some(Arc::new(secrets_resolver)), None);
+                return (Some(did_resolver), Some(Arc::new(secrets_resolver)), None, None);
             }
         },
         None => {
             warn!(
                 "auth.jwt_signing_key not configured — auth endpoints will not work (run setup first)"
             );
-            return (Some(did_resolver), Some(Arc::new(secrets_resolver)), None);
+            return (Some(did_resolver), Some(Arc::new(secrets_resolver)), None, None);
+        }
+    };
+
+    // 4. Build ATM for DIDComm message unpacking (used by auth endpoints)
+    let secrets_resolver = Arc::new(secrets_resolver);
+    let atm = {
+        let tdk_config = TDKConfig::builder()
+            .with_did_resolver(did_resolver.clone())
+            .with_secrets_resolver((*secrets_resolver).clone())
+            .with_load_environment(false)
+            .build();
+        match tdk_config {
+            Ok(cfg) => match TDKSharedState::new(cfg).await {
+                Ok(tdk) => match ATM::new(ATMConfig::builder().build().unwrap(), Arc::new(tdk)).await {
+                    Ok(a) => Some(a),
+                    Err(e) => {
+                        warn!("failed to create ATM for auth unpack: {e}");
+                        None
+                    }
+                },
+                Err(e) => {
+                    warn!("failed to create TDK shared state: {e}");
+                    None
+                }
+            },
+            Err(e) => {
+                warn!("failed to build TDK config: {e}");
+                None
+            }
         }
     };
 
@@ -387,8 +433,9 @@ async fn init_auth(
 
     (
         Some(did_resolver),
-        Some(Arc::new(secrets_resolver)),
+        Some(secrets_resolver),
         Some(Arc::new(jwt_keys)),
+        atm,
     )
 }
 
@@ -400,7 +447,7 @@ fn decode_jwt_key(b64: &str) -> Result<JwtKeys, AppError> {
     let key_bytes: [u8; 32] = bytes
         .try_into()
         .map_err(|_| AppError::Config("jwt_signing_key must be exactly 32 bytes".into()))?;
-    let keys = JwtKeys::from_ed25519_bytes(&key_bytes)?;
+    let keys = JwtKeys::from_ed25519_bytes(&key_bytes, "VTC")?;
     debug!("JWT signing key decoded successfully");
     Ok(keys)
 }

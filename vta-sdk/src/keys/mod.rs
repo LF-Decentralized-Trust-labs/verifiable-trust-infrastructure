@@ -6,6 +6,8 @@ use serde::{Deserialize, Serialize};
 pub enum KeyType {
     Ed25519,
     X25519,
+    /// ECDSA P-256 key for ES256 signing.
+    P256,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -36,6 +38,7 @@ impl std::fmt::Display for KeyType {
         match self {
             KeyType::Ed25519 => write!(f, "ed25519"),
             KeyType::X25519 => write!(f, "x25519"),
+            KeyType::P256 => write!(f, "p256"),
         }
     }
 }

@@ -1,5 +1,285 @@
 # Changelog
 
+## 0.2.0 — 2026-03-29
+
+### Observability
+
+- **Prometheus metrics endpoint** — `GET /metrics` serves
+  request count and latency histograms in Prometheus text
+  format. Requires authentication (any role including the
+  new Monitor role).
+- **Monitor role** — New lowest-privilege role for
+  observability-only access. Can read `/metrics` and
+  `/health` but nothing else. Create with
+  `pnm acl create --role monitor`.
+
+### Hardening
+
+- **Admin credential delete-after-read** — The
+  `/attestation/admin-credential` endpoint now deletes the
+  credential from the store after first retrieval.
+  Subsequent calls return 404.
+- **Server-side backup password minimum** — The backup
+  export API enforces a 12-character minimum password.
+- **Super admin for backup/restart** — Backup export,
+  import, and VTA restart now require super admin (admin
+  with no context restrictions).
+- **Enclave bootstrap error handling** — Replaced all
+  `.expect()` calls in `vta-enclave/src/main.rs` with
+  proper error handling and `tracing::error` before exit.
+- **Clippy clean** — Fixed all actionable warnings:
+  `Role::from_str` → `Role::parse`, `.clamp()`, needless
+  borrows, collapsed ifs.
+
+### Testing
+
+- **31 REST API integration tests** — Full axum server
+  with temp fjall store, programmatic JWT tokens, and
+  pre-inserted sessions. Covers auth enforcement (6),
+  role hierarchy (4), CRUD operations (5), backup (3),
+  cache (1), audit (2), context scoping (1), key
+  lifecycle (3), P-256 keys (1), seed list (1),
+  wrong password (1), ACL lifecycle (1), context
+  lifecycle (1), audit retention (1).
+- **20 security-focused unit tests** — Auth role
+  enforcement, ACL privilege escalation prevention,
+  context access scoping, backup crypto validation.
+- **Total: 226 tests** (up from 175 at start of release).
+
+### Documentation
+
+- **6 Mermaid diagrams** — Crate dependencies, REST vs
+  DIDComm request flow, auth challenge-response sequence,
+  BIP-32 derivation tree, TEE bootstrap sequence, enclave
+  proxy architecture.
+- **Consolidated docs** — Removed ~170 lines of
+  duplicated content from README.md (feature flags, CLI
+  reference). Cross-references to canonical sources.
+- **Doc comments** on 35 public route handler functions.
+- **Expanded CONTRIBUTING.md** — Development setup, test
+  commands, PR checklist, coding guidelines.
+
+### Architecture
+
+- **vta-service / vta-enclave split** — `vta-service` is
+  now a library crate exporting all business logic.
+  `vta-enclave` is a separate binary crate for Nitro
+  Enclave deployments with TEE-specific bootstrap (KMS,
+  vsock-store, attestation). Future front-ends (SGX,
+  serverless) follow the same pattern.
+- **Soft restart** — The VTA server can now restart
+  in-process without a process restart. Service threads
+  shut down gracefully, auth/crypto re-initialize, and
+  threads restart. Exposed via `POST /vta/restart`,
+  DIDComm protocol, and `pnm vta restart`.
+- **Patched affinidi-messaging-didcomm-service** — Local
+  patch adds `tdk_config` field to `ListenerConfig` so
+  the VTA can pass its network-mode DID resolver to the
+  DIDComm service listener.
+
+### TEE / Nitro Enclave
+
+- **KMS-based secret bootstrap** — First boot generates
+  BIP-39 seed and JWT key inside the enclave, encrypts
+  with KMS `GenerateDataKey` (with Nitro attestation),
+  stores ciphertext. Subsequent boots decrypt via KMS
+  `Decrypt` with PCR enforcement.
+- **Encrypted storage** — AES-256-GCM encryption of all
+  sensitive keyspaces. Key derived from seed via HKDF.
+- **Auto-generated VTA identity** — `did:webvh` DID
+  created automatically on first boot from a template.
+- **Admin credential bootstrap** — Operator-provided
+  admin DID or auto-generated `did:key` with credential
+  bundle stored for retrieval.
+- **Seal mechanism** — Ed25519 challenge-response seal
+  prevents offline CLI modification after bootstrap.
+- **Nitro deployment infrastructure** — Dockerfile,
+  enclave entrypoint, KMS setup scripts, IAM policies,
+  full deployment guide (1,200+ lines).
+
+### DIDComm
+
+- **Migrated to affinidi-messaging-didcomm-service** —
+  Replaced manual message dispatch with typed Router,
+  handler functions, MessagePolicy middleware, and
+  RequestLogging. Handlers use `Extension<Arc<VtaState>>`
+  for shared state injection.
+- **WebSocket-based DIDComm session** — PNM CLI now uses
+  WebSocket streaming for response delivery, fixing
+  reliability issues with REST-only polling.
+- **Backup management protocol** —
+  `backup-management/1.0/export` and
+  `backup-management/1.0/import` DIDComm message types.
+- **VTA restart protocol** —
+  `vta-management/1.0/restart` DIDComm message type.
+
+### P-256 Key Support
+
+- **P-256 (secp256r1) key derivation** — New key type
+  with BIP-32 derivation using domain-separated paths
+  (`m/13'/256'/...`).
+- **Signing oracle endpoint** — `POST /keys/{key_id}/sign`
+  (REST) and `key-management/1.0/sign` (DIDComm) for
+  server-side signing with managed keys.
+- **Token cache API** — `GET/PUT/DELETE /cache/{key}` for
+  ephemeral key-value storage with TTL support.
+
+### Backup & Restore
+
+- **Export** — `POST /backup/export` and DIDComm protocol
+  serialize all VTA state (seed, keys, ACL, contexts,
+  WebVH, config, optional audit logs) into a
+  password-protected `.vtabak` file.
+- **Encryption** — Argon2id (64 MiB, 3 iterations, 4
+  parallel) derives AES-256-GCM key from user password.
+- **Import** — `POST /backup/import` decrypts, validates,
+  replaces all state, and triggers soft restart. Preview
+  mode (`confirm=false`) shows what would change.
+- **TEE re-encryption** — On import in TEE mode,
+  `re_encrypt_bootstrap_secrets()` re-encrypts the
+  imported seed and JWT key with the enclave's KMS key.
+- **PNM CLI** — `pnm backup export [--include-audit]`
+  and `pnm backup import <file> [--preview]`.
+
+### Performance
+
+- **DIDComm service DID resolver fix** — The DIDComm
+  service listener was creating a local-mode DID resolver
+  (ignoring network-mode config), causing ~1s of uncached
+  HTTP DID resolution per message through the HTTPS proxy.
+  Fixed via patched crate with `tdk_config` passthrough.
+- **Reusable TrustPingSession** — PNM health command now
+  creates one ATM + WebSocket connection for both mediator
+  and VTA pings, eliminating ~4s of duplicate setup.
+- **Shared DID resolver** — Single `DIDCacheClient` across
+  all health check operations.
+
+### CLI
+
+- **DIDComm-only mode** — PNM CLI works without a REST
+  URL, using DIDComm through the mediator for all
+  operations.
+- **Multi-VTA support** — `pnm vta list/use/remove/info`
+  for managing connections to multiple VTAs.
+- **`pnm vta restart`** — Trigger soft restart remotely.
+- **`pnm backup export/import`** — Remote backup and
+  restore with password protection.
+- **Trust-ping in health** — `pnm health` now pings both
+  the mediator and VTA through DIDComm with latency
+  display.
+
+### Enclave Proxy
+
+- **Rust rewrite** — Replaced shell-based parent proxy
+  with a Rust binary (`enclave-proxy`).
+- **7-channel multiplexer** — Inbound REST, outbound
+  mediator (TLS), HTTPS CONNECT proxy, IMDS credential
+  proxy, persistent storage (fjall), DID resolver bridge,
+  log forwarding.
+- **Embedded Affinidi DID resolver** — Resolves mediator
+  DID locally without external resolver service.
+- **Connection limit** — Semaphore-based limit (256) per
+  channel to prevent resource exhaustion.
+
+### Breaking Changes
+
+- **`vta-service` is now a library** — The local/dev
+  binary is still included, but TEE deployments use
+  `vta-enclave` which depends on `vta-service` as a
+  library.
+- **DIDComm handler signatures changed** — Handlers now
+  use `(HandlerContext, Message, Extension<Arc<VtaState>>)`
+  pattern from `affinidi-messaging-didcomm-service`.
+- **Workspace version bumped to 0.2.0** — All crates
+  updated.
+
+### Dependency Updates
+
+- `affinidi-messaging-didcomm-service` 0.1.2 (patched
+  locally for TDK config passthrough)
+- `didwebvh-rs` 0.3 → 0.4
+- `tokio-vsock` 0.5 → 0.7
+- `argon2` 0.5 (new — backup encryption)
+- `aes-gcm` 0.10
+- `hmac` 0.12
+
+---
+
+## 2026-03-21
+
+### vti-common `0.1.1` (new crate)
+
+- **Shared foundation crate** — Extracts common code
+  from `vta-service` and `vtc-service` into a shared
+  library: auth (JWT, sessions, extractors), ACL, error
+  types, config types, and the fjall key-value store.
+- **Key-only prefix scan** — New `prefix_keys()` method
+  on `KeyspaceHandle` for efficient iteration when only
+  keys are needed (no value decryption overhead).
+
+### vta-service `0.1.3`
+
+- **Audit logging system** — New structured audit log
+  with persistence to fjall keyspace. Includes REST
+  endpoints (`GET /audit/logs`, `GET /audit/retention`,
+  `PATCH /audit/retention`) and DIDComm protocol
+  support. Audit events emitted via tracing at the
+  `audit` target and persisted for API retrieval.
+- **Connection rate limiting** — Enclave proxy now
+  enforces a configurable maximum concurrent connection
+  limit (default 256) per proxy channel to prevent
+  resource exhaustion.
+- **Refactored to use vti-common** — Auth, ACL, store,
+  error, and config modules now delegate to the shared
+  `vti-common` crate, reducing duplication with
+  `vtc-service`.
+- **Code quality cleanup** — Eliminated unnecessary
+  `KeyspaceHandle::clone()` calls in auth routes,
+  combined redundant config lock acquisitions, removed
+  duplicate `AuditLogQuery` struct in favor of SDK's
+  `ListAuditLogsBody`, and optimized audit cleanup to
+  use key-only iteration.
+
+### vtc-service `0.1.2`
+
+- **Refactored to use vti-common** — Auth, ACL, store,
+  error, and config modules now delegate to the shared
+  `vti-common` crate.
+
+### vta-sdk `0.1.2`
+
+- **Audit management protocol** — New
+  `audit_management` module with types and client
+  methods for listing audit logs
+  (`list_audit_logs`), querying retention
+  (`get_audit_retention`), and updating retention
+  (`update_audit_retention`).
+
+### vta-cli-common `0.1.2`
+
+- **Audit commands** — New `cmd_list_audit_logs` (with
+  colored table output), `cmd_get_retention`, and
+  `cmd_update_retention` commands.
+- **Simplified `cmd_list_audit_logs` API** — Accepts
+  `&ListAuditLogsBody` directly instead of 8 individual
+  parameters.
+
+### pnm-cli `0.1.2`
+
+- **`pnm audit list`** — List audit logs with filtering
+  by time range, action, actor, outcome, and context.
+- **`pnm audit retention get/set`** — View and update
+  audit log retention period.
+
+### Security Documentation
+
+- **Security architecture** (`docs/security-architecture.md`)
+  — Comprehensive security architecture document.
+- **Threat model** (`docs/threat-model.md`) — Detailed
+  threat model analysis.
+
+---
+
 ## 2026-03-16
 
 ### vta-sdk `0.1.1`

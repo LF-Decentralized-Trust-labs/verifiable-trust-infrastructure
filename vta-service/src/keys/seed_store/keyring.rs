@@ -25,12 +25,12 @@ impl super::SeedStore for KeyringSeedStore {
         Box::pin(async move {
             tokio::task::spawn_blocking(move || {
                 let entry = keyring::Entry::new(&service, &user).map_err(|e| {
-                    AppError::SeedStore(format!("failed to create keyring entry: {e}"))
+                    AppError::SecretStore(format!("failed to create keyring entry: {e}"))
                 })?;
                 match entry.get_password() {
                     Ok(hex_seed) => {
                         let bytes = hex::decode(&hex_seed).map_err(|e| {
-                            AppError::SeedStore(format!("failed to decode seed: {e}"))
+                            AppError::SecretStore(format!("failed to decode seed: {e}"))
                         })?;
                         debug!("seed loaded from keyring");
                         Ok(Some(bytes))
@@ -39,7 +39,7 @@ impl super::SeedStore for KeyringSeedStore {
                         debug!("no seed found in keyring");
                         Ok(None)
                     }
-                    Err(e) => Err(AppError::SeedStore(format!("failed to read seed: {e}"))),
+                    Err(e) => Err(AppError::SecretStore(format!("failed to read seed: {e}"))),
                 }
             })
             .await
@@ -54,11 +54,11 @@ impl super::SeedStore for KeyringSeedStore {
         Box::pin(async move {
             tokio::task::spawn_blocking(move || {
                 let entry = keyring::Entry::new(&service, &user).map_err(|e| {
-                    AppError::SeedStore(format!("failed to create keyring entry: {e}"))
+                    AppError::SecretStore(format!("failed to create keyring entry: {e}"))
                 })?;
                 entry
                     .set_password(&hex_seed)
-                    .map_err(|e| AppError::SeedStore(format!("failed to store seed: {e}")))?;
+                    .map_err(|e| AppError::SecretStore(format!("failed to store seed: {e}")))?;
                 debug!("seed stored in keyring");
                 Ok(())
             })

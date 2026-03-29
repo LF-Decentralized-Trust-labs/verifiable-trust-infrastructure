@@ -11,7 +11,7 @@ license.workspace = true
 repository.workspace = true
 
 [features]
-didcomm = ["dep:affinidi-tdk", "dep:tracing", "dep:uuid", "dep:tokio"]
+didcomm = ["dep:affinidi-tdk", "dep:affinidi-did-resolver-cache-sdk", "dep:tracing", "dep:uuid", "dep:tokio"]
 client = ["dep:reqwest", "dep:tracing", "dep:uuid", "dep:affinidi-tdk"]
 session = [
   "client",
@@ -37,7 +37,7 @@ affinidi-tdk = { workspace = true, optional = true }
 reqwest = { workspace = true, optional = true }
 tracing = { workspace = true, optional = true }
 uuid = { workspace = true, optional = true }
-affinidi-did-resolver-cache-sdk = { version = "0.8", optional = true }
+affinidi-did-resolver-cache-sdk = { version = "0.8", optional = true, features = ["network"] }
 keyring = { version = "3", optional = true }
 azure_security_keyvault_secrets = { version = "0.12", optional = true }
 azure_identity = { version = "0.33", optional = true }

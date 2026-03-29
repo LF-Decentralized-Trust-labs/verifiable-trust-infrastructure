@@ -34,6 +34,7 @@ pub struct DeleteContextQuery {
     pub force: bool,
 }
 
+/// GET /contexts — list all contexts visible to the caller. Auth: any authenticated user.
 pub async fn list_contexts_handler(
     auth: AuthClaims,
     State(state): State<AppState>,
@@ -42,6 +43,7 @@ pub async fn list_contexts_handler(
     Ok(Json(result))
 }
 
+/// POST /contexts — create a new context. Auth: Super Admin only.
 pub async fn create_context_handler(
     auth: SuperAdminAuth,
     State(state): State<AppState>,
@@ -59,6 +61,7 @@ pub async fn create_context_handler(
     Ok((StatusCode::CREATED, Json(result)))
 }
 
+/// GET /contexts/{id} — retrieve a single context by ID. Auth: any authenticated user.
 pub async fn get_context_handler(
     auth: AuthClaims,
     State(state): State<AppState>,
@@ -69,6 +72,7 @@ pub async fn get_context_handler(
     Ok(Json(result))
 }
 
+/// PATCH /contexts/{id} — update a context's name, DID, or description. Auth: Super Admin only.
 pub async fn update_context_handler(
     auth: SuperAdminAuth,
     State(state): State<AppState>,
@@ -90,6 +94,7 @@ pub async fn update_context_handler(
     Ok(Json(result))
 }
 
+/// GET /contexts/{id}/delete-preview — preview resources affected by deleting a context. Auth: Super Admin only.
 pub async fn preview_delete_context_handler(
     auth: SuperAdminAuth,
     State(state): State<AppState>,
@@ -109,6 +114,7 @@ pub async fn preview_delete_context_handler(
     Ok(Json(result))
 }
 
+/// DELETE /contexts/{id} — delete a context and its associated resources. Auth: Super Admin only.
 pub async fn delete_context_handler(
     auth: SuperAdminAuth,
     State(state): State<AppState>,

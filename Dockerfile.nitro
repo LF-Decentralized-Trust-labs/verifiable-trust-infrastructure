@@ -1,0 +1,140 @@
+# =============================================================================
+# VTA Nitro Enclave Image
+# =============================================================================
+#
+# Multi-stage build that produces a minimal image for AWS Nitro Enclaves
+# with full REST + DIDComm support via vsock proxying.
+#
+# Usage:
+#   docker build -f Dockerfile.nitro -t vta-nitro .
+#   nitro-cli build-enclave --docker-uri vta-nitro --output-file vta.eif
+#
+# Networking: Nitro Enclaves have NO direct network access. The entrypoint
+# starts socat-based vsock proxies inside the enclave to bridge TCP↔vsock.
+# The parent EC2 instance runs parent-proxy.sh to bridge vsock↔internet.
+#
+# Architecture:
+#   Client → parent TCP:8443 → vsock:5100 → enclave socat → VTA :8100
+#   VTA DIDComm → localhost:4443 → enclave socat → vsock:5200 → parent → mediator
+#   VTA HTTPS   → localhost:4444 → enclave socat → vsock:5300 → parent → internet
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# Stage 1: Build the VTA binary
+# ---------------------------------------------------------------------------
+FROM rust:1.91-bookworm AS builder
+
+# Install build dependencies (dbus-1 is required by the keyring crate's build script)
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends libdbus-1-dev pkg-config && \
+    rm -rf /var/lib/apt/lists/*
+
+WORKDIR /build
+
+# Cache dependency builds: copy manifests first, create dummy sources, build deps
+COPY Cargo.toml Cargo.lock ./
+COPY crates/ crates/
+COPY vta-sdk/Cargo.toml vta-sdk/Cargo.toml
+COPY vta-service/Cargo.toml vta-service/Cargo.toml
+COPY vta-enclave/Cargo.toml vta-enclave/Cargo.toml
+COPY vta-cli-common/Cargo.toml vta-cli-common/Cargo.toml
+COPY vtc-service/Cargo.toml vtc-service/Cargo.toml
+COPY vti-common/Cargo.toml vti-common/Cargo.toml
+COPY cnm-cli/Cargo.toml cnm-cli/Cargo.toml
+COPY pnm-cli/Cargo.toml pnm-cli/Cargo.toml
+COPY didcomm-test/Cargo.toml didcomm-test/Cargo.toml
+
+# Create dummy source files so cargo can resolve the workspace
+RUN mkdir -p vta-sdk/src vta-service/src vta-enclave/src vta-cli-common/src vtc-service/src vti-common/src cnm-cli/src pnm-cli/src didcomm-test/src && \
+    echo "pub fn dummy() {}" > vta-sdk/src/lib.rs && \
+    echo "pub fn dummy() {}" > vta-service/src/lib.rs && \
+    echo "fn main() {}" > vta-service/src/main.rs && \
+    echo "fn main() {}" > vta-enclave/src/main.rs && \
+    echo "pub fn dummy() {}" > vta-cli-common/src/lib.rs && \
+    echo "fn main() {}" > vtc-service/src/main.rs && \
+    echo "pub fn dummy() {}" > vti-common/src/lib.rs && \
+    echo "fn main() {}" > cnm-cli/src/main.rs && \
+    echo "fn main() {}" > pnm-cli/src/main.rs && \
+    echo "fn main() {}" > didcomm-test/src/main.rs
+
+# Feature flags for the VTA enclave build.
+# Override with: docker build --build-arg FEATURES="didcomm,vsock-store" ...
+#
+# Profiles (vsock-store and vsock-log are always included):
+#   Hardened (DIDComm only):  didcomm,vsock-store,vsock-log
+#   Full API (REST+DIDComm):  rest,didcomm,vsock-store,vsock-log
+#   REST only:                rest,vsock-store,vsock-log
+#
+# TEE support is built into vta-enclave by default (no need to specify tee).
+# KMS bootstrap handles seed and JWT key — no need for config-seed, keyring,
+# or aws-secrets features.
+ARG FEATURES="rest,didcomm,vsock-store,vsock-log"
+
+# Build dependencies only (cached unless Cargo.toml or features change)
+RUN cargo build --release --package vta-enclave \
+    --no-default-features --features ${FEATURES} \
+    2>/dev/null || true
+
+# Copy actual source code
+COPY vta-sdk/ vta-sdk/
+COPY vta-service/ vta-service/
+COPY vta-enclave/ vta-enclave/
+COPY vta-cli-common/ vta-cli-common/
+COPY vtc-service/ vtc-service/
+COPY vti-common/ vti-common/
+COPY cnm-cli/ cnm-cli/
+COPY pnm-cli/ pnm-cli/
+COPY didcomm-test/ didcomm-test/
+
+# Touch source files to invalidate the dummy build cache
+RUN find vta-sdk/src vta-service/src vta-enclave/src vta-cli-common/src vti-common/src -name '*.rs' -exec touch {} +
+
+# Build the VTA enclave binary with selected feature flags
+RUN cargo build --release --package vta-enclave \
+    --no-default-features --features ${FEATURES}
+
+# Build a tiny stub for __res_init — an obsolete glibc resolver function
+# that musl/Alpine don't provide. Returning 0 (success) is safe; modern
+# DNS resolution uses different code paths.
+RUN echo 'int __res_init(void) { return 0; }' > /tmp/res_stub.c && \
+    gcc -shared -nostartfiles -o /tmp/libresolv_compat.so /tmp/res_stub.c
+
+# ---------------------------------------------------------------------------
+# Stage 2: Minimal runtime image for the Nitro Enclave
+# ---------------------------------------------------------------------------
+# Alpine Linux: ~7 MB base vs ~180 MB for debian:bookworm-slim.
+# Busybox provides `ip` (replacing iproute2) and `sed` natively.
+# gcompat provides glibc compatibility for the Rust binary.
+FROM alpine:3.21
+
+RUN apk add --no-cache \
+        ca-certificates \
+        socat \
+        gcompat \
+        libgcc \
+        libc6-compat \
+    && rm -rf /var/cache/apk/*
+
+# Copy the VTA enclave binary and glibc compat stub
+COPY --from=builder /build/target/release/vta-enclave /usr/local/bin/vta-enclave
+COPY --from=builder /tmp/libresolv_compat.so /usr/lib/libresolv_compat.so
+ENV LD_PRELOAD=/usr/lib/libresolv_compat.so
+
+# Copy the entrypoint script and config
+COPY deploy/nitro/enclave-entrypoint.sh /usr/local/bin/enclave-entrypoint.sh
+RUN chmod +x /usr/local/bin/enclave-entrypoint.sh
+COPY deploy/nitro/config.toml /etc/vta/config.toml
+
+# Create data directories
+RUN mkdir -p /var/lib/vta
+
+# Health check for container orchestration (port depends on config)
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD wget -qO- http://localhost:8100/health || exit 1
+
+# Note: USER nobody is not used because the enclave entrypoint needs root
+# for `ip link set lo up` and socat vsock proxy setup. The Nitro Enclave
+# isolation model provides hardware-level process isolation instead.
+
+# The entrypoint sets up lo, starts vsock proxies, then runs VTA
+ENTRYPOINT ["/usr/local/bin/enclave-entrypoint.sh"]

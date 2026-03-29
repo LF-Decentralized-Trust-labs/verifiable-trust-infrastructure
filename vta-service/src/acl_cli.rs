@@ -12,7 +12,7 @@ pub async fn run_acl_list(
     context: Option<String>,
     role: Option<String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let role_filter = role.map(|r| Role::from_str(&r)).transpose()?;
+    let role_filter = role.map(|r| Role::parse(&r)).transpose()?;
 
     let config = AppConfig::load(config_path)?;
     let store = Store::open(&config.store)?;
@@ -75,7 +75,7 @@ pub async fn run_acl_update(
         return Err("nothing to update — specify --role, --label, or --contexts".into());
     }
 
-    let new_role = role.map(|r| Role::from_str(&r)).transpose()?;
+    let new_role = role.map(|r| Role::parse(&r)).transpose()?;
 
     let config = AppConfig::load(config_path)?;
     let store = Store::open(&config.store)?;

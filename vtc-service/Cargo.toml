@@ -28,6 +28,7 @@ name = "vtc"
 path = "src/main.rs"
 
 [dependencies]
+vti-common = { path = "../vti-common" }
 vta-sdk = { path = "../vta-sdk", features = [
   "didcomm",
   "session",
