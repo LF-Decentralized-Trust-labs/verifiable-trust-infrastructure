@@ -43,6 +43,8 @@ pub struct VtaState {
     pub did_resolver: Option<DIDCacheClient>,
     #[cfg(feature = "tee")]
     pub tee_state: Option<crate::tee::TeeState>,
+    /// Send `true` to trigger a soft restart.
+    pub restart_tx: tokio::sync::watch::Sender<bool>,
 }
 
 /// Build the DIDComm message router with all VTA protocol handlers.
@@ -86,7 +88,9 @@ pub fn build_router(state: Arc<VtaState>) -> Result<Router, DIDCommServiceError>
         // Credential management
         .route(credential_management::GENERATE_CREDENTIALS, handler_fn(handlers::handle_generate_credentials))?
         // Problem reports
-        .route(protocols::PROBLEM_REPORT_TYPE, handler_fn(handlers::handle_problem_report))?;
+        .route(protocols::PROBLEM_REPORT_TYPE, handler_fn(handlers::handle_problem_report))?
+        // VTA management — restart
+        .route(vta_management::RESTART, handler_fn(handlers::handle_restart))?;
 
     // WebVH handlers (feature-gated)
     #[cfg(feature = "webvh")]

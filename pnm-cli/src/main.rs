@@ -107,6 +107,8 @@ enum VtaCommands {
     Remove { slug: String },
     /// Show current VTA details
     Info,
+    /// Restart the VTA service (soft restart — reloads config and reconnects)
+    Restart,
 }
 
 #[derive(Subcommand)]
@@ -545,6 +547,10 @@ fn print_banner() {
 
 /// Returns true if this command requires authentication.
 fn requires_auth(cmd: &Commands) -> bool {
+    // VTA restart requires auth; other VTA subcommands don't
+    if matches!(cmd, Commands::Vta { command: VtaCommands::Restart }) {
+        return true;
+    }
     !matches!(
         cmd,
         Commands::Health
@@ -677,8 +683,14 @@ async fn main() {
                         }
                     }
                 }
+                VtaCommands::Restart => {
+                    // Fall through to authenticated command handling below
+                }
             }
-            return;
+            // Restart needs VTA connectivity — don't return early
+            if !matches!(cli.command, Commands::Vta { command: VtaCommands::Restart }) {
+                return;
+            }
         }
         _ => {}
     }
@@ -717,7 +729,9 @@ async fn main() {
     };
 
     let result = match cli.command {
-        Commands::Setup { .. } | Commands::Vta { .. } => unreachable!(),
+        Commands::Setup { .. } => unreachable!(),
+        Commands::Vta { command: VtaCommands::Restart } => cmd_restart(&client).await,
+        Commands::Vta { .. } => unreachable!(),
         Commands::Health => cmd_health(&client, &keyring_key).await,
         Commands::Auth { command } => match command {
             AuthCommands::Login { credential } => {
@@ -975,6 +989,33 @@ async fn main() {
         eprintln!("Error: {e}");
         std::process::exit(1);
     }
+}
+
+async fn cmd_restart(client: &VtaClient) -> Result<(), Box<dyn std::error::Error>> {
+    println!("Requesting VTA restart...");
+    client.restart().await?;
+    println!("{GREEN}✓{RESET} Restart initiated");
+
+    // Wait briefly, then check health
+    println!("Waiting for VTA to come back...");
+    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+
+    for attempt in 1..=5 {
+        match client.health().await {
+            Ok(resp) => {
+                println!("{GREEN}✓{RESET} VTA is back (v{})", resp.version);
+                return Ok(());
+            }
+            Err(_) if attempt < 5 => {
+                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            }
+            Err(e) => {
+                println!("{RED}✗{RESET} VTA did not come back after restart: {e}");
+                println!("  The VTA may still be restarting. Try `pnm health` in a few seconds.");
+            }
+        }
+    }
+    Ok(())
 }
 
 use vta_cli_common::render::print_section;

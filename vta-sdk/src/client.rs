@@ -508,6 +508,20 @@ impl VtaClient {
         }
     }
 
+    // ── VTA Management ──────────────────────────────────────────────
+
+    /// Trigger a soft restart of the VTA.
+    pub async fn restart(&self) -> Result<vta_management::restart::RestartResult, Box<dyn std::error::Error>> {
+        self.rpc(
+            vta_management::RESTART,
+            serde_json::json!({}),
+            vta_management::RESTART_RESULT,
+            30,
+            |c, url| c.post(format!("{url}/vta/restart")).json(&serde_json::json!({})),
+        )
+        .await
+    }
+
     // ── Config ──────────────────────────────────────────────────────
 
     pub async fn get_config(&self) -> Result<ConfigResponse, Box<dyn std::error::Error>> {

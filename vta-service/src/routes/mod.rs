@@ -10,6 +10,7 @@ mod contexts;
 mod did_webvh;
 mod health;
 pub mod keys;
+mod vta;
 
 use axum::Router;
 use axum::extract::DefaultBodyLimit;
@@ -142,6 +143,9 @@ pub fn router() -> Router<AppState> {
             "/webvh/dids/{did}/log",
             get(did_webvh::get_did_log_handler),
         );
+
+    // VTA management routes
+    let router = router.route("/vta/restart", post(vta::restart));
 
     // Authenticated health details endpoint
     let router = router.route("/health/details", get(health::health_details));

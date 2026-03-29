@@ -666,6 +666,31 @@ pub async fn handle_request_attestation(
 }
 
 // ---------------------------------------------------------------------------
+// VTA management — restart
+// ---------------------------------------------------------------------------
+
+pub async fn handle_restart(
+    _ctx: HandlerContext,
+    message: Message,
+    Extension(state): Extension<Arc<VtaState>>,
+) -> HandlerResult {
+    let auth = auth_from_message(&message, &state.acl_ks).await.map_err(handler_err)?;
+    auth.require_admin().map_err(handler_err)?;
+    let _ = crate::audit::record(
+        &state.audit_ks, "vta.restart", &auth.did, None, "success", Some("didcomm"), None,
+    ).await;
+    // Trigger restart after a short delay so the response can be sent first
+    let restart_tx = state.restart_tx.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        let _ = restart_tx.send(true);
+    });
+    response(vta_sdk::protocols::vta_management::RESTART_RESULT, &vta_sdk::protocols::vta_management::restart::RestartResult {
+        status: "restarting".into(),
+    })
+}
+
+// ---------------------------------------------------------------------------
 // Problem report & fallback
 // ---------------------------------------------------------------------------
 
