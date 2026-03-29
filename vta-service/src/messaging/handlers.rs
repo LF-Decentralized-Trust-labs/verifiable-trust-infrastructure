@@ -742,6 +742,7 @@ pub async fn handle_backup_import(
         #[cfg(feature = "webvh")]
         &state.webvh_ks,
         &state.seed_store, &state.config,
+        None, // Store for TEE re-encryption (handled on restart)
     ).await.map_err(handler_err)?;
 
     let _ = crate::audit::record(

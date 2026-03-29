@@ -243,6 +243,9 @@ pub async fn preview_import(
 
 /// Apply an import: clears all keyspaces and writes the backup data.
 ///
+/// When `store` and TEE KMS config are provided, re-encrypts the imported
+/// seed and JWT key with KMS for the bootstrap keyspace.
+///
 /// The caller is responsible for triggering a soft restart after this returns.
 pub async fn apply_import(
     payload: &BackupPayload,
@@ -253,6 +256,7 @@ pub async fn apply_import(
     #[cfg(feature = "webvh")] webvh_ks: &KeyspaceHandle,
     seed_store: &Arc<dyn SeedStore>,
     config: &tokio::sync::RwLock<crate::config::AppConfig>,
+    store: Option<&crate::store::Store>,
 ) -> Result<ImportResult, AppError> {
     // 1. Clear all keyspaces
     clear_keyspace(keys_ks, &["key:", "seed:"]).await?;
@@ -384,6 +388,27 @@ pub async fn apply_import(
             }
             if let Some(ref did) = payload.config.mediator_did {
                 messaging.mediator_did = did.clone();
+            }
+        }
+    }
+
+    // 12. TEE: re-encrypt seed + JWT key with KMS for bootstrap keyspace
+    #[cfg(feature = "tee")]
+    if let Some(store) = store {
+        let cfg = config.read().await;
+        if let crate::config::TeeMode::Required = cfg.tee.mode {
+            if let Some(ref kms_config) = cfg.tee.kms {
+                let jwt_key_bytes: Option<[u8; 32]> = payload.jwt_signing_key.as_ref().and_then(|b64| {
+                    base64::Engine::decode(&BASE64, b64).ok().and_then(|b| b.try_into().ok())
+                });
+                if let Some(jwt_key) = jwt_key_bytes {
+                    crate::tee::kms_bootstrap::re_encrypt_bootstrap_secrets(
+                        kms_config, store, &seed_bytes, &jwt_key,
+                    )
+                    .await?;
+                } else {
+                    info!("no JWT key in backup — skipping KMS re-encryption");
+                }
             }
         }
     }

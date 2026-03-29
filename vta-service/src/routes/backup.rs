@@ -75,6 +75,7 @@ pub async fn import(
         &state.webvh_ks,
         &state.seed_store,
         &state.config,
+        None, // Store passed for TEE re-encryption (REST has no store access; handled on restart)
     )
     .await?;
 
