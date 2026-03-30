@@ -14,25 +14,48 @@ use crate::error::AppError;
 use crate::store::KeyspaceHandle;
 
 /// Emit a structured audit event to the tracing subsystem.
+///
+/// Uses `INFO` for successful outcomes and `ERROR` for failures (e.g. `denied:*`).
 macro_rules! audit {
     ($action:expr, actor = $actor:expr, resource = $resource:expr, outcome = $outcome:expr) => {
-        ::tracing::event!(
-            target: "audit",
-            ::tracing::Level::ERROR,
-            action = $action,
-            actor = %$actor,
-            resource = %$resource,
-            outcome = $outcome,
-        );
+        if $outcome.starts_with("success") {
+            ::tracing::event!(
+                target: "audit",
+                ::tracing::Level::INFO,
+                action = $action,
+                actor = %$actor,
+                resource = %$resource,
+                outcome = $outcome,
+            );
+        } else {
+            ::tracing::event!(
+                target: "audit",
+                ::tracing::Level::ERROR,
+                action = $action,
+                actor = %$actor,
+                resource = %$resource,
+                outcome = $outcome,
+            );
+        }
     };
     ($action:expr, actor = $actor:expr, outcome = $outcome:expr) => {
-        ::tracing::event!(
-            target: "audit",
-            ::tracing::Level::ERROR,
-            action = $action,
-            actor = %$actor,
-            outcome = $outcome,
-        );
+        if $outcome.starts_with("success") {
+            ::tracing::event!(
+                target: "audit",
+                ::tracing::Level::INFO,
+                action = $action,
+                actor = %$actor,
+                outcome = $outcome,
+            );
+        } else {
+            ::tracing::event!(
+                target: "audit",
+                ::tracing::Level::ERROR,
+                action = $action,
+                actor = %$actor,
+                outcome = $outcome,
+            );
+        }
     };
 }
 

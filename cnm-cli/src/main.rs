@@ -772,9 +772,14 @@ async fn cmd_health(
 
     match client.health().await {
         Ok(resp) => {
+            let ver = resp
+                .version
+                .as_deref()
+                .map(|v| format!(" (v{v})"))
+                .unwrap_or_default();
             println!(
-                "  {CYAN}{:<13}{RESET} {GREEN}✓{RESET} ok (v{})",
-                "Service", resp.version
+                "  {CYAN}{:<13}{RESET} {GREEN}✓{RESET} ok{ver}",
+                "Service"
             );
         }
         Err(e) => {
@@ -864,9 +869,14 @@ async fn print_personal_vta_section(
     let personal_client = VtaClient::new(&personal.url);
     match personal_client.health().await {
         Ok(resp) => {
+            let ver = resp
+                .version
+                .as_deref()
+                .map(|v| format!(" (v{v})"))
+                .unwrap_or_default();
             println!(
-                "  {CYAN}{:<13}{RESET} {GREEN}✓{RESET} ok (v{})",
-                "Service", resp.version
+                "  {CYAN}{:<13}{RESET} {GREEN}✓{RESET} ok{ver}",
+                "Service"
             );
         }
         Err(e) => {

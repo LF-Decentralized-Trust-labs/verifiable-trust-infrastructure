@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.2.1 — 2026-03-30
+
+### Bug Fixes
+
+- **Health check deserialization** — Made `version` field optional
+  in `vta-sdk::HealthResponse` so the unauthenticated `GET /health`
+  endpoint (which returns only `{"status": "ok"}`) deserializes
+  correctly. Previously `pnm health` and `cnm health` reported
+  "error decoding response body".
+
+### Improvements
+
+- **Audit log levels** — Audit events now use `INFO` for successful
+  outcomes and `ERROR` for failures (e.g. `denied:*`). Previously
+  all audit events were emitted at `ERROR` level regardless of
+  outcome.
+
 ## 0.2.0 — 2026-03-29
 
 ### Observability
