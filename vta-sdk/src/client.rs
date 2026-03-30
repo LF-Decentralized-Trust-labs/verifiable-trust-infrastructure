@@ -31,7 +31,8 @@ pub struct VtaClient {
 #[allow(dead_code)]
 pub struct HealthResponse {
     pub status: String,
-    pub version: String,
+    #[serde(default)]
+    pub version: Option<String>,
     #[serde(default)]
     pub mediator_url: Option<String>,
     #[serde(default)]
@@ -1329,7 +1330,15 @@ mod tests {
         let json = r#"{"status":"ok","version":"0.1.0"}"#;
         let resp: HealthResponse = serde_json::from_str(json).unwrap();
         assert_eq!(resp.status, "ok");
-        assert_eq!(resp.version, "0.1.0");
+        assert_eq!(resp.version.as_deref(), Some("0.1.0"));
+    }
+
+    #[test]
+    fn test_health_response_minimal() {
+        let json = r#"{"status":"ok"}"#;
+        let resp: HealthResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(resp.status, "ok");
+        assert_eq!(resp.version, None);
     }
 
     #[test]

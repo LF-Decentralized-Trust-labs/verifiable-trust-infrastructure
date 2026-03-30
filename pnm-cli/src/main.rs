@@ -1038,7 +1038,8 @@ async fn cmd_restart(client: &VtaClient) -> Result<(), Box<dyn std::error::Error
     for attempt in 1..=5 {
         match client.health().await {
             Ok(resp) => {
-                println!("{GREEN}✓{RESET} VTA is back (v{})", resp.version);
+                let ver = resp.version.as_deref().unwrap_or("?");
+                println!("{GREEN}✓{RESET} VTA is back (v{ver})");
                 return Ok(());
             }
             Err(_) if attempt < 5 => {
@@ -1187,9 +1188,14 @@ async fn cmd_health(client: &VtaClient, keyring_key: &str) -> Result<(), Box<dyn
 
         match client.health().await {
             Ok(resp) => {
+                let ver = resp
+                    .version
+                    .as_deref()
+                    .map(|v| format!(" (v{v})"))
+                    .unwrap_or_default();
                 println!(
-                    "  {CYAN}{:<13}{RESET} {GREEN}✓{RESET} ok (v{})",
-                    "Service", resp.version
+                    "  {CYAN}{:<13}{RESET} {GREEN}✓{RESET} ok{ver}",
+                    "Service"
                 );
             }
             Err(e) => {
