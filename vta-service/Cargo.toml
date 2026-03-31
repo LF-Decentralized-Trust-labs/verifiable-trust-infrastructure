@@ -101,7 +101,7 @@ libc = { version = "0.2", optional = true }
 zeroize = { version = "1", features = ["derive"] }
 tower = { version = "0.5", features = ["limit"] }
 metrics = "0.24"
-metrics-exporter-prometheus = { version = "0.16", default-features = false }
+metrics-exporter-prometheus = { version = "0.18", default-features = false }
 aes-gcm = "0.10"
 argon2 = "0.5"
 hmac = "0.12"
