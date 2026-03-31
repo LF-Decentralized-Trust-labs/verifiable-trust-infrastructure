@@ -2223,7 +2223,7 @@ dependencies = [
 
 [[package]]
 name = "didcomm-test"
-version = "0.3.0"
+version = "0.2.1"
 dependencies = [
  "affinidi-did-resolver-cache-sdk",
  "affinidi-tdk",
@@ -7714,7 +7714,7 @@ dependencies = [
 
 [[package]]
 name = "vta-enclave"
-version = "0.3.0"
+version = "0.2.1"
 dependencies = [
  "base64 0.22.1",
  "clap",
@@ -7824,7 +7824,7 @@ dependencies = [
 
 [[package]]
 name = "vtc-service"
-version = "0.3.0"
+version = "0.2.1"
 dependencies = [
  "affinidi-did-resolver-cache-sdk",
  "affinidi-tdk",
@@ -7868,7 +7868,7 @@ dependencies = [
 
 [[package]]
 name = "vti-common"
-version = "0.3.0"
+version = "0.2.1"
 dependencies = [
  "aes-gcm",
  "affinidi-tdk",
