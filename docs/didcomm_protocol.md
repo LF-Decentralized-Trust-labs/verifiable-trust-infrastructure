@@ -100,6 +100,8 @@ All protocol URIs are under `https://firstperson.network/protocols/`.
 | `.../revoke-key` | `.../revoke-key-result` | Admin | Revoke a key |
 | `.../get-key-secret` | `.../get-key-secret-result` | Admin | Export secret key material |
 | `.../sign-request` | `.../sign-result` | Auth + context | Sign payload (signing oracle) |
+| `.../import-key` | `.../import-key-result` | Admin | Import an external private key |
+| `.../get-wrapping-key` | `.../get-wrapping-key-result` | Admin | Get ephemeral wrapping key (REST only) |
 
 #### create-key
 
@@ -710,6 +712,10 @@ https://firstperson.network/protocols/key-management/1.0/get-key-secret
 https://firstperson.network/protocols/key-management/1.0/get-key-secret-result
 https://firstperson.network/protocols/key-management/1.0/sign-request
 https://firstperson.network/protocols/key-management/1.0/sign-result
+https://firstperson.network/protocols/key-management/1.0/import-key
+https://firstperson.network/protocols/key-management/1.0/import-key-result
+https://firstperson.network/protocols/key-management/1.0/get-wrapping-key
+https://firstperson.network/protocols/key-management/1.0/get-wrapping-key-result
 
 # Seed Management
 https://firstperson.network/protocols/seed-management/1.0/list-seeds

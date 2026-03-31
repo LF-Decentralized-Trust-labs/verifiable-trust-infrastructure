@@ -78,9 +78,11 @@ pub struct AppState {
     pub acl_ks: KeyspaceHandle,
     pub contexts_ks: KeyspaceHandle,
     pub audit_ks: KeyspaceHandle,
+    pub imported_ks: KeyspaceHandle,
     pub cache_ks: KeyspaceHandle,
     #[cfg(feature = "webvh")]
     pub webvh_ks: KeyspaceHandle,
+    pub wrapping_cache: crate::keys::wrapping::WrappingKeyCache,
     pub config: Arc<RwLock<AppConfig>>,
     pub seed_store: Arc<dyn SeedStore>,
     pub did_resolver: Option<DIDCacheClient>,
@@ -132,6 +134,7 @@ pub async fn build_app_state(
     let acl_ks = apply_encryption(store.keyspace("acl")?);
     let contexts_ks = apply_encryption(store.keyspace("contexts")?);
     let audit_ks = apply_encryption(store.keyspace("audit")?);
+    let imported_ks = apply_encryption(store.keyspace("imported_secrets")?);
     let cache_ks = store.keyspace("cache")?;
     #[cfg(feature = "webvh")]
     let webvh_ks = apply_encryption(store.keyspace("webvh")?);
@@ -145,9 +148,11 @@ pub async fn build_app_state(
         acl_ks,
         contexts_ks,
         audit_ks,
+        imported_ks,
         cache_ks,
         #[cfg(feature = "webvh")]
         webvh_ks,
+        wrapping_cache: crate::keys::wrapping::WrappingKeyCache::new(),
         config: Arc::new(RwLock::new(config)),
         seed_store,
         did_resolver,
@@ -215,6 +220,7 @@ pub async fn run(
         let acl_ks = apply_encryption(store.keyspace("acl")?);
         let contexts_ks = apply_encryption(store.keyspace("contexts")?);
         let audit_ks = apply_encryption(store.keyspace("audit")?);
+        let imported_ks = apply_encryption(store.keyspace("imported_secrets")?);
         let cache_ks = store.keyspace("cache")?;
         #[cfg(feature = "webvh")]
         let webvh_ks = apply_encryption(store.keyspace("webvh")?);
@@ -273,6 +279,7 @@ pub async fn run(
                 acl_ks: acl_ks.clone(),
                 contexts_ks: contexts_ks.clone(),
                 audit_ks: audit_ks.clone(),
+                imported_ks: imported_ks.clone(),
                 #[cfg(feature = "webvh")]
                 webvh_ks: webvh_ks.clone(),
                 seed_store: seed_store.clone(),
@@ -290,15 +297,20 @@ pub async fn run(
         #[cfg(feature = "rest")]
         let rest_handle = if let Some(ref listener_ref) = std_listener {
             let listener = listener_ref.try_clone().map_err(AppError::Io)?;
+            let wrapping_cache = crate::keys::wrapping::WrappingKeyCache::new();
+            wrapping_cache.clone().spawn_reaper();
+
             let state = AppState {
                 keys_ks,
                 sessions_ks,
                 acl_ks,
                 contexts_ks,
                 audit_ks,
+                imported_ks,
                 cache_ks,
                 #[cfg(feature = "webvh")]
                 webvh_ks,
+                wrapping_cache,
                 config: Arc::new(RwLock::new(config.clone())),
                 seed_store: seed_store.clone(),
                 did_resolver,

@@ -1581,7 +1581,7 @@ dependencies = [
 
 [[package]]
 name = "cnm-cli"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "affinidi-did-resolver-cache-sdk",
  "clap",
@@ -2223,7 +2223,7 @@ dependencies = [
 
 [[package]]
 name = "didcomm-test"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "affinidi-did-resolver-cache-sdk",
  "affinidi-tdk",
@@ -5049,7 +5049,7 @@ checksum = "7edddbd0b52d732b21ad9a5fab5c704c14cd949e5e9a1ec5929a24fded1b904c"
 
 [[package]]
 name = "pnm-cli"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "affinidi-did-resolver-cache-sdk",
  "chrono",
@@ -7697,18 +7697,24 @@ dependencies = [
 
 [[package]]
 name = "vta-cli-common"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
+ "aes-gcm",
+ "base64 0.22.1",
  "chrono",
  "ed25519-dalek",
+ "hkdf",
+ "multibase",
  "ratatui",
  "serde_json",
+ "sha2 0.10.9",
  "vta-sdk",
+ "x25519-dalek",
 ]
 
 [[package]]
 name = "vta-enclave"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "base64 0.22.1",
  "clap",
@@ -7723,7 +7729,7 @@ dependencies = [
 
 [[package]]
 name = "vta-sdk"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "affinidi-did-resolver-cache-sdk",
  "affinidi-tdk",
@@ -7743,7 +7749,7 @@ dependencies = [
 
 [[package]]
 name = "vta-service"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "aes",
  "aes-gcm",
@@ -7774,6 +7780,7 @@ dependencies = [
  "google-cloud-auth",
  "google-cloud-secretmanager-v1",
  "hex",
+ "hkdf",
  "hmac",
  "http-body-util",
  "jsonwebtoken",
@@ -7810,7 +7817,7 @@ dependencies = [
 
 [[package]]
 name = "vtc-service"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "affinidi-did-resolver-cache-sdk",
  "affinidi-tdk",
@@ -7854,7 +7861,7 @@ dependencies = [
 
 [[package]]
 name = "vti-common"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "aes-gcm",
  "affinidi-tdk",

@@ -73,6 +73,42 @@ pub struct CreateKeyRequest {
     pub context_id: Option<String>,
 }
 
+// ── Import key types ───────────────────────────────────────────────
+
+#[derive(Debug, Serialize)]
+pub struct ImportKeyRequest {
+    pub key_type: KeyType,
+    /// JWE compact serialization of the private key (REST transport).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub private_key_jwe: Option<String>,
+    /// Multibase-encoded private key (DIDComm transport).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub private_key_multibase: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ImportKeyResponse {
+    pub key_id: String,
+    pub key_type: KeyType,
+    pub public_key: String,
+    pub status: KeyStatus,
+    pub label: Option<String>,
+    pub origin: crate::keys::KeyOrigin,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct WrappingKeyResponse {
+    pub kid: String,
+    pub kty: String,
+    pub crv: String,
+    pub x: String,
+}
+
 // ── Context types ───────────────────────────────────────────────────
 
 #[derive(Debug, Serialize)]
@@ -734,6 +770,42 @@ impl VtaClient {
                         key_id: new_key_id.to_string(),
                     })
             },
+        )
+        .await
+    }
+
+    // ── Import key methods ──────────────────────────────────────────
+
+    /// Fetch an ephemeral wrapping key for REST key import.
+    pub async fn get_wrapping_key(&self) -> Result<WrappingKeyResponse, Box<dyn std::error::Error>> {
+        match &self.transport {
+            Transport::Rest {
+                client,
+                base_url,
+                token,
+            } => {
+                let req = client.get(format!("{base_url}/keys/import/wrapping-key"));
+                let resp = Self::with_auth(req, token).send().await?;
+                Self::handle_response(resp).await
+            }
+            #[cfg(feature = "session")]
+            Transport::DIDComm { .. } => {
+                Err("wrapping key not needed for DIDComm transport".into())
+            }
+        }
+    }
+
+    /// Import an externally-created private key into the VTA.
+    pub async fn import_key(
+        &self,
+        req: ImportKeyRequest,
+    ) -> Result<ImportKeyResponse, Box<dyn std::error::Error>> {
+        self.rpc(
+            key_management::IMPORT_KEY,
+            serde_json::to_value(&req)?,
+            key_management::IMPORT_KEY_RESULT,
+            30,
+            |c, url| c.post(format!("{url}/keys/import")).json(&req),
         )
         .await
     }

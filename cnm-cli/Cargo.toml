@@ -21,8 +21,8 @@ config-session = ["vta-sdk/config-session"]
 azure-secrets = ["vta-sdk/azure-secrets"]
 
 [dependencies]
-vta-sdk = { path = "../vta-sdk", version = "0.2.0", features = ["session"] }
-vta-cli-common = { path = "../vta-cli-common", version = "0.2.0" }
+vta-sdk = { path = "../vta-sdk", version = "0.3.0", features = ["session"] }
+vta-cli-common = { path = "../vta-cli-common", version = "0.3.0" }
 affinidi-did-resolver-cache-sdk = "0.8"
 clap = { workspace = true, features = ["env"] }
 dialoguer = "0.12"

@@ -75,15 +75,18 @@ impl TestApp {
 
         let (restart_tx, _rx) = watch::channel(false);
 
+        let imported_ks = store.keyspace("imported_secrets").unwrap();
         let state = AppState {
             keys_ks: keys_ks.clone(),
             sessions_ks: sessions_ks.clone(),
             acl_ks: acl_ks.clone(),
             contexts_ks,
             audit_ks: audit_ks.clone(),
+            imported_ks,
             cache_ks,
             #[cfg(feature = "webvh")]
             webvh_ks,
+            wrapping_cache: vta_service::keys::wrapping::WrappingKeyCache::new(),
             config: Arc::new(RwLock::new(config)),
             seed_store,
             did_resolver: None,

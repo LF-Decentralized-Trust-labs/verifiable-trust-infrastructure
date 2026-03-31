@@ -11,8 +11,14 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-vta-sdk = { path = "../vta-sdk", version = "0.2.0", features = ["client"] }
+vta-sdk = { path = "../vta-sdk", version = "0.3.0", features = ["client"] }
 chrono = "0.4"
 ed25519-dalek = "2"
 ratatui = { workspace = true }
 serde_json = { workspace = true }
+multibase = { workspace = true }
+x25519-dalek = { workspace = true }
+sha2 = { workspace = true }
+hkdf = "0.12"
+aes-gcm = "0.10"
+base64 = { workspace = true }

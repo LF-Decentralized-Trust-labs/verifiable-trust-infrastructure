@@ -5,6 +5,7 @@ use chrono::Utc;
 use multibase::Base;
 use p256::elliptic_curve::sec1::ToEncodedPoint;
 use tracing::info;
+use zeroize::Zeroize;
 
 use vta_sdk::protocols::key_management::{
     create::CreateKeyResultBody, list::ListKeysResultBody, rename::RenameKeyResultBody,
@@ -17,10 +18,11 @@ use crate::auth::AuthClaims;
 use crate::contexts::get_context;
 use crate::error::{AppError, key_derivation_error};
 use crate::keys::derivation::Bip32Extension;
+use crate::keys::imported;
 use crate::keys::paths::allocate_path;
 use crate::keys::seed_store::SeedStore;
 use crate::keys::seeds::{get_active_seed_id, load_seed_bytes};
-use crate::keys::{self, KeyRecord, KeyStatus, KeyType};
+use crate::keys::{self, KeyOrigin, KeyRecord, KeyStatus, KeyType};
 use crate::store::KeyspaceHandle;
 
 pub struct CreateKeyParams {
@@ -122,6 +124,7 @@ pub async fn create_key(
         label: params.label.clone(),
         context_id: context_id.clone(),
         seed_id: Some(active_id),
+        origin: keys::KeyOrigin::Derived,
         created_at: now,
         updated_at: now,
     };
@@ -139,6 +142,131 @@ pub async fn create_key(
         public_key,
         status: KeyStatus::Active,
         label: params.label,
+        origin: keys::KeyOrigin::Derived,
+        created_at: now,
+    })
+}
+
+// ── Import key ─────────────────────────────────────────────────────
+
+pub struct ImportKeyParams {
+    pub key_type: KeyType,
+    pub private_key_bytes: Vec<u8>,
+    pub label: Option<String>,
+    pub context_id: Option<String>,
+}
+
+pub async fn import_key(
+    keys_ks: &KeyspaceHandle,
+    imported_ks: &KeyspaceHandle,
+    seed_store: &Arc<dyn SeedStore>,
+    audit_ks: &KeyspaceHandle,
+    auth: &AuthClaims,
+    params: ImportKeyParams,
+    channel: &str,
+) -> Result<CreateKeyResultBody, AppError> {
+    // Require admin role (stricter than create_key which allows initiator)
+    auth.require_admin()?;
+
+    // Resolve context
+    let context_id = if let Some(ref ctx) = params.context_id {
+        auth.require_context(ctx)?;
+        Some(ctx.clone())
+    } else if auth.is_super_admin() {
+        None
+    } else if let Some(ctx) = auth.default_context() {
+        Some(ctx.to_string())
+    } else {
+        return Err(AppError::Forbidden(
+            "context_id required: admin has access to multiple contexts".into(),
+        ));
+    };
+
+    // Validate key bytes and derive public key
+    let mut private_bytes = params.private_key_bytes;
+    let (public_key, key_type_str) = match params.key_type {
+        KeyType::Ed25519 => {
+            if private_bytes.len() != 32 {
+                return Err(AppError::Validation(
+                    format!("Ed25519 private key must be 32 bytes, got {}", private_bytes.len()),
+                ));
+            }
+            let signing_key = ed25519_dalek::SigningKey::from_bytes(
+                private_bytes.as_slice().try_into().unwrap(),
+            );
+            let pub_bytes = signing_key.verifying_key().to_bytes();
+            let pub_multibase = keys::ed25519_multibase_pubkey(&pub_bytes);
+            (pub_multibase, "ed25519")
+        }
+        KeyType::X25519 => {
+            if private_bytes.len() != 32 {
+                return Err(AppError::Validation(
+                    format!("X25519 private key must be 32 bytes, got {}", private_bytes.len()),
+                ));
+            }
+            let secret_bytes: [u8; 32] = private_bytes.as_slice().try_into().unwrap();
+            let secret = x25519_dalek::StaticSecret::from(secret_bytes);
+            let public = x25519_dalek::PublicKey::from(&secret);
+            let pub_multibase = multibase::encode(Base::Base58Btc, public.as_bytes());
+            (pub_multibase, "x25519")
+        }
+        KeyType::P256 => {
+            let secret_key = p256::SecretKey::from_slice(&private_bytes)
+                .map_err(|e| AppError::Validation(format!("invalid P-256 private key: {e}")))?;
+            let public = secret_key.public_key();
+            let encoded = public.to_encoded_point(true);
+            let pub_multibase = multibase::encode(Base::Base58Btc, encoded.as_bytes());
+            (pub_multibase, "p256")
+        }
+    };
+
+    let now = Utc::now();
+    let key_id = params.label.clone().unwrap_or_else(|| {
+        format!("imported-{}-{}", key_type_str, now.format("%Y%m%d%H%M%S"))
+    });
+
+    // Encrypt and store the secret
+    let active_id = get_active_seed_id(keys_ks)
+        .await
+        .map_err(|e| AppError::Internal(format!("{e}")))?;
+    let seed = load_seed_bytes(keys_ks, &**seed_store, Some(active_id))
+        .await
+        .map_err(|e| AppError::Internal(format!("{e}")))?;
+
+    imported::store_secret(imported_ks, keys_ks, &seed, &key_id, key_type_str, &private_bytes)
+        .await?;
+
+    // Zeroize private key material
+    private_bytes.zeroize();
+
+    // Create key record
+    let record = KeyRecord {
+        key_id: key_id.clone(),
+        derivation_path: String::new(),
+        key_type: params.key_type.clone(),
+        status: KeyStatus::Active,
+        public_key: public_key.clone(),
+        label: params.label.clone(),
+        context_id: context_id.clone(),
+        seed_id: None,
+        origin: KeyOrigin::Imported,
+        created_at: now,
+        updated_at: now,
+    };
+    keys_ks.insert(keys::store_key(&key_id), &record).await?;
+
+    info!(channel, key_id = %key_id, key_type = ?params.key_type, "key imported");
+    audit!("key.import", actor = &auth.did, resource = &key_id, outcome = "success");
+    let _ = audit::record(audit_ks, "key.import", &auth.did, Some(&key_id), "success", Some(channel), context_id.as_deref()).await;
+
+    Ok(CreateKeyResultBody {
+        key_id,
+        key_type: params.key_type,
+        derivation_path: String::new(),
+        public_key,
+        status: KeyStatus::Active,
+        label: params.label,
+        origin: KeyOrigin::Imported,
         created_at: now,
     })
 }
@@ -261,6 +389,7 @@ pub async fn rename_key(
 
 pub async fn revoke_key(
     keys_ks: &KeyspaceHandle,
+    imported_ks: &KeyspaceHandle,
     audit_ks: &KeyspaceHandle,
     auth: &AuthClaims,
     key_id: &str,
@@ -287,6 +416,11 @@ pub async fn revoke_key(
         )));
     }
 
+    // Secure deletion for imported keys: destroy the encrypted secret
+    if record.origin == KeyOrigin::Imported {
+        imported::delete_secret(imported_ks, key_id).await?;
+    }
+
     record.status = KeyStatus::Revoked;
     record.updated_at = Utc::now();
 
@@ -305,6 +439,7 @@ pub async fn revoke_key(
 
 pub async fn get_key_secret(
     keys_ks: &KeyspaceHandle,
+    imported_ks: &KeyspaceHandle,
     seed_store: &Arc<dyn SeedStore>,
     audit_ks: &KeyspaceHandle,
     auth: &AuthClaims,
@@ -324,34 +459,50 @@ pub async fn get_key_secret(
         ));
     }
 
-    let seed = load_seed_bytes(keys_ks, &**seed_store, record.seed_id)
-        .await
-        .map_err(|e| AppError::Internal(format!("{e}")))?;
-    let bip32 = ed25519_dalek_bip32::ExtendedSigningKey::from_seed(&seed)
-        .map_err(|e| key_derivation_error(format!("failed to create BIP-32 root key: {e}")))?;
+    let (public_key_multibase, private_key_multibase) = match record.origin {
+        KeyOrigin::Imported => {
+            // Decrypt from imported_secrets keyspace
+            let seed = load_seed_bytes(keys_ks, &**seed_store, None)
+                .await
+                .map_err(|e| AppError::Internal(format!("{e}")))?;
+            let mut secret_bytes = imported::load_secret(
+                imported_ks, keys_ks, &seed, key_id, &record.key_type.to_string(),
+            ).await?;
+            let priv_mb = multibase::encode(Base::Base58Btc, &secret_bytes);
+            secret_bytes.zeroize();
+            (record.public_key.clone(), priv_mb)
+        }
+        KeyOrigin::Derived => {
+            let seed = load_seed_bytes(keys_ks, &**seed_store, record.seed_id)
+                .await
+                .map_err(|e| AppError::Internal(format!("{e}")))?;
+            let bip32 = ed25519_dalek_bip32::ExtendedSigningKey::from_seed(&seed)
+                .map_err(|e| key_derivation_error(format!("failed to create BIP-32 root key: {e}")))?;
 
-    let (public_key_multibase, private_key_multibase) = match record.key_type {
-        KeyType::Ed25519 => {
-            let secret = bip32.derive_ed25519(&record.derivation_path)?;
-            (
-                secret.get_public_keymultibase()?,
-                secret.get_private_keymultibase()?,
-            )
-        }
-        KeyType::X25519 => {
-            let secret = bip32.derive_x25519(&record.derivation_path)?;
-            (
-                secret.get_public_keymultibase()?,
-                secret.get_private_keymultibase()?,
-            )
-        }
-        KeyType::P256 => {
-            let p256_secret = bip32.derive_p256(&record.derivation_path)?;
-            let public_key = p256_secret.secret_key.public_key();
-            let encoded = public_key.to_encoded_point(true);
-            let pub_mb = multibase::encode(Base::Base58Btc, encoded.as_bytes());
-            let priv_mb = multibase::encode(Base::Base58Btc, p256_secret.secret_key.to_bytes());
-            (pub_mb, priv_mb)
+            match record.key_type {
+                KeyType::Ed25519 => {
+                    let secret = bip32.derive_ed25519(&record.derivation_path)?;
+                    (
+                        secret.get_public_keymultibase()?,
+                        secret.get_private_keymultibase()?,
+                    )
+                }
+                KeyType::X25519 => {
+                    let secret = bip32.derive_x25519(&record.derivation_path)?;
+                    (
+                        secret.get_public_keymultibase()?,
+                        secret.get_private_keymultibase()?,
+                    )
+                }
+                KeyType::P256 => {
+                    let p256_secret = bip32.derive_p256(&record.derivation_path)?;
+                    let public_key = p256_secret.secret_key.public_key();
+                    let encoded = public_key.to_encoded_point(true);
+                    let pub_mb = multibase::encode(Base::Base58Btc, encoded.as_bytes());
+                    let priv_mb = multibase::encode(Base::Base58Btc, p256_secret.secret_key.to_bytes());
+                    (pub_mb, priv_mb)
+                }
+            }
         }
     };
 
@@ -369,10 +520,12 @@ pub async fn get_key_secret(
 
 /// Sign a payload using a VTA-managed key.
 ///
-/// Derives the key from the BIP-32 seed, signs in memory, and returns
-/// the base64url-encoded signature. Key material is dropped after signing.
+/// For derived keys, re-derives from BIP-32 seed. For imported keys,
+/// decrypts from the imported_secrets keyspace. Key material is zeroized
+/// after signing.
 pub async fn sign_payload(
     keys_ks: &KeyspaceHandle,
+    imported_ks: &KeyspaceHandle,
     seed_store: &Arc<dyn SeedStore>,
     auth: &AuthClaims,
     key_id: &str,
@@ -399,39 +552,80 @@ pub async fn sign_payload(
         ));
     }
 
-    let seed = load_seed_bytes(keys_ks, &**seed_store, record.seed_id)
-        .await
-        .map_err(|e| AppError::Internal(format!("{e}")))?;
-    let bip32 = ed25519_dalek_bip32::ExtendedSigningKey::from_seed(&seed)
-        .map_err(|e| key_derivation_error(format!("failed to create BIP-32 root key: {e}")))?;
+    let signature_bytes = match record.origin {
+        KeyOrigin::Imported => {
+            // Decrypt imported secret and sign
+            let seed = load_seed_bytes(keys_ks, &**seed_store, None)
+                .await
+                .map_err(|e| AppError::Internal(format!("{e}")))?;
+            let mut secret_bytes = imported::load_secret(
+                imported_ks, keys_ks, &seed, key_id, &record.key_type.to_string(),
+            ).await?;
 
-    let signature_bytes = match (algorithm, &record.key_type) {
-        (SignAlgorithm::EdDSA, KeyType::Ed25519) => {
-            let derivation_path: ed25519_dalek_bip32::DerivationPath = record
-                .derivation_path
-                .parse()
-                .map_err(|e| key_derivation_error(format!("invalid derivation path: {e}")))?;
-            let derived = bip32
-                .derive(&derivation_path)
-                .map_err(|e| key_derivation_error(format!("derivation failed: {e}")))?;
-            let signing_key =
-                ed25519_dalek::SigningKey::from_bytes(derived.signing_key.as_bytes());
-            use ed25519_dalek::Signer;
-            let sig = signing_key.sign(payload);
-            sig.to_bytes().to_vec()
+            let sig = match (algorithm, &record.key_type) {
+                (SignAlgorithm::EdDSA, KeyType::Ed25519) => {
+                    let signing_key = ed25519_dalek::SigningKey::from_bytes(
+                        secret_bytes.as_slice().try_into().map_err(|_| {
+                            AppError::Internal("invalid Ed25519 key length".into())
+                        })?,
+                    );
+                    use ed25519_dalek::Signer;
+                    signing_key.sign(payload).to_bytes().to_vec()
+                }
+                (SignAlgorithm::ES256, KeyType::P256) => {
+                    let secret_key = p256::SecretKey::from_slice(&secret_bytes)
+                        .map_err(|e| AppError::Internal(format!("invalid P-256 key: {e}")))?;
+                    let signing_key = p256::ecdsa::SigningKey::from(&secret_key);
+                    use p256::ecdsa::signature::Signer;
+                    let sig: p256::ecdsa::Signature = signing_key.sign(payload);
+                    sig.to_bytes().to_vec()
+                }
+                _ => {
+                    secret_bytes.zeroize();
+                    return Err(AppError::Validation(format!(
+                        "algorithm {} incompatible with key type {}",
+                        algorithm, record.key_type
+                    )));
+                }
+            };
+            secret_bytes.zeroize();
+            sig
         }
-        (SignAlgorithm::ES256, KeyType::P256) => {
-            let p256_secret = bip32.derive_p256(&record.derivation_path)?;
-            let signing_key = p256::ecdsa::SigningKey::from(&p256_secret.secret_key);
-            use p256::ecdsa::signature::Signer;
-            let sig: p256::ecdsa::Signature = signing_key.sign(payload);
-            sig.to_bytes().to_vec()
-        }
-        _ => {
-            return Err(AppError::Validation(format!(
-                "algorithm {} incompatible with key type {}",
-                algorithm, record.key_type
-            )));
+        KeyOrigin::Derived => {
+            let seed = load_seed_bytes(keys_ks, &**seed_store, record.seed_id)
+                .await
+                .map_err(|e| AppError::Internal(format!("{e}")))?;
+            let bip32 = ed25519_dalek_bip32::ExtendedSigningKey::from_seed(&seed)
+                .map_err(|e| key_derivation_error(format!("failed to create BIP-32 root key: {e}")))?;
+
+            match (algorithm, &record.key_type) {
+                (SignAlgorithm::EdDSA, KeyType::Ed25519) => {
+                    let derivation_path: ed25519_dalek_bip32::DerivationPath = record
+                        .derivation_path
+                        .parse()
+                        .map_err(|e| key_derivation_error(format!("invalid derivation path: {e}")))?;
+                    let derived = bip32
+                        .derive(&derivation_path)
+                        .map_err(|e| key_derivation_error(format!("derivation failed: {e}")))?;
+                    let signing_key =
+                        ed25519_dalek::SigningKey::from_bytes(derived.signing_key.as_bytes());
+                    use ed25519_dalek::Signer;
+                    signing_key.sign(payload).to_bytes().to_vec()
+                }
+                (SignAlgorithm::ES256, KeyType::P256) => {
+                    let p256_secret = bip32.derive_p256(&record.derivation_path)?;
+                    let signing_key = p256::ecdsa::SigningKey::from(&p256_secret.secret_key);
+                    use p256::ecdsa::signature::Signer;
+                    let sig: p256::ecdsa::Signature = signing_key.sign(payload);
+                    sig.to_bytes().to_vec()
+                }
+                _ => {
+                    return Err(AppError::Validation(format!(
+                        "algorithm {} incompatible with key type {}",
+                        algorithm, record.key_type
+                    )));
+                }
+            }
         }
     };
 

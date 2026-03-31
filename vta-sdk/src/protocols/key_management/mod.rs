@@ -37,3 +37,13 @@ pub const SIGN_REQUEST: &str =
     "https://firstperson.network/protocols/key-management/1.0/sign-request";
 pub const SIGN_RESULT: &str =
     "https://firstperson.network/protocols/key-management/1.0/sign-result";
+
+pub const IMPORT_KEY: &str =
+    "https://firstperson.network/protocols/key-management/1.0/import-key";
+pub const IMPORT_KEY_RESULT: &str =
+    "https://firstperson.network/protocols/key-management/1.0/import-key-result";
+
+pub const GET_WRAPPING_KEY: &str =
+    "https://firstperson.network/protocols/key-management/1.0/get-wrapping-key";
+pub const GET_WRAPPING_KEY_RESULT: &str =
+    "https://firstperson.network/protocols/key-management/1.0/get-wrapping-key-result";
