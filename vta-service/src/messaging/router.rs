@@ -71,6 +71,7 @@ pub fn build_router(state: Arc<VtaState>) -> Result<Router, DIDCommServiceError>
         .route(context_management::GET_CONTEXT, handler_fn(handlers::handle_get_context))?
         .route(context_management::LIST_CONTEXTS, handler_fn(handlers::handle_list_contexts))?
         .route(context_management::UPDATE_CONTEXT, handler_fn(handlers::handle_update_context))?
+        .route(context_management::UPDATE_CONTEXT_DID, handler_fn(handlers::handle_update_context_did))?
         .route(context_management::PREVIEW_DELETE_CONTEXT, handler_fn(handlers::handle_preview_delete_context))?
         .route(context_management::DELETE_CONTEXT, handler_fn(handlers::handle_delete_context))?
         // ACL management

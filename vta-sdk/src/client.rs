@@ -164,6 +164,11 @@ pub struct UpdateContextRequest {
     pub description: Option<String>,
 }
 
+#[derive(Debug, Serialize)]
+pub struct UpdateContextDidRequest {
+    pub did: String,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct ContextResponse {
     pub id: String,
@@ -1187,6 +1192,26 @@ impl VtaClient {
             |c, url| {
                 c.patch(format!("{url}/contexts/{}", encode_path_segment(id)))
                     .json(&req)
+            },
+        )
+        .await
+    }
+
+    /// Update the DID for a context. Requires Admin role with access to the context.
+    pub async fn update_context_did(
+        &self,
+        id: &str,
+        did: impl Into<String>,
+    ) -> Result<ContextResponse, VtaError> {
+        let did = did.into();
+        self.rpc(
+            context_management::UPDATE_CONTEXT_DID,
+            serde_json::json!({ "id": id, "did": &did }),
+            context_management::UPDATE_CONTEXT_DID_RESULT,
+            30,
+            |c, url| {
+                c.put(format!("{url}/contexts/{}/did", encode_path_segment(id)))
+                    .json(&UpdateContextDidRequest { did: did.clone() })
             },
         )
         .await

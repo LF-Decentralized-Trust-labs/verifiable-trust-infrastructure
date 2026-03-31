@@ -238,6 +238,16 @@ fn patch_auth(uri: &str, token: &str, body: Value) -> Request<Body> {
         .unwrap()
 }
 
+fn put_auth(uri: &str, token: &str, body: Value) -> Request<Body> {
+    Request::builder()
+        .method("PUT")
+        .uri(uri)
+        .header("Authorization", format!("Bearer {token}"))
+        .header("Content-Type", "application/json")
+        .body(Body::from(serde_json::to_vec(&body).unwrap()))
+        .unwrap()
+}
+
 fn delete_auth(uri: &str, token: &str) -> Request<Body> {
     Request::builder()
         .method("DELETE")
@@ -886,4 +896,98 @@ async fn create_p256_key() {
     assert!(status.is_success(), "create p256: {status} {body}");
     assert_eq!(body["key_type"], "p256");
     assert!(body["public_key"].is_string());
+}
+
+// ── Context DID update (context admin) ────────────────────────────
+
+#[tokio::test]
+async fn context_admin_can_update_own_context_did() {
+    let (app, ctx) = TestApp::new().await;
+    let super_token = ctx.auth_token("did:key:z6MkAdmin", "admin", vec![]).await;
+
+    // Create a context as super admin
+    let (status, _) = app
+        .request(post_auth(
+            "/contexts",
+            &super_token,
+            json!({"id": "myctx", "name": "My Context"}),
+        ))
+        .await;
+    assert!(status.is_success());
+
+    // Context-scoped admin can update DID on their own context
+    let scoped_token = ctx
+        .auth_token("did:key:z6MkScoped", "admin", vec!["myctx".into()])
+        .await;
+    let (status, body) = app
+        .request(put_auth(
+            "/contexts/myctx/did",
+            &scoped_token,
+            json!({"did": "did:webvh:abc:example.com"}),
+        ))
+        .await;
+    assert!(status.is_success(), "update did: {status} {body}");
+    assert_eq!(body["did"], "did:webvh:abc:example.com");
+}
+
+#[tokio::test]
+async fn context_admin_cannot_update_other_context_did() {
+    let (app, ctx) = TestApp::new().await;
+    let super_token = ctx.auth_token("did:key:z6MkAdmin", "admin", vec![]).await;
+
+    // Create two contexts
+    app.request(post_auth("/contexts", &super_token, json!({"id": "ctx-a", "name": "A"}))).await;
+    app.request(post_auth("/contexts", &super_token, json!({"id": "ctx-b", "name": "B"}))).await;
+
+    // Admin scoped to ctx-a cannot update ctx-b's DID
+    let scoped_token = ctx
+        .auth_token("did:key:z6MkScopedA", "admin", vec!["ctx-a".into()])
+        .await;
+    let (status, _) = app
+        .request(put_auth(
+            "/contexts/ctx-b/did",
+            &scoped_token,
+            json!({"did": "did:webvh:nope:example.com"}),
+        ))
+        .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn super_admin_can_update_any_context_did() {
+    let (app, ctx) = TestApp::new().await;
+    let token = ctx.auth_token("did:key:z6MkAdmin", "admin", vec![]).await;
+
+    app.request(post_auth("/contexts", &token, json!({"id": "anyctx", "name": "Any"}))).await;
+
+    let (status, body) = app
+        .request(put_auth(
+            "/contexts/anyctx/did",
+            &token,
+            json!({"did": "did:webvh:xyz:example.com"}),
+        ))
+        .await;
+    assert!(status.is_success(), "super admin update did: {status} {body}");
+    assert_eq!(body["did"], "did:webvh:xyz:example.com");
+}
+
+#[tokio::test]
+async fn non_admin_cannot_update_context_did() {
+    let (app, ctx) = TestApp::new().await;
+    let super_token = ctx.auth_token("did:key:z6MkAdmin", "admin", vec![]).await;
+
+    app.request(post_auth("/contexts", &super_token, json!({"id": "restricted", "name": "R"}))).await;
+
+    // Application role cannot update DID
+    let app_token = ctx
+        .auth_token("did:key:z6MkApp", "application", vec!["restricted".into()])
+        .await;
+    let (status, _) = app
+        .request(put_auth(
+            "/contexts/restricted/did",
+            &app_token,
+            json!({"did": "did:webvh:bad:example.com"}),
+        ))
+        .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
 }

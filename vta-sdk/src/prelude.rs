@@ -27,7 +27,7 @@ pub use crate::client::{
     GenerateCredentialsRequest, GenerateCredentialsResponse, GetKeySecretResponse,
     HealthResponse, ImportKeyRequest, ImportKeyResponse, InvalidateKeyResponse,
     ListKeysResponse, RenameKeyResponse, SignResponse, UpdateAclRequest, UpdateConfigRequest,
-    VtaClient, WrappingKeyResponse,
+    UpdateContextDidRequest, VtaClient, WrappingKeyResponse,
 };
 
 // DID key utilities

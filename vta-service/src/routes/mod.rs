@@ -15,7 +15,7 @@ mod vta;
 
 use axum::Router;
 use axum::extract::DefaultBodyLimit;
-use axum::routing::{delete, get, post};
+use axum::routing::{delete, get, post, put};
 
 use crate::server::AppState;
 
@@ -68,6 +68,10 @@ pub fn router() -> Router<AppState> {
             get(contexts::get_context_handler)
                 .patch(contexts::update_context_handler)
                 .delete(contexts::delete_context_handler),
+        )
+        .route(
+            "/contexts/{id}/did",
+            put(contexts::update_context_did_handler),
         )
         .route(
             "/contexts/{id}/delete-preview",

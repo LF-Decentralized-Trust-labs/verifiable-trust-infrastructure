@@ -264,6 +264,20 @@ pub async fn handle_update_context(
     response(context_management::UPDATE_CONTEXT_RESULT, &result)
 }
 
+pub async fn handle_update_context_did(
+    _ctx: HandlerContext,
+    message: Message,
+    Extension(state): Extension<Arc<VtaState>>,
+) -> HandlerResult {
+    let auth = auth_from_message(&message, &state.acl_ks).await.map_err(handler_err)?;
+    let body: vta_sdk::protocols::context_management::update_did::UpdateContextDidBody =
+        serde_json::from_value(message.body).map_err(handler_err)?;
+    let result = operations::contexts::update_context_did(
+        &state.contexts_ks, &auth, &body.id, body.did, "didcomm",
+    ).await.map_err(handler_err)?;
+    response(context_management::UPDATE_CONTEXT_DID_RESULT, &result)
+}
+
 pub async fn handle_preview_delete_context(
     _ctx: HandlerContext,
     message: Message,

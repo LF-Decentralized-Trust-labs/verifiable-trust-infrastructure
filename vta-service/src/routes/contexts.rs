@@ -9,7 +9,7 @@ use vta_sdk::protocols::context_management::{
     list::ListContextsResultBody,
 };
 
-use crate::auth::{AuthClaims, SuperAdminAuth};
+use crate::auth::{AdminAuth, AuthClaims, SuperAdminAuth};
 use crate::error::AppError;
 use crate::operations;
 use crate::server::AppState;
@@ -88,6 +88,29 @@ pub async fn update_context_handler(
             did: req.did,
             description: req.description,
         },
+        "rest",
+    )
+    .await?;
+    Ok(Json(result))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct UpdateDidRequest {
+    pub did: String,
+}
+
+/// PUT /contexts/{id}/did — update the DID for a context. Auth: Admin with context access.
+pub async fn update_context_did_handler(
+    auth: AdminAuth,
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(req): Json<UpdateDidRequest>,
+) -> Result<Json<CreateContextResultBody>, AppError> {
+    let result = operations::contexts::update_context_did(
+        &state.contexts_ks,
+        &auth.0,
+        &id,
+        req.did,
         "rest",
     )
     .await?;

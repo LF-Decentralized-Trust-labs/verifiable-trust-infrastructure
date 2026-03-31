@@ -284,6 +284,13 @@ enum ContextCommands {
         #[arg(long)]
         description: Option<String>,
     },
+    /// Update the DID for a context (context admin or super admin)
+    UpdateDid {
+        /// Context ID
+        id: String,
+        /// The new DID to assign
+        did: String,
+    },
     /// Delete an application context and all associated resources
     Delete {
         /// Context ID
@@ -822,6 +829,9 @@ async fn main() {
                 did,
                 description,
             } => contexts::cmd_context_update(&client, &id, name, did, description).await,
+            ContextCommands::UpdateDid { id, did } => {
+                contexts::cmd_context_update_did(&client, &id, &did).await
+            }
             ContextCommands::Delete { id, force } => {
                 contexts::cmd_context_delete(&client, &id, force).await
             }

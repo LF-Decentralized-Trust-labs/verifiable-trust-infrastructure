@@ -152,6 +152,31 @@ pub async fn update_context(
     Ok(to_result_body(&record))
 }
 
+/// Update the DID for a context. Requires Admin role with access to the context
+/// (context-scoped admins can update DIDs on their own contexts).
+pub async fn update_context_did(
+    contexts_ks: &KeyspaceHandle,
+    auth: &AuthClaims,
+    id: &str,
+    did: String,
+    channel: &str,
+) -> Result<CreateContextResultBody, AppError> {
+    auth.require_admin()?;
+    auth.require_context(id)?;
+
+    let mut record = get_context(contexts_ks, id)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("context not found: {id}")))?;
+
+    record.did = Some(did);
+    record.updated_at = Utc::now();
+
+    store_context(contexts_ks, &record).await?;
+
+    info!(channel, id = %id, did = ?record.did, "context DID updated");
+    Ok(to_result_body(&record))
+}
+
 /// Collect a preview of all resources associated with a context.
 pub async fn preview_delete_context(
     contexts_ks: &KeyspaceHandle,

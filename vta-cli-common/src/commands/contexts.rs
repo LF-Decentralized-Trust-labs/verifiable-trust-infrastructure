@@ -174,6 +174,22 @@ pub async fn cmd_context_update(
     Ok(())
 }
 
+pub async fn cmd_context_update_did(
+    client: &VtaClient,
+    id: &str,
+    did: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let resp = client.update_context_did(id, did).await?;
+    println!("Context DID updated:");
+    println!("  ID:         {}", resp.id);
+    println!(
+        "  DID:        {}",
+        resp.did.as_deref().unwrap_or("(not set)")
+    );
+    println!("  Updated At: {}", resp.updated_at);
+    Ok(())
+}
+
 pub async fn cmd_context_delete(
     client: &VtaClient,
     id: &str,
