@@ -82,6 +82,52 @@
 
 - `hkdf` 0.12 (new — KEK derivation for imported secrets)
 
+### VTA SDK Improvements for Service Integration
+
+- **Lightweight DIDComm auth (`auth_light`)** — New
+  `challenge_response_light()` and `refresh_token_light()`
+  functions perform DIDComm challenge-response authentication
+  without requiring ATM/TDK runtime initialization. Uses a
+  hand-rolled JWE packer (`didcomm_light`) with
+  ECDH-ES+A256KW key agreement and A256GCM content
+  encryption. Available behind the `client` feature (not
+  `session`).
+- **`VtaClient::from_credential()`** — One-line constructor
+  that decodes a base64 credential bundle, authenticates via
+  lightweight auth, and returns a ready-to-use client with
+  auto-refresh enabled.
+- **Automatic token refresh** — `VtaClient` now stores
+  credential material and automatically refreshes expired
+  tokens before each API call. Tries the `/auth/refresh`
+  endpoint first (cheap), falls back to full
+  challenge-response if the refresh token is expired.
+  Token expiry is checked with a 30-second buffer.
+- **`fetch_context_secrets()`** — Convenience method that
+  paginates through all active keys in a context and returns
+  TDK `Secret` objects ready for DIDComm or signing. Pages
+  in batches of 100 to handle large key sets.
+- **`check_auth()`** — Verifies the current token is valid
+  by calling `GET /health/details`. Returns `true`/`false`
+  for readiness checks.
+- **`token_expires_at()`** — Exposes token expiry for health
+  monitoring in long-running services.
+- **`set_token()` is now `&self`** — No longer requires
+  `&mut self`, simplifying usage in shared contexts.
+
+### Lightweight DIDComm Packer (`didcomm_light`)
+
+- **DIDComm v2 anoncrypt** — Minimal JWE (General JSON)
+  packer producing messages compatible with any DIDComm v2
+  unpacker (including `affinidi-tdk`'s `ATM::unpack()`).
+- **ECDH-ES+A256KW** key agreement with ephemeral X25519.
+- **A256GCM** content encryption (simpler than A256CBC-HS512).
+- **Concat KDF** (NIST SP 800-56A) for key derivation.
+- **AES-256 Key Wrap** (RFC 3394) for CEK wrapping.
+- **`did:key` → X25519** conversion (Edwards→Montgomery).
+- **8 unit tests** — Key wrap roundtrip, KDF determinism,
+  did:key parsing, Ed25519→X25519 conversion, JWE structure
+  validation.
+
 ---
 
 ## 0.2.1 — 2026-03-30

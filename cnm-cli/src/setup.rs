@@ -132,7 +132,7 @@ pub async fn run_setup_wizard() -> Result<(), Box<dyn std::error::Error>> {
             let context_name = format!("CNM - {community_name}");
 
             // Authenticate personal VTA client
-            let mut personal_client = VtaClient::new(&personal_url);
+            let personal_client = VtaClient::new(&personal_url);
             let token = auth::ensure_authenticated(&personal_url, PERSONAL_KEYRING_KEY).await?;
             personal_client.set_token(token);
 
@@ -147,13 +147,11 @@ pub async fn run_setup_wizard() -> Result<(), Box<dyn std::error::Error>> {
                 Ok(ctx) => {
                     eprintln!("  Context created: {} ({})", ctx.id, ctx.base_path);
                 }
+                Err(ref e) if matches!(e, vta_sdk::error::VtaError::Conflict(_)) => {
+                    eprintln!("  Context '{context_slug}' already exists, reusing it.");
+                }
                 Err(e) => {
-                    let msg = e.to_string();
-                    if msg.contains("409") || msg.to_lowercase().contains("already exists") {
-                        eprintln!("  Context '{context_slug}' already exists, reusing it.");
-                    } else {
-                        return Err(e);
-                    }
+                    return Err(e.into());
                 }
             }
 
@@ -311,7 +309,7 @@ pub async fn bootstrap_community_session(
 
     // Authenticate to personal VTA
     let token = auth::ensure_authenticated(personal_url, PERSONAL_KEYRING_KEY).await?;
-    let mut personal_client = VtaClient::new(personal_url);
+    let personal_client = VtaClient::new(personal_url);
     personal_client.set_token(token);
 
     // Generate a new credential on the personal VTA
