@@ -90,6 +90,16 @@ pub struct CreateKeyRequest {
     pub context_id: Option<String>,
 }
 
+impl CreateKeyRequest {
+    pub fn new(key_type: KeyType) -> Self {
+        Self { key_type, derivation_path: None, key_id: None, mnemonic: None, label: None, context_id: None }
+    }
+    pub fn derivation_path(mut self, path: impl Into<String>) -> Self { self.derivation_path = Some(path.into()); self }
+    pub fn key_id(mut self, id: impl Into<String>) -> Self { self.key_id = Some(id.into()); self }
+    pub fn label(mut self, label: impl Into<String>) -> Self { self.label = Some(label.into()); self }
+    pub fn context(mut self, ctx: impl Into<String>) -> Self { self.context_id = Some(ctx.into()); self }
+}
+
 // ── Import key types ───────────────────────────────────────────────
 
 #[derive(Debug, Serialize)]
@@ -134,6 +144,13 @@ pub struct CreateContextRequest {
     pub name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+}
+
+impl CreateContextRequest {
+    pub fn new(id: impl Into<String>, name: impl Into<String>) -> Self {
+        Self { id: id.into(), name: name.into(), description: None }
+    }
+    pub fn description(mut self, desc: impl Into<String>) -> Self { self.description = Some(desc.into()); self }
 }
 
 #[derive(Debug, Serialize)]
@@ -272,6 +289,14 @@ pub struct CreateAclRequest {
     pub allowed_contexts: Vec<String>,
 }
 
+impl CreateAclRequest {
+    pub fn new(did: impl Into<String>, role: impl Into<String>) -> Self {
+        Self { did: did.into(), role: role.into(), label: None, allowed_contexts: Vec::new() }
+    }
+    pub fn label(mut self, label: impl Into<String>) -> Self { self.label = Some(label.into()); self }
+    pub fn contexts(mut self, contexts: Vec<String>) -> Self { self.allowed_contexts = contexts; self }
+}
+
 #[derive(Debug, Serialize)]
 pub struct UpdateAclRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -334,6 +359,14 @@ pub struct GenerateCredentialsRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
     pub allowed_contexts: Vec<String>,
+}
+
+impl GenerateCredentialsRequest {
+    pub fn new(role: impl Into<String>) -> Self {
+        Self { role: role.into(), label: None, allowed_contexts: Vec::new() }
+    }
+    pub fn label(mut self, label: impl Into<String>) -> Self { self.label = Some(label.into()); self }
+    pub fn contexts(mut self, contexts: Vec<String>) -> Self { self.allowed_contexts = contexts; self }
 }
 
 #[derive(Debug, Deserialize)]
@@ -1440,6 +1473,43 @@ impl VtaClient {
         }
 
         Ok(secrets)
+    }
+
+    /// Fetch all secrets for a context as a portable [`DidSecretsBundle`].
+    ///
+    /// Resolves the context DID, paginates through all active keys,
+    /// fetches each secret, and returns a bundle ready for encoding/transport.
+    pub async fn fetch_did_secrets_bundle(
+        &self,
+        context_id: &str,
+    ) -> Result<crate::did_secrets::DidSecretsBundle, VtaError> {
+        let ctx = self.get_context(context_id).await?;
+        let did = ctx.did.ok_or_else(|| {
+            VtaError::Validation(format!("context '{context_id}' has no DID assigned"))
+        })?;
+
+        let page_size = 100u64;
+        let mut offset = 0u64;
+        let mut secrets = Vec::new();
+
+        loop {
+            let resp = self
+                .list_keys(offset, page_size, Some("active"), Some(context_id))
+                .await?;
+            if resp.keys.is_empty() {
+                break;
+            }
+            for key in &resp.keys {
+                let secret_resp = self.get_key_secret(&key.key_id).await?;
+                secrets.push(crate::did_secrets::SecretEntry::from(secret_resp));
+            }
+            offset += resp.keys.len() as u64;
+            if offset >= resp.total {
+                break;
+            }
+        }
+
+        Ok(crate::did_secrets::DidSecretsBundle { did, secrets })
     }
 
     /// Check whether the current auth token is valid by calling an authenticated endpoint.
