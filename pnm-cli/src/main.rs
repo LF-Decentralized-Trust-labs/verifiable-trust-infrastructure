@@ -493,6 +493,24 @@ enum KeyCommands {
         #[arg(long)]
         context_id: Option<String>,
     },
+    /// Import an externally-created private key
+    Import {
+        /// Key type: ed25519, x25519, or p256
+        #[arg(long)]
+        key_type: String,
+        /// Multibase-encoded private key
+        #[arg(long)]
+        private_key: Option<String>,
+        /// Path to private key file
+        #[arg(long)]
+        private_key_file: Option<std::path::PathBuf>,
+        /// Human-readable label
+        #[arg(long)]
+        label: Option<String>,
+        /// Application context ID
+        #[arg(long)]
+        context_id: Option<String>,
+    },
     /// Get a key by ID
     Get {
         /// Key ID
@@ -991,6 +1009,18 @@ async fn main() {
                     mnemonic,
                     label,
                     context_id,
+                )
+                .await
+            }
+            KeyCommands::Import {
+                key_type,
+                private_key,
+                private_key_file,
+                label,
+                context_id,
+            } => {
+                keys::cmd_key_import(
+                    &client, &key_type, private_key, private_key_file, label, context_id,
                 )
                 .await
             }

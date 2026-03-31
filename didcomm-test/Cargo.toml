@@ -13,7 +13,7 @@ name = "didcomm-test"
 path = "src/main.rs"
 
 [dependencies]
-vta-sdk = { path = "../vta-sdk", version = "0.2.0", features = ["didcomm"] }
+vta-sdk = { path = "../vta-sdk", version = "0.3.0", features = ["didcomm"] }
 affinidi-tdk = { workspace = true }
 affinidi-did-resolver-cache-sdk = { version = "0.8", features = ["network"] }
 tokio = { workspace = true }

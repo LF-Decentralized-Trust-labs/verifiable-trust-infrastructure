@@ -22,6 +22,7 @@ pub async fn export(
         &state.acl_ks,
         &state.contexts_ks,
         &state.audit_ks,
+        &state.imported_ks,
         #[cfg(feature = "webvh")]
         &state.webvh_ks,
         &*state.seed_store,
@@ -70,6 +71,7 @@ pub async fn import(
         &state.acl_ks,
         &state.contexts_ks,
         &state.audit_ks,
+        &state.imported_ks,
         #[cfg(feature = "webvh")]
         &state.webvh_ks,
         &state.seed_store,

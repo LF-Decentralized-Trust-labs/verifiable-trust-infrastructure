@@ -54,6 +54,8 @@ pub fn router() -> Router<AppState> {
         )
         .route("/keys/{key_id}/secret", get(keys::get_key_secret))
         .route("/keys/{key_id}/sign", post(keys::sign_with_key))
+        .route("/keys/import/wrapping-key", get(keys::get_wrapping_key))
+        .route("/keys/import", post(keys::import_key))
         .route("/keys/seeds", get(keys::list_seeds))
         .route("/keys/seeds/rotate", post(keys::rotate_seed))
         // Context routes

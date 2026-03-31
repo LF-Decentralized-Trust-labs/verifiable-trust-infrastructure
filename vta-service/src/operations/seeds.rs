@@ -3,14 +3,17 @@ use std::sync::Arc;
 use tracing::info;
 
 use crate::audit::{self, audit};
+use vta_sdk::keys::KeyOrigin;
 use vta_sdk::protocols::seed_management::{
     list::{ListSeedsResultBody, SeedInfo},
     rotate::RotateSeedResultBody,
 };
 
 use crate::error::AppError;
+use crate::keys::imported;
 use crate::keys::seed_store::SeedStore;
-use crate::keys::seeds::{self as seeds, get_active_seed_id};
+use crate::keys::seeds::{self as seeds, get_active_seed_id, load_seed_bytes};
+use crate::keys::KeyRecord;
 use crate::store::KeyspaceHandle;
 
 pub async fn list_seeds(
@@ -48,6 +51,7 @@ pub async fn list_seeds(
 
 pub async fn rotate_seed(
     keys_ks: &KeyspaceHandle,
+    imported_ks: &KeyspaceHandle,
     seed_store: &Arc<dyn SeedStore>,
     audit_ks: &KeyspaceHandle,
     actor: &str,
@@ -58,9 +62,33 @@ pub async fn rotate_seed(
         .await
         .map_err(|e| AppError::Internal(format!("{e}")))?;
 
+    // Load old seed for re-encryption of imported secrets
+    let old_seed = load_seed_bytes(keys_ks, &**seed_store, Some(previous_id))
+        .await
+        .map_err(|e| AppError::Internal(format!("{e}")))?;
+
     let new_id = seeds::rotate_seed(keys_ks, &**seed_store, mnemonic)
         .await
         .map_err(|e| AppError::Internal(format!("{e}")))?;
+
+    // Re-encrypt imported secrets with the new seed
+    let new_seed = load_seed_bytes(keys_ks, &**seed_store, Some(new_id))
+        .await
+        .map_err(|e| AppError::Internal(format!("{e}")))?;
+
+    // Collect imported key records for AAD
+    let raw = keys_ks.prefix_iter_raw("key:").await?;
+    let imported_keys: Vec<(String, String)> = raw
+        .into_iter()
+        .filter_map(|(_, v)| serde_json::from_slice::<KeyRecord>(&v).ok())
+        .filter(|r| r.origin == KeyOrigin::Imported && r.status == vta_sdk::keys::KeyStatus::Active)
+        .map(|r| (r.key_id, r.key_type.to_string()))
+        .collect();
+
+    if !imported_keys.is_empty() {
+        let count = imported::reencrypt_all(imported_ks, keys_ks, &old_seed, &new_seed, &imported_keys).await?;
+        info!(channel, count, "re-encrypted imported secrets after seed rotation");
+    }
 
     info!(channel, previous_id, new_id, "seed rotated");
     audit!("seed.rotate", actor = actor, resource = "seed", outcome = "success");

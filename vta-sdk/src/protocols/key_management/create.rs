@@ -1,7 +1,7 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use crate::keys::{KeyStatus, KeyType};
+use crate::keys::{KeyOrigin, KeyStatus, KeyType};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateKeyBody {
@@ -20,5 +20,11 @@ pub struct CreateKeyResultBody {
     pub public_key: String,
     pub status: KeyStatus,
     pub label: Option<String>,
+    #[serde(default = "default_derived")]
+    pub origin: KeyOrigin,
     pub created_at: DateTime<Utc>,
+}
+
+fn default_derived() -> KeyOrigin {
+    KeyOrigin::Derived
 }

@@ -127,6 +127,27 @@ graph LR
    │ → Mark old seed generation as "retired"  │
    │ → New keys derived from new seed         │
    │ → Old keys remain readable (old seed)    │
+   │ → Re-encrypt imported secrets with new   │
+   │   seed-derived KEK                       │
+   └─────────────────────────────────────────┘
+
+5. Imported Key (external, non-BIP-32):
+   ┌─────────────────────────────────────────┐
+   │ Receive private key via REST (JWE-      │
+   │   wrapped with ephemeral ECDH-ES) or    │
+   │   DIDComm (E2E encrypted)               │
+   │ → Validate key type + length            │
+   │ → Derive public key, verify consistency │
+   │ → HKDF(seed, salt) → KEK               │
+   │ → AES-256-GCM(KEK, nonce, key,         │
+   │     AAD=key_id:key_type)                │
+   │ → Store ciphertext in imported_secrets  │
+   │ → KeyRecord with origin=imported        │
+   │                                          │
+   │ On revoke: overwrite blob → delete       │
+   │ On seed rotation: re-encrypt all         │
+   │ On backup: plaintext inside encrypted    │
+   │   envelope (Argon2id + AES-256-GCM)      │
    └─────────────────────────────────────────┘
 ```
 
