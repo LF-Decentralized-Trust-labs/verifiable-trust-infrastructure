@@ -4,9 +4,7 @@ use ratatui::{
     text::{Line, Span, Text},
     widgets::{Block, Cell, Row, Table},
 };
-use vta_sdk::client::{CreateKeyRequest, ImportKeyRequest, VtaClient};
-use vta_sdk::did_secrets::{DidSecretsBundle, SecretEntry};
-use vta_sdk::keys::KeyType;
+use vta_sdk::prelude::*;
 
 use crate::render::print_widget;
 
@@ -25,14 +23,11 @@ pub async fn cmd_key_create(
             return Err(format!("unknown key type '{other}', expected ed25519 or x25519").into());
         }
     };
-    let req = CreateKeyRequest {
-        key_type,
-        derivation_path,
-        key_id: None,
-        mnemonic,
-        label,
-        context_id,
-    };
+    let mut req = CreateKeyRequest::new(key_type);
+    if let Some(p) = derivation_path { req = req.derivation_path(p); }
+    if let Some(m) = mnemonic { req = req.mnemonic(m); }
+    if let Some(l) = label { req = req.label(l); }
+    if let Some(c) = context_id { req = req.context(c); }
     let resp = client.create_key(req).await?;
     println!("Key created:");
     println!("  Key ID:          {}", resp.key_id);
@@ -348,33 +343,8 @@ pub async fn cmd_key_bundle(
     client: &VtaClient,
     context: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    // 1. Get the context to find the DID
-    let ctx = client.get_context(context).await?;
-    let did = ctx
-        .did
-        .ok_or(format!("context '{context}' has no DID assigned"))?;
-
-    // 2. List all active keys in the context
-    let resp = client
-        .list_keys(0, 10000, Some("active"), Some(context))
-        .await?;
-    if resp.keys.is_empty() {
-        return Err("no active keys found in this context".into());
-    }
-
-    // 3. Get secrets for each key and build SecretEntry vec
-    let mut secrets = Vec::new();
-    for key in &resp.keys {
-        let secret = client.get_key_secret(&key.key_id).await?;
-        secrets.push(SecretEntry {
-            key_id: secret.key_id,
-            key_type: secret.key_type,
-            private_key_multibase: secret.private_key_multibase,
-        });
-    }
-
-    // 4. Build and encode the bundle
-    let bundle = DidSecretsBundle { did, secrets };
+    // Fetch all secrets for this context as a portable bundle
+    let bundle = client.fetch_did_secrets_bundle(context).await?;
     let encoded = bundle.encode().map_err(|e| format!("{e}"))?;
 
     // 5. Print with security warning

@@ -3,9 +3,8 @@ use ratatui::{
     style::{Color, Modifier, Style},
     widgets::{Block, Cell, Row, Table},
 };
-use vta_sdk::client::{
-    AddWebvhServerRequest, CreateDidWebvhRequest, UpdateWebvhServerRequest, VtaClient,
-};
+use vta_sdk::client::{AddWebvhServerRequest, CreateDidWebvhRequest, UpdateWebvhServerRequest};
+use vta_sdk::prelude::*;
 
 use crate::render::print_widget;
 

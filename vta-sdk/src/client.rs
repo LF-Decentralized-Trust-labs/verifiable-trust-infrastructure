@@ -96,6 +96,7 @@ impl CreateKeyRequest {
     }
     pub fn derivation_path(mut self, path: impl Into<String>) -> Self { self.derivation_path = Some(path.into()); self }
     pub fn key_id(mut self, id: impl Into<String>) -> Self { self.key_id = Some(id.into()); self }
+    pub fn mnemonic(mut self, m: impl Into<String>) -> Self { self.mnemonic = Some(m.into()); self }
     pub fn label(mut self, label: impl Into<String>) -> Self { self.label = Some(label.into()); self }
     pub fn context(mut self, ctx: impl Into<String>) -> Self { self.context_id = Some(ctx.into()); self }
 }

@@ -2,8 +2,7 @@ use ratatui::layout::Constraint;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Span;
 use ratatui::widgets::{Cell, Row, Table};
-use vta_sdk::client::VtaClient;
-use vta_sdk::protocols::audit_management::list::ListAuditLogsBody;
+use vta_sdk::prelude::*;
 
 use crate::render::print_widget;
 

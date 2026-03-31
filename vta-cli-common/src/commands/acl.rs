@@ -3,7 +3,7 @@ use ratatui::{
     style::{Color, Modifier, Style},
     widgets::{Block, Cell, Row, Table},
 };
-use vta_sdk::client::{CreateAclRequest, UpdateAclRequest, VtaClient};
+use vta_sdk::prelude::*;
 
 use crate::render::print_widget;
 
@@ -121,12 +121,8 @@ pub async fn cmd_acl_create(
     contexts: Vec<String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     validate_role(&role)?;
-    let req = CreateAclRequest {
-        did,
-        role,
-        label,
-        allowed_contexts: contexts,
-    };
+    let mut req = CreateAclRequest::new(did, role).contexts(contexts);
+    if let Some(l) = label { req = req.label(l); }
     let entry = client.create_acl(req).await?;
     println!("ACL entry created:");
     println!("  DID:      {}", entry.did);

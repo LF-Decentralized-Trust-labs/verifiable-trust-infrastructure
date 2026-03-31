@@ -1,4 +1,4 @@
-use vta_sdk::client::{UpdateConfigRequest, VtaClient};
+use vta_sdk::prelude::*;
 
 pub async fn cmd_config_get(
     client: &VtaClient,
