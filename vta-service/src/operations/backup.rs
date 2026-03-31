@@ -18,8 +18,10 @@ use tracing::info;
 
 use crate::auth::AuthClaims;
 use crate::error::AppError;
+use crate::keys::imported;
 use crate::keys::seeds::{SeedRecord, get_active_seed_id, save_seed_record, set_active_seed_id};
 use crate::keys::seed_store::SeedStore;
+use crate::keys::KeyOrigin;
 use crate::seal::{SealRecord, get_seal};
 use crate::store::KeyspaceHandle;
 
@@ -41,6 +43,7 @@ pub async fn export_backup(
     acl_ks: &KeyspaceHandle,
     contexts_ks: &KeyspaceHandle,
     audit_ks: &KeyspaceHandle,
+    imported_ks: &KeyspaceHandle,
     #[cfg(feature = "webvh")] webvh_ks: &KeyspaceHandle,
     seed_store: &dyn SeedStore,
     config: &crate::config::AppConfig,
@@ -193,6 +196,27 @@ pub async fn export_backup(
     // 10. JWT signing key
     let jwt_signing_key = config.auth.jwt_signing_key.clone();
 
+    // 11. Collect imported secrets
+    let imported_kek_salt = imported::get_salt(keys_ks).await?.map(hex::encode);
+    let imported_secrets = {
+        let mut secrets = Vec::new();
+        for kr in &key_records {
+            if kr.origin == KeyOrigin::Imported && kr.status == vta_sdk::keys::KeyStatus::Active {
+                if let Ok(mut plaintext) = imported::load_secret(
+                    imported_ks, keys_ks, &seed_bytes, &kr.key_id, &kr.key_type.to_string(),
+                ).await {
+                    secrets.push(ImportedSecretBackup {
+                        key_id: kr.key_id.clone(),
+                        private_key_hex: hex::encode(&plaintext),
+                    });
+                    use zeroize::Zeroize;
+                    plaintext.zeroize();
+                }
+            }
+        }
+        secrets
+    };
+
     // Assemble payload
     let payload = BackupPayload {
         active_seed_hex,
@@ -209,6 +233,8 @@ pub async fn export_backup(
         webvh_logs,
         config: backup_config,
         audit_logs,
+        imported_secrets,
+        imported_kek_salt,
     };
 
     // Encrypt
@@ -241,6 +267,7 @@ pub async fn preview_import(
         acl_count: payload.acl_entries.len(),
         context_count: payload.context_records.len(),
         audit_count: payload.audit_logs.len(),
+        imported_secret_count: payload.imported_secrets.len(),
         message: Some("Preview only — no changes applied. Set confirm=true to import.".into()),
     };
 
@@ -259,6 +286,7 @@ pub async fn apply_import(
     acl_ks: &KeyspaceHandle,
     contexts_ks: &KeyspaceHandle,
     audit_ks: &KeyspaceHandle,
+    imported_ks: &KeyspaceHandle,
     #[cfg(feature = "webvh")] webvh_ks: &KeyspaceHandle,
     seed_store: &Arc<dyn SeedStore>,
     config: &tokio::sync::RwLock<crate::config::AppConfig>,
@@ -269,6 +297,7 @@ pub async fn apply_import(
     clear_keyspace(acl_ks, &["acl:", "vta:"]).await?;
     clear_keyspace(contexts_ks, &["ctx:"]).await?;
     clear_keyspace(audit_ks, &["log:"]).await?;
+    clear_keyspace(imported_ks, &["secret:"]).await?;
     #[cfg(feature = "webvh")]
     clear_keyspace(webvh_ks, &["server:", "did:", "log:"]).await?;
 
@@ -366,7 +395,32 @@ pub async fn apply_import(
             .await?;
     }
 
-    // 11. Update config
+    // 11. Restore imported secrets
+    if !payload.imported_secrets.is_empty() {
+        // Restore the KEK salt (or create a new one)
+        if let Some(ref salt_hex) = payload.imported_kek_salt {
+            let salt = hex::decode(salt_hex)
+                .map_err(|e| AppError::Internal(format!("invalid imported KEK salt hex: {e}")))?;
+            imported::set_salt(keys_ks, &salt).await?;
+        }
+
+        for secret_backup in &payload.imported_secrets {
+            let private_bytes = hex::decode(&secret_backup.private_key_hex)
+                .map_err(|e| AppError::Internal(format!("invalid imported secret hex: {e}")))?;
+
+            // Find the matching key record for AAD
+            let key_type_str = payload.key_records.iter()
+                .find(|kr| kr.key_id == secret_backup.key_id)
+                .map(|kr| kr.key_type.to_string())
+                .unwrap_or_else(|| "ed25519".to_string());
+
+            imported::store_secret(
+                imported_ks, keys_ks, &seed_bytes, &secret_backup.key_id, &key_type_str, &private_bytes,
+            ).await?;
+        }
+    }
+
+    // 12. Update config
     {
         let mut cfg = config.write().await;
         if let Some(ref did) = payload.config.vta_did {
@@ -433,6 +487,7 @@ pub async fn apply_import(
         acl_count: payload.acl_entries.len(),
         context_count: payload.context_records.len(),
         audit_count: payload.audit_logs.len(),
+        imported_secret_count: payload.imported_secrets.len(),
         message: Some("Import complete. VTA will restart with new identity.".into()),
     })
 }
@@ -600,6 +655,8 @@ mod tests {
                 mediator_did: None,
             },
             audit_logs: vec![],
+            imported_secrets: vec![],
+            imported_kek_salt: None,
         }
     }
 

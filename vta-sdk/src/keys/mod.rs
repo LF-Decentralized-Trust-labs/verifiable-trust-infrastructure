@@ -17,6 +17,18 @@ pub enum KeyStatus {
     Revoked,
 }
 
+/// Whether a key was derived from the BIP-32 seed or imported externally.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum KeyOrigin {
+    Derived,
+    Imported,
+}
+
+fn default_derived() -> KeyOrigin {
+    KeyOrigin::Derived
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct KeyRecord {
     pub key_id: String,
@@ -29,6 +41,8 @@ pub struct KeyRecord {
     pub context_id: Option<String>,
     #[serde(default)]
     pub seed_id: Option<u32>,
+    #[serde(default = "default_derived")]
+    pub origin: KeyOrigin,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }

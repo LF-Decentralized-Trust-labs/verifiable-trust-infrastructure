@@ -130,7 +130,7 @@ pub async fn handle_revoke_key(
     let body: vta_sdk::protocols::key_management::revoke::RevokeKeyBody =
         serde_json::from_value(message.body).map_err(handler_err)?;
     let result = operations::keys::revoke_key(
-        &state.keys_ks, &state.audit_ks, &auth, &body.key_id, "didcomm",
+        &state.keys_ks, &state.imported_ks, &state.audit_ks, &auth, &body.key_id, "didcomm",
     ).await.map_err(handler_err)?;
     response(key_management::REVOKE_KEY_RESULT, &result)
 }
@@ -145,7 +145,7 @@ pub async fn handle_get_key_secret(
     let body: vta_sdk::protocols::key_management::secret::GetKeySecretBody =
         serde_json::from_value(message.body).map_err(handler_err)?;
     let result = operations::keys::get_key_secret(
-        &state.keys_ks, &state.seed_store, &state.audit_ks, &auth, &body.key_id, "didcomm",
+        &state.keys_ks, &state.imported_ks, &state.seed_store, &state.audit_ks, &auth, &body.key_id, "didcomm",
     ).await.map_err(handler_err)?;
     response(key_management::GET_KEY_SECRET_RESULT, &result)
 }
@@ -164,7 +164,7 @@ pub async fn handle_sign_request(
         .map_err(|e| handler_err(format!("invalid base64url payload: {e}")))?;
 
     let result = operations::keys::sign_payload(
-        &state.keys_ks, &state.seed_store, &auth,
+        &state.keys_ks, &state.imported_ks, &state.seed_store, &auth,
         &body.key_id, &payload, &body.algorithm, "didcomm",
     ).await.map_err(handler_err)?;
     response(key_management::SIGN_RESULT, &result)
@@ -196,7 +196,7 @@ pub async fn handle_rotate_seed(
     let body: vta_sdk::protocols::seed_management::rotate::RotateSeedBody =
         serde_json::from_value(message.body).map_err(handler_err)?;
     let result = operations::seeds::rotate_seed(
-        &state.keys_ks, &state.seed_store, &state.audit_ks, &auth.did,
+        &state.keys_ks, &state.imported_ks, &state.seed_store, &state.audit_ks, &auth.did,
         body.mnemonic.as_deref(), "didcomm",
     ).await.map_err(handler_err)?;
     response(seed_management::ROTATE_SEED_RESULT, &result)
@@ -699,7 +699,7 @@ pub async fn handle_backup_export(
         serde_json::from_value(message.body).map_err(handler_err)?;
     let config = state.config.read().await;
     let envelope = operations::backup::export_backup(
-        &state.keys_ks, &state.acl_ks, &state.contexts_ks, &state.audit_ks,
+        &state.keys_ks, &state.acl_ks, &state.contexts_ks, &state.audit_ks, &state.imported_ks,
         #[cfg(feature = "webvh")]
         &state.webvh_ks,
         &*state.seed_store, &config, &auth, &body.password, body.include_audit,
@@ -737,7 +737,7 @@ pub async fn handle_backup_import(
 
     let result = operations::backup::apply_import(
         &payload,
-        &state.keys_ks, &state.acl_ks, &state.contexts_ks, &state.audit_ks,
+        &state.keys_ks, &state.acl_ks, &state.contexts_ks, &state.audit_ks, &state.imported_ks,
         #[cfg(feature = "webvh")]
         &state.webvh_ks,
         &state.seed_store, &state.config,

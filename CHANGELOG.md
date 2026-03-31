@@ -1,5 +1,89 @@
 # Changelog
 
+## 0.3.0 — 2026-03-31
+
+### Imported Secrets
+
+- **Import external private keys** — New `POST /keys/import` endpoint
+  and `pnm keys import` command allow importing externally-created
+  private keys (Ed25519, X25519, P-256) into the VTA. Imported keys
+  are stored encrypted at rest and participate in signing, secret
+  export, backup/restore, and revocation alongside BIP-32-derived keys.
+- **Ephemeral wrapping keys (REST)** — REST key import uses
+  ECDH-ES + AES-256-GCM key wrapping via ephemeral X25519 keypairs
+  (`GET /keys/import/wrapping-key`). Each wrapping key is single-use
+  with a 60-second TTL. DIDComm transport sends keys directly inside
+  the end-to-end encrypted envelope.
+- **Encrypted storage layer** — Imported secrets are encrypted with
+  AES-256-GCM using a KEK derived from the BIP-32 master seed via
+  HKDF-SHA256 with a random 32-byte salt. Each ciphertext is bound
+  to its `key_id:key_type` via authenticated associated data (AAD),
+  preventing blob-swap attacks.
+- **Secure deletion on revoke** — Revoking an imported key overwrites
+  the encrypted blob with zeros and deletes it from the keyspace.
+  The `KeyRecord` is retained for audit trail.
+- **Seed rotation re-encryption** — When the BIP-32 seed is rotated,
+  all imported secrets are automatically re-encrypted with the new
+  seed-derived KEK.
+- **Backup & restore** — Imported secrets are included in the
+  encrypted backup payload (plaintext inside the Argon2id+AES-256-GCM
+  envelope) and restored on import. The KEK salt is also backed up
+  for deterministic KEK reconstruction.
+
+### Data Model
+
+- **`KeyOrigin` enum** — New `origin` field on `KeyRecord`:
+  `derived` (default, BIP-32) or `imported` (external). Backward
+  compatible via `#[serde(default)]`.
+- **`ImportedSecretBackup`** — New type in `BackupPayload` for
+  portable imported secret backup.
+- **`imported_secret_count`** — Added to `ImportResult` for
+  visibility during backup preview/import.
+
+### Security
+
+- **Zeroize** — All private key buffers are zeroized after use
+  via the `zeroize` crate (import, signing, backup export/import,
+  seed rotation re-encryption).
+- **AAD binding** — AES-GCM encryption of imported secrets includes
+  `key_id:key_type` as additional authenticated data, preventing
+  ciphertext swapping between key entries.
+- **Independent KEK salt** — A random 32-byte salt is generated
+  per VTA instance and stored alongside the keyspace, ensuring
+  two VTAs with the same seed produce different KEKs.
+- **Admin-only import** — The import endpoint requires Admin role
+  (stricter than key creation which allows Initiator).
+
+### CLI
+
+- **`pnm keys import`** — Import a private key from multibase
+  string (`--private-key`) or file (`--private-key-file`).
+  Supports `--key-type ed25519|x25519|p256`, `--label`, and
+  `--context-id`. Prints a secure-deletion warning on success.
+
+### Testing
+
+- **6 new unit tests** — Imported secret encrypt/decrypt roundtrip,
+  wrong-AAD rejection, secure deletion, seed rotation re-encryption,
+  ephemeral wrapping key generation + unwrap, single-use enforcement.
+- **Total: 234 tests** (up from 228).
+
+### Breaking Changes
+
+- **Operation signatures** — `get_key_secret()`, `sign_payload()`,
+  `revoke_key()`, `rotate_seed()`, `export_backup()`, and
+  `apply_import()` now accept an `imported_ks` parameter.
+- **`AppState`** — Added `imported_ks: KeyspaceHandle` and
+  `wrapping_cache: WrappingKeyCache` fields.
+- **`VtaState` (DIDComm)** — Added `imported_ks: KeyspaceHandle`.
+- **Workspace version bumped to 0.3.0** — All crates updated.
+
+### Dependency Updates
+
+- `hkdf` 0.12 (new — KEK derivation for imported secrets)
+
+---
+
 ## 0.2.1 — 2026-03-30
 
 ### Bug Fixes

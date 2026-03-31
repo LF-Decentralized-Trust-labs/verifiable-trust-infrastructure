@@ -1,7 +1,9 @@
 pub mod derivation;
+pub mod imported;
 pub mod paths;
 pub mod seed_store;
 pub mod seeds;
+pub mod wrapping;
 
 use affinidi_tdk::secrets_resolver::secrets::Secret;
 use chrono::Utc;
@@ -11,7 +13,7 @@ use multibase::Base;
 
 use crate::store::KeyspaceHandle;
 
-pub use vta_sdk::keys::{KeyRecord, KeyStatus, KeyType};
+pub use vta_sdk::keys::{KeyOrigin, KeyRecord, KeyStatus, KeyType};
 
 pub fn store_key(key_id: &str) -> String {
     format!("key:{key_id}")
@@ -41,6 +43,7 @@ pub async fn save_key_record(
         label: Some(label.to_string()),
         context_id: context_id.map(String::from),
         seed_id,
+        origin: KeyOrigin::Derived,
         created_at: now,
         updated_at: now,
     };
