@@ -69,6 +69,18 @@ pub struct SecretEntry {
     pub private_key_multibase: String,
 }
 
+/// Convert a [`GetKeySecretResponse`](crate::client::GetKeySecretResponse) into a [`SecretEntry`].
+#[cfg(feature = "client")]
+impl From<crate::client::GetKeySecretResponse> for SecretEntry {
+    fn from(resp: crate::client::GetKeySecretResponse) -> Self {
+        Self {
+            key_id: resp.key_id,
+            key_type: resp.key_type,
+            private_key_multibase: resp.private_key_multibase,
+        }
+    }
+}
+
 impl DidSecretsBundle {
     /// Decode a base64url-no-pad encoded secrets bundle.
     pub fn decode(encoded: &str) -> Result<Self, DidSecretsBundleError> {

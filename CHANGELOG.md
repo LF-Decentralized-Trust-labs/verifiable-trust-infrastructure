@@ -128,6 +128,23 @@
   did:key parsing, Ed25519→X25519 conversion, JWE structure
   validation.
 
+### VTA SDK Ergonomics
+
+- **`vta_sdk::prelude`** — Re-exports the most commonly used
+  types (`VtaClient`, `VtaError`, `KeyRecord`, `KeyType`,
+  `CredentialBundle`, request/response types) for single-line
+  imports.
+- **Builder patterns** — `CreateKeyRequest::new(KeyType::Ed25519)
+  .label("my-key").context("app")` replaces verbose struct
+  construction with many `None` fields. Builders added for
+  `CreateKeyRequest`, `CreateContextRequest`, `CreateAclRequest`,
+  and `GenerateCredentialsRequest`. All accept `impl Into<String>`.
+- **`fetch_did_secrets_bundle()`** — One-call replacement for the
+  4-step pattern (get context → list keys → get secrets → build
+  bundle). Returns a portable `DidSecretsBundle`.
+- **`From<GetKeySecretResponse> for SecretEntry`** — Eliminates
+  manual field-by-field mapping when building secret bundles.
+
 ---
 
 ## 0.2.1 — 2026-03-30

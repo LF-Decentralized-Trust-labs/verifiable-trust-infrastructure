@@ -18,6 +18,7 @@ pub mod didcomm_session;
 #[cfg(feature = "didcomm")]
 pub mod didcomm_transport;
 pub mod keys;
+pub mod prelude;
 pub mod protocols;
 #[cfg(feature = "session")]
 pub mod session;
