@@ -7731,20 +7731,27 @@ dependencies = [
 name = "vta-sdk"
 version = "0.3.0"
 dependencies = [
+ "aes",
+ "aes-gcm",
  "affinidi-did-resolver-cache-sdk",
  "affinidi-tdk",
  "azure_identity",
  "azure_security_keyvault_secrets",
  "base64 0.22.1",
  "chrono",
+ "curve25519-dalek",
+ "ed25519-dalek",
  "keyring",
  "multibase",
  "reqwest 0.13.2",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
+ "thiserror 2.0.18",
  "tokio",
  "tracing",
  "uuid",
+ "x25519-dalek",
 ]
 
 [[package]]
