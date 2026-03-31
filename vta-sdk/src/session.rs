@@ -541,7 +541,7 @@ impl SessionStore {
         if let Some(url) = url_override {
             debug!(url, "using REST transport (URL override)");
             let token = self.ensure_authenticated(url, key).await?;
-            let mut client = crate::client::VtaClient::new(url);
+            let client = crate::client::VtaClient::new(url);
             client.set_token(token);
             return Ok(client);
         }
@@ -567,7 +567,7 @@ impl SessionStore {
             VtaEndpoint::Rest { url } => {
                 debug!(url = %url, "connecting via REST");
                 let token = self.ensure_authenticated(&url, key).await?;
-                let mut client = crate::client::VtaClient::new(&url);
+                let client = crate::client::VtaClient::new(&url);
                 client.set_token(token);
                 Ok(client)
             }

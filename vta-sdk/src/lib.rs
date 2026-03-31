@@ -1,9 +1,15 @@
+pub mod error;
+
+#[cfg(feature = "client")]
+pub mod auth_light;
 #[cfg(feature = "client")]
 pub mod client;
 pub mod context_provision;
 pub mod contexts;
 pub mod credentials;
 pub mod did_key;
+#[cfg(feature = "client")]
+pub mod didcomm_light;
 pub mod did_secrets;
 #[cfg(feature = "didcomm")]
 pub mod didcomm_init;
