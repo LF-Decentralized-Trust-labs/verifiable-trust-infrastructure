@@ -65,7 +65,6 @@ pub enum SecretSource {
 }
 
 /// Successful result from [`startup`].
-#[derive(Debug, Clone)]
 pub struct StartupResult {
     /// The service's DID, as recorded in the VTA context.
     pub did: String,
@@ -73,6 +72,10 @@ pub struct StartupResult {
     pub bundle: DidSecretsBundle,
     /// Where the secrets came from.
     pub source: SecretSource,
+    /// The authenticated VTA client, if secrets were fetched live.
+    /// `None` when secrets came from the local cache.
+    /// Services can use this for additional VTA calls (e.g., health checks).
+    pub client: Option<crate::client::VtaClient>,
 }
 
 /// Errors from the VTA integration startup flow.
@@ -136,6 +139,7 @@ pub async fn startup(
                         did: bundle.did.clone(),
                         bundle,
                         source: SecretSource::Vta,
+                        client: Some(client),
                     })
                 }
                 Err(e) => {
@@ -166,6 +170,7 @@ async fn load_from_cache(
                 did: bundle.did.clone(),
                 bundle,
                 source: SecretSource::Cache,
+                client: None,
             })
         }
         Ok(None) => Err(VtaIntegrationError::NoCachedSecrets),
