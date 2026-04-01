@@ -60,6 +60,51 @@
 | pnm-cli        | 0.3.0 | 0.4.0 |
 | cnm-cli        | 0.3.0 | 0.4.0 |
 
+### Code Quality
+
+- **Zero clippy warnings** — Resolved all clippy warnings across the
+  workspace: collapsible ifs, `.is_multiple_of()`, needless `Ok(?)`,
+  `Default` impl for `WrappingKeyCache`, type alias for complex KMS
+  return type.
+- **`Keyspaces` struct** — New `operations::Keyspaces` bundles keyspace
+  handles with `from_app_state()` and `from_vta_state()` constructors.
+  Reduces argument counts for `export_backup` (11→6), `apply_import`
+  (10→5), `delete_context` (8→5).
+- **`DIDCommSendParams`** — New params struct for `send_and_wait_raw`,
+  replacing 10 positional arguments.
+- **`cargo fmt`** — Full workspace formatting pass.
+
+### Security
+
+- **VTC key material zeroization** — Added `zeroize` dependency to
+  `vtc-service`. Replaced `.unwrap()` on key material slices with
+  proper error propagation. Secrets bundle now written to file
+  instead of stdout (preventing key leakage to logs).
+- **Session error visibility** — Replaced `.ok()?` chains in keyring,
+  file, and Azure session backends with explicit error logging via
+  `tracing::warn`. Users can now diagnose auth failures from logs.
+
+### Architecture
+
+- **Shared `SeedStore` trait** — Extracted seed/secret store trait
+  from `vta-service` into `vti-common/src/seed_store.rs`. Both VTA
+  (`SeedStore`) and VTC (`SecretStore`) now implement the shared
+  interface. Cloud backend implementations remain in each service crate.
+
+### Testing
+
+- **Operation-level unit tests** — New tests for `create_key` (Ed25519,
+  P256), `sign_payload` (EdDSA roundtrip), and `rotate_seed` (archive
+  + generation increment). Uses mock `SeedStore` and temp fjall stores.
+- **Total: 245 tests** (up from 241).
+
+### CI/CD
+
+- **GitHub Actions pipeline** (`.github/workflows/ci.yml`) — Four
+  parallel jobs: `cargo check`, `cargo test`, `cargo clippy -D warnings`,
+  `cargo fmt --check`. Triggers on push to main/nightly and PRs to main.
+  Cargo registry and target caching via `actions/cache`.
+
 ### Documentation
 
 - **Integration Guide** (`docs/integration-guide.md`) — Comprehensive
