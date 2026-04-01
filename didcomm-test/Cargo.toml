@@ -13,7 +13,7 @@ name = "didcomm-test"
 path = "src/main.rs"
 
 [dependencies]
-vta-sdk = { path = "../vta-sdk", version = "0.3.0", features = ["didcomm"] }
+vta-sdk = { path = "../vta-sdk", version = "0.4.0", features = ["didcomm"] }
 affinidi-tdk = { workspace = true }
 affinidi-did-resolver-cache-sdk = { version = "0.8", features = ["network"] }
 tokio = { workspace = true }
@@ -23,5 +23,5 @@ rand = { workspace = true }
 clap = { workspace = true }
 ed25519-dalek-bip32 = { workspace = true }
 multibase = { workspace = true }
-ed25519-dalek = "2"
+ed25519-dalek = { workspace = true }
 hex = "0.4"

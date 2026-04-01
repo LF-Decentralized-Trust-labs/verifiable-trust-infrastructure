@@ -1,5 +1,75 @@
 # Changelog
 
+## 0.4.0 — 2026-04-01
+
+### VTA SDK Integration Module
+
+- **`vta_sdk::integration::startup()`** — Unified startup pattern for
+  any service that manages its DID and secrets through a VTA. Handles
+  authentication, secret fetching, local caching, and offline fallback
+  in a single call. Returns a `StartupResult` with the service DID,
+  secrets bundle, source indicator, and an optional `VtaClient` for
+  follow-up calls.
+- **`SecretCache` trait** — Pluggable local cache for VTA secrets.
+  Services implement `store()` and `load()` using their preferred
+  backend (keyring, AWS Secrets Manager, filesystem, etc.) to enable
+  offline resilience.
+- **`authenticate()`** — Two-tier authentication strategy: lightweight
+  REST auth first (`VtaClient::from_credential`), with session-based
+  DIDComm fallback for non-`did:key` VTAs. Network errors propagate
+  immediately without fallback.
+- **`integration` feature flag** — New opt-in feature on `vta-sdk`
+  (implies `client` + `session`) that enables the integration module.
+
+### Key Labels as Verification Method IDs
+
+- **`fetch_did_secrets_bundle()`** — When a key has a label, it is now
+  used as the verification method fragment (e.g., `did:example#my-label`)
+  instead of the raw key ID. This produces cleaner, human-readable DID
+  documents for services that use labeled keys.
+
+### Workspace Dependency Consolidation
+
+- **`ed25519-dalek`** — Moved to `workspace.dependencies`, updated 6
+  crates to use `workspace = true`.
+- **`dialoguer`** — Moved to `workspace.dependencies`, updated 4
+  crates to use `workspace = true`.
+- **`chrono` in `vta-cli-common`** — Now uses workspace definition
+  (gains `serde` feature that was previously missing).
+
+### HTTP Client Improvements
+
+- **`auth_light` client reuse** — `challenge_response_light()` and
+  `refresh_token_light()` now accept a `&reqwest::Client` parameter
+  instead of creating a new client per call, enabling connection
+  pooling across authentication flows.
+- **`authenticate_with_credential()`** — Returns the HTTP client
+  alongside the auth result, which `VtaClient::from_credential()`
+  now reuses directly (eliminating a redundant client allocation).
+- **`WebvhClient` refactor** — Extracted `send()` and `with_auth()`
+  helpers to eliminate repeated request/error-handling boilerplate
+  across 4 methods.
+
+### Version Bumps
+
+| Crate | Old | New |
+|-------|-----|-----|
+| vta-sdk | 0.3.0 | 0.4.0 |
+| vta-service | 0.3.0 | 0.4.0 |
+| vta-cli-common | 0.3.0 | 0.4.0 |
+| pnm-cli | 0.3.0 | 0.4.0 |
+| cnm-cli | 0.3.0 | 0.4.0 |
+
+### Documentation
+
+- **Integration Guide** (`docs/integration-guide.md`) — Comprehensive
+  guide for 3rd-party developers integrating applications and services
+  with the VTA. Covers credential provisioning, authentication patterns,
+  key management, the SDK integration module, offline resilience, and
+  security best practices.
+
+---
+
 ## 0.3.0 — 2026-03-31
 
 ### Imported Secrets

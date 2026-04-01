@@ -29,7 +29,7 @@ path = "src/main.rs"
 
 [dependencies]
 vti-common = { path = "../vti-common", version = "0.2.1" }
-vta-sdk = { path = "../vta-sdk", version = "0.3.0", features = [
+vta-sdk = { path = "../vta-sdk", version = "0.4.0", features = [
   "didcomm",
   "session",
   "config-session",
