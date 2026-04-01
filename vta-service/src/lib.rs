@@ -11,13 +11,13 @@ pub mod audit;
 pub mod auth;
 pub mod config;
 pub mod contexts;
-#[cfg(feature = "rest")]
-pub mod metrics;
 pub mod didcomm_bridge;
 pub mod error;
 pub mod keys;
 #[cfg(feature = "didcomm")]
 pub mod messaging;
+#[cfg(feature = "rest")]
+pub mod metrics;
 pub mod operations;
 #[cfg(feature = "rest")]
 pub mod routes;
@@ -50,8 +50,8 @@ where
 {
     use tracing_subscriber::EnvFilter;
 
-    let filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new(&config.log.level));
+    let filter =
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(&config.log.level));
 
     let subscriber = tracing_subscriber::fmt()
         .with_env_filter(filter)

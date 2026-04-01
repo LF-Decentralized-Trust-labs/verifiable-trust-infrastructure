@@ -8,8 +8,11 @@ use tracing::info;
 use zeroize::Zeroize;
 
 use vta_sdk::protocols::key_management::{
-    create::CreateKeyResultBody, list::ListKeysResultBody, rename::RenameKeyResultBody,
-    revoke::RevokeKeyResultBody, secret::GetKeySecretResultBody,
+    create::CreateKeyResultBody,
+    list::ListKeysResultBody,
+    rename::RenameKeyResultBody,
+    revoke::RevokeKeyResultBody,
+    secret::GetKeySecretResultBody,
     sign::{SignAlgorithm, SignResultBody},
 };
 
@@ -22,7 +25,10 @@ use crate::keys::imported;
 use crate::keys::paths::allocate_path;
 use crate::keys::seed_store::SeedStore;
 use crate::keys::seeds::{get_active_seed_id, load_seed_bytes};
-use crate::keys::{self, KeyOrigin, KeyRecord, KeyStatus, KeyType, encode_private_multibase, encode_public_multibase};
+use crate::keys::{
+    self, KeyOrigin, KeyRecord, KeyStatus, KeyType, encode_private_multibase,
+    encode_public_multibase,
+};
 use crate::store::KeyspaceHandle;
 
 pub struct CreateKeyParams {
@@ -132,8 +138,22 @@ pub async fn create_key(
     keys_ks.insert(keys::store_key(&key_id), &record).await?;
 
     info!(channel, key_id = %key_id, key_type = ?params.key_type, path = %derivation_path, "key created");
-    audit!("key.create", actor = &auth.did, resource = &key_id, outcome = "success");
-    let _ = audit::record(audit_ks, "key.create", &auth.did, Some(&key_id), "success", Some(channel), context_id.as_deref()).await;
+    audit!(
+        "key.create",
+        actor = &auth.did,
+        resource = &key_id,
+        outcome = "success"
+    );
+    let _ = audit::record(
+        audit_ks,
+        "key.create",
+        &auth.did,
+        Some(&key_id),
+        "success",
+        Some(channel),
+        context_id.as_deref(),
+    )
+    .await;
 
     Ok(CreateKeyResultBody {
         key_id,
@@ -187,22 +207,23 @@ pub async fn import_key(
     let (public_key, key_type_str) = match params.key_type {
         KeyType::Ed25519 => {
             if private_bytes.len() != 32 {
-                return Err(AppError::Validation(
-                    format!("Ed25519 private key must be 32 bytes, got {}", private_bytes.len()),
-                ));
+                return Err(AppError::Validation(format!(
+                    "Ed25519 private key must be 32 bytes, got {}",
+                    private_bytes.len()
+                )));
             }
-            let signing_key = ed25519_dalek::SigningKey::from_bytes(
-                private_bytes.as_slice().try_into().unwrap(),
-            );
+            let signing_key =
+                ed25519_dalek::SigningKey::from_bytes(private_bytes.as_slice().try_into().unwrap());
             let pub_bytes = signing_key.verifying_key().to_bytes();
             let pub_multibase = keys::ed25519_multibase_pubkey(&pub_bytes);
             (pub_multibase, "ed25519")
         }
         KeyType::X25519 => {
             if private_bytes.len() != 32 {
-                return Err(AppError::Validation(
-                    format!("X25519 private key must be 32 bytes, got {}", private_bytes.len()),
-                ));
+                return Err(AppError::Validation(format!(
+                    "X25519 private key must be 32 bytes, got {}",
+                    private_bytes.len()
+                )));
             }
             let secret_bytes: [u8; 32] = private_bytes.as_slice().try_into().unwrap();
             let secret = x25519_dalek::StaticSecret::from(secret_bytes);
@@ -221,9 +242,10 @@ pub async fn import_key(
     };
 
     let now = Utc::now();
-    let key_id = params.label.clone().unwrap_or_else(|| {
-        format!("imported-{}-{}", key_type_str, now.format("%Y%m%d%H%M%S"))
-    });
+    let key_id = params
+        .label
+        .clone()
+        .unwrap_or_else(|| format!("imported-{}-{}", key_type_str, now.format("%Y%m%d%H%M%S")));
 
     // Encrypt and store the secret
     let active_id = get_active_seed_id(keys_ks)
@@ -233,8 +255,15 @@ pub async fn import_key(
         .await
         .map_err(|e| AppError::Internal(format!("{e}")))?;
 
-    imported::store_secret(imported_ks, keys_ks, &seed, &key_id, key_type_str, &private_bytes)
-        .await?;
+    imported::store_secret(
+        imported_ks,
+        keys_ks,
+        &seed,
+        &key_id,
+        key_type_str,
+        &private_bytes,
+    )
+    .await?;
 
     // Zeroize private key material
     private_bytes.zeroize();
@@ -256,8 +285,22 @@ pub async fn import_key(
     keys_ks.insert(keys::store_key(&key_id), &record).await?;
 
     info!(channel, key_id = %key_id, key_type = ?params.key_type, "key imported");
-    audit!("key.import", actor = &auth.did, resource = &key_id, outcome = "success");
-    let _ = audit::record(audit_ks, "key.import", &auth.did, Some(&key_id), "success", Some(channel), context_id.as_deref()).await;
+    audit!(
+        "key.import",
+        actor = &auth.did,
+        resource = &key_id,
+        outcome = "success"
+    );
+    let _ = audit::record(
+        audit_ks,
+        "key.import",
+        &auth.did,
+        Some(&key_id),
+        "success",
+        Some(channel),
+        context_id.as_deref(),
+    )
+    .await;
 
     Ok(CreateKeyResultBody {
         key_id,
@@ -378,8 +421,22 @@ pub async fn rename_key(
     }
 
     info!(channel, old_id = %key_id, new_id = %new_key_id, "key renamed");
-    audit!("key.rename", actor = &auth.did, resource = new_key_id, outcome = "success");
-    let _ = audit::record(audit_ks, "key.rename", &auth.did, Some(new_key_id), "success", Some(channel), record.context_id.as_deref()).await;
+    audit!(
+        "key.rename",
+        actor = &auth.did,
+        resource = new_key_id,
+        outcome = "success"
+    );
+    let _ = audit::record(
+        audit_ks,
+        "key.rename",
+        &auth.did,
+        Some(new_key_id),
+        "success",
+        Some(channel),
+        record.context_id.as_deref(),
+    )
+    .await;
 
     Ok(RenameKeyResultBody {
         key_id: new_key_id.to_string(),
@@ -427,8 +484,22 @@ pub async fn revoke_key(
     keys_ks.insert(store_key, &record).await?;
 
     info!(channel, key_id = %key_id, "key revoked");
-    audit!("key.revoke", actor = &auth.did, resource = key_id, outcome = "success");
-    let _ = audit::record(audit_ks, "key.revoke", &auth.did, Some(key_id), "success", Some(channel), record.context_id.as_deref()).await;
+    audit!(
+        "key.revoke",
+        actor = &auth.did,
+        resource = key_id,
+        outcome = "success"
+    );
+    let _ = audit::record(
+        audit_ks,
+        "key.revoke",
+        &auth.did,
+        Some(key_id),
+        "success",
+        Some(channel),
+        record.context_id.as_deref(),
+    )
+    .await;
 
     Ok(RevokeKeyResultBody {
         key_id: key_id.to_string(),
@@ -466,8 +537,13 @@ pub async fn get_key_secret(
                 .await
                 .map_err(|e| AppError::Internal(format!("{e}")))?;
             let mut secret_bytes = imported::load_secret(
-                imported_ks, keys_ks, &seed, key_id, &record.key_type.to_string(),
-            ).await?;
+                imported_ks,
+                keys_ks,
+                &seed,
+                key_id,
+                &record.key_type.to_string(),
+            )
+            .await?;
             let priv_mb = encode_private_multibase(&record.key_type, &secret_bytes);
             secret_bytes.zeroize();
             (record.public_key.clone(), priv_mb)
@@ -476,8 +552,9 @@ pub async fn get_key_secret(
             let seed = load_seed_bytes(keys_ks, &**seed_store, record.seed_id)
                 .await
                 .map_err(|e| AppError::Internal(format!("{e}")))?;
-            let bip32 = ed25519_dalek_bip32::ExtendedSigningKey::from_seed(&seed)
-                .map_err(|e| key_derivation_error(format!("failed to create BIP-32 root key: {e}")))?;
+            let bip32 = ed25519_dalek_bip32::ExtendedSigningKey::from_seed(&seed).map_err(|e| {
+                key_derivation_error(format!("failed to create BIP-32 root key: {e}"))
+            })?;
 
             match record.key_type {
                 KeyType::Ed25519 => {
@@ -499,7 +576,10 @@ pub async fn get_key_secret(
                     let public_key = p256_secret.secret_key.public_key();
                     let encoded = public_key.to_encoded_point(true);
                     let pub_mb = encode_public_multibase(&KeyType::P256, encoded.as_bytes());
-                    let priv_mb = encode_private_multibase(&KeyType::P256, &p256_secret.secret_key.to_bytes());
+                    let priv_mb = encode_private_multibase(
+                        &KeyType::P256,
+                        &p256_secret.secret_key.to_bytes(),
+                    );
                     (pub_mb, priv_mb)
                 }
             }
@@ -507,8 +587,22 @@ pub async fn get_key_secret(
     };
 
     info!(channel, key_id = %key_id, "key secret retrieved");
-    audit!("key.secret_export", actor = &auth.did, resource = key_id, outcome = "success");
-    let _ = audit::record(audit_ks, "key.secret_export", &auth.did, Some(key_id), "success", Some(channel), record.context_id.as_deref()).await;
+    audit!(
+        "key.secret_export",
+        actor = &auth.did,
+        resource = key_id,
+        outcome = "success"
+    );
+    let _ = audit::record(
+        audit_ks,
+        "key.secret_export",
+        &auth.did,
+        Some(key_id),
+        "success",
+        Some(channel),
+        record.context_id.as_deref(),
+    )
+    .await;
 
     Ok(GetKeySecretResultBody {
         key_id: record.key_id,
@@ -523,6 +617,7 @@ pub async fn get_key_secret(
 /// For derived keys, re-derives from BIP-32 seed. For imported keys,
 /// decrypts from the imported_secrets keyspace. Key material is zeroized
 /// after signing.
+#[allow(clippy::too_many_arguments)]
 pub async fn sign_payload(
     keys_ks: &KeyspaceHandle,
     imported_ks: &KeyspaceHandle,
@@ -559,15 +654,21 @@ pub async fn sign_payload(
                 .await
                 .map_err(|e| AppError::Internal(format!("{e}")))?;
             let mut secret_bytes = imported::load_secret(
-                imported_ks, keys_ks, &seed, key_id, &record.key_type.to_string(),
-            ).await?;
+                imported_ks,
+                keys_ks,
+                &seed,
+                key_id,
+                &record.key_type.to_string(),
+            )
+            .await?;
 
             let sig = match (algorithm, &record.key_type) {
                 (SignAlgorithm::EdDSA, KeyType::Ed25519) => {
                     let signing_key = ed25519_dalek::SigningKey::from_bytes(
-                        secret_bytes.as_slice().try_into().map_err(|_| {
-                            AppError::Internal("invalid Ed25519 key length".into())
-                        })?,
+                        secret_bytes
+                            .as_slice()
+                            .try_into()
+                            .map_err(|_| AppError::Internal("invalid Ed25519 key length".into()))?,
                     );
                     use ed25519_dalek::Signer;
                     signing_key.sign(payload).to_bytes().to_vec()
@@ -595,15 +696,16 @@ pub async fn sign_payload(
             let seed = load_seed_bytes(keys_ks, &**seed_store, record.seed_id)
                 .await
                 .map_err(|e| AppError::Internal(format!("{e}")))?;
-            let bip32 = ed25519_dalek_bip32::ExtendedSigningKey::from_seed(&seed)
-                .map_err(|e| key_derivation_error(format!("failed to create BIP-32 root key: {e}")))?;
+            let bip32 = ed25519_dalek_bip32::ExtendedSigningKey::from_seed(&seed).map_err(|e| {
+                key_derivation_error(format!("failed to create BIP-32 root key: {e}"))
+            })?;
 
             match (algorithm, &record.key_type) {
                 (SignAlgorithm::EdDSA, KeyType::Ed25519) => {
-                    let derivation_path: ed25519_dalek_bip32::DerivationPath = record
-                        .derivation_path
-                        .parse()
-                        .map_err(|e| key_derivation_error(format!("invalid derivation path: {e}")))?;
+                    let derivation_path: ed25519_dalek_bip32::DerivationPath =
+                        record.derivation_path.parse().map_err(|e| {
+                            key_derivation_error(format!("invalid derivation path: {e}"))
+                        })?;
                     let derived = bip32
                         .derive(&derivation_path)
                         .map_err(|e| key_derivation_error(format!("derivation failed: {e}")))?;

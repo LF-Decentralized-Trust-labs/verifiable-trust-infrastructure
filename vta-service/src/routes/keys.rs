@@ -4,8 +4,11 @@ use axum::http::StatusCode;
 use serde::{Deserialize, Serialize};
 
 use vta_sdk::protocols::key_management::{
-    create::CreateKeyResultBody, list::ListKeysResultBody, rename::RenameKeyResultBody,
-    revoke::RevokeKeyResultBody, secret::GetKeySecretResultBody,
+    create::CreateKeyResultBody,
+    list::ListKeysResultBody,
+    rename::RenameKeyResultBody,
+    revoke::RevokeKeyResultBody,
+    secret::GetKeySecretResultBody,
     sign::{SignAlgorithm, SignResultBody},
 };
 use vta_sdk::protocols::seed_management::{
@@ -91,7 +94,15 @@ pub async fn invalidate_key(
     State(state): State<AppState>,
     Path(key_id): Path<String>,
 ) -> Result<Json<RevokeKeyResultBody>, AppError> {
-    let result = operations::keys::revoke_key(&state.keys_ks, &state.imported_ks, &state.audit_ks, &auth.0, &key_id, "rest").await?;
+    let result = operations::keys::revoke_key(
+        &state.keys_ks,
+        &state.imported_ks,
+        &state.audit_ks,
+        &auth.0,
+        &key_id,
+        "rest",
+    )
+    .await?;
     Ok(Json(result))
 }
 
@@ -107,8 +118,15 @@ pub async fn rename_key(
     Path(key_id): Path<String>,
     Json(req): Json<RenameKeyRequest>,
 ) -> Result<Json<RenameKeyResultBody>, AppError> {
-    let result =
-        operations::keys::rename_key(&state.keys_ks, &state.audit_ks, &auth.0, &key_id, &req.key_id, "rest").await?;
+    let result = operations::keys::rename_key(
+        &state.keys_ks,
+        &state.audit_ks,
+        &auth.0,
+        &key_id,
+        &req.key_id,
+        "rest",
+    )
+    .await?;
     Ok(Json(result))
 }
 

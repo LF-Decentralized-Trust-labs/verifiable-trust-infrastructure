@@ -7,8 +7,8 @@ use vta_sdk::credentials::CredentialBundle;
 use vta_sdk::protocols::credential_management::generate::GenerateCredentialsResultBody;
 
 use crate::acl::{AclEntry, Role, store_acl_entry, validate_acl_modification};
-use crate::auth::credentials::generate_did_key;
 use crate::auth::AuthClaims;
+use crate::auth::credentials::generate_did_key;
 use crate::auth::session::now_epoch;
 use crate::config::AppConfig;
 use crate::error::AppError;

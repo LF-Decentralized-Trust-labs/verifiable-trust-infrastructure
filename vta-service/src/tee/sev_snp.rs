@@ -39,11 +39,7 @@ impl TeeProvider for SevSnpProvider {
     fn detect(&self) -> Result<TeeStatus, AppError> {
         let detected = std::path::Path::new("/dev/sev-guest").exists();
 
-        let platform_version = if detected {
-            read_sev_version()
-        } else {
-            None
-        };
+        let platform_version = if detected { read_sev_version() } else { None };
 
         if detected {
             info!(version = ?platform_version, "SEV-SNP guest device detected");
@@ -56,11 +52,7 @@ impl TeeProvider for SevSnpProvider {
         })
     }
 
-    fn attest(
-        &self,
-        user_data: &[u8],
-        nonce: &[u8],
-    ) -> Result<AttestationReport, AppError> {
+    fn attest(&self, user_data: &[u8], nonce: &[u8]) -> Result<AttestationReport, AppError> {
         let report_data = build_report_data(user_data, nonce);
 
         debug!(
@@ -72,8 +64,16 @@ impl TeeProvider for SevSnpProvider {
         let evidence = request_snp_report(&report_data)?;
 
         // Parse key fields from the report for logging
-        let policy = u64::from_le_bytes(evidence[POLICY_OFFSET..POLICY_OFFSET + 8].try_into().unwrap_or_default());
-        let guest_svn = u32::from_le_bytes(evidence[GUEST_SVN_OFFSET..GUEST_SVN_OFFSET + 4].try_into().unwrap_or_default());
+        let policy = u64::from_le_bytes(
+            evidence[POLICY_OFFSET..POLICY_OFFSET + 8]
+                .try_into()
+                .unwrap_or_default(),
+        );
+        let guest_svn = u32::from_le_bytes(
+            evidence[GUEST_SVN_OFFSET..GUEST_SVN_OFFSET + 4]
+                .try_into()
+                .unwrap_or_default(),
+        );
 
         debug!(
             evidence_len = evidence.len(),
@@ -133,7 +133,10 @@ impl TeeProvider for SevSnpProvider {
                 .unwrap_or_default(),
         );
         if sig_algo != 1 {
-            debug!(sig_algo, "unexpected signature algorithm (expected 1 = ECDSA P-384)");
+            debug!(
+                sig_algo,
+                "unexpected signature algorithm (expected 1 = ECDSA P-384)"
+            );
             return Ok(false);
         }
 
@@ -271,19 +274,19 @@ fn request_snp_report(report_data: &[u8; 64]) -> Result<Vec<u8>, AppError> {
     // struct snp_report_resp
     #[repr(C)]
     struct SnpReportResp {
-        status: u32,                    // Firmware status code (0 = success)
-        report_size: u32,               // Size of the report
-        rsvd: [u8; 24],                 // Reserved
-        report: [u8; SNP_REPORT_SIZE],  // The attestation report
+        status: u32,                   // Firmware status code (0 = success)
+        report_size: u32,              // Size of the report
+        rsvd: [u8; 24],                // Reserved
+        report: [u8; SNP_REPORT_SIZE], // The attestation report
     }
 
     // struct snp_guest_request_ioctl
     #[repr(C)]
     struct SnpGuestRequestIoctl {
-        msg_version: u8,    // Message version (must be 1)
-        req_data: u64,      // Pointer to request structure
-        resp_data: u64,     // Pointer to response structure
-        fw_err: u64,        // Firmware error code (output)
+        msg_version: u8, // Message version (must be 1)
+        req_data: u64,   // Pointer to request structure
+        resp_data: u64,  // Pointer to response structure
+        fw_err: u64,     // Firmware error code (output)
     }
 
     let mut req = SnpReportReq {

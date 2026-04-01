@@ -8,8 +8,8 @@ pub fn ed25519_multibase_pubkey(public_key_bytes: &[u8; 32]) -> String {
 
 /// Known 2-byte multicodec varint prefixes for private keys.
 const ED25519_PRIV_CODEC: [u8; 2] = [0x80, 0x26]; // 0x1300
-const X25519_PRIV_CODEC: [u8; 2] = [0x82, 0x26];  // 0x1302
-const P256_PRIV_CODEC: [u8; 2] = [0x86, 0x26];    // 0x1306
+const X25519_PRIV_CODEC: [u8; 2] = [0x82, 0x26]; // 0x1302
+const P256_PRIV_CODEC: [u8; 2] = [0x86, 0x26]; // 0x1306
 
 /// Decode a multibase-encoded private key to raw bytes.
 ///

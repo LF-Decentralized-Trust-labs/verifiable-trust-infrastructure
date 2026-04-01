@@ -17,9 +17,8 @@ pub async fn list_audit_logs(
     State(state): State<AppState>,
     Query(params): Query<ListAuditLogsBody>,
 ) -> Result<Json<ListAuditLogsResultBody>, AppError> {
-    let result = operations::audit::list_audit_logs(
-        &state.audit_ks, &auth.0, &params, "rest",
-    ).await?;
+    let result =
+        operations::audit::list_audit_logs(&state.audit_ks, &auth.0, &params, "rest").await?;
     Ok(Json(result))
 }
 
@@ -30,9 +29,7 @@ pub async fn get_retention(
     auth: AdminAuth,
     State(state): State<AppState>,
 ) -> Result<Json<RetentionResultBody>, AppError> {
-    let result = operations::audit::get_retention(
-        &state.config, &auth.0, "rest",
-    ).await?;
+    let result = operations::audit::get_retention(&state.config, &auth.0, "rest").await?;
     Ok(Json(result))
 }
 
@@ -45,7 +42,12 @@ pub async fn update_retention(
     Json(body): Json<UpdateRetentionBody>,
 ) -> Result<Json<RetentionResultBody>, AppError> {
     let result = operations::audit::update_retention(
-        &state.config, &state.audit_ks, &auth.0, body.retention_days, "rest",
-    ).await?;
+        &state.config,
+        &state.audit_ks,
+        &auth.0,
+        body.retention_days,
+        "rest",
+    )
+    .await?;
     Ok(Json(result))
 }

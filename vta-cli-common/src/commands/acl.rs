@@ -122,7 +122,9 @@ pub async fn cmd_acl_create(
 ) -> Result<(), Box<dyn std::error::Error>> {
     validate_role(&role)?;
     let mut req = CreateAclRequest::new(did, role).contexts(contexts);
-    if let Some(l) = label { req = req.label(l); }
+    if let Some(l) = label {
+        req = req.label(l);
+    }
     let entry = client.create_acl(req).await?;
     println!("ACL entry created:");
     println!("  DID:      {}", entry.did);

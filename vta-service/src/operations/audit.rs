@@ -36,17 +36,35 @@ pub async fn list_audit_logs(
 
         // Apply filters
         if let Some(from) = params.from
-            && entry.timestamp < from { continue; }
+            && entry.timestamp < from
+        {
+            continue;
+        }
         if let Some(to) = params.to
-            && entry.timestamp > to { continue; }
+            && entry.timestamp > to
+        {
+            continue;
+        }
         if let Some(ref action) = params.action
-            && !entry.action.contains(action.as_str()) { continue; }
+            && !entry.action.contains(action.as_str())
+        {
+            continue;
+        }
         if let Some(ref actor) = params.actor
-            && entry.actor != *actor { continue; }
+            && entry.actor != *actor
+        {
+            continue;
+        }
         if let Some(ref outcome) = params.outcome
-            && !entry.outcome.contains(outcome.as_str()) { continue; }
+            && !entry.outcome.contains(outcome.as_str())
+        {
+            continue;
+        }
         if let Some(ref ctx) = params.context_id
-            && entry.context_id.as_deref() != Some(ctx.as_str()) { continue; }
+            && entry.context_id.as_deref() != Some(ctx.as_str())
+        {
+            continue;
+        }
 
         entries.push(entry);
     }
@@ -115,7 +133,21 @@ pub async fn update_retention(
 
     std::fs::write(&path, contents).map_err(AppError::Io)?;
     tracing::info!(channel, retention_days, "audit retention updated");
-    audit!("audit.retention_update", actor = &auth.did, resource = retention_days, outcome = "success");
-    let _ = audit::record(audit_ks, "audit.retention_update", &auth.did, Some(&retention_days.to_string()), "success", Some(channel), None).await;
+    audit!(
+        "audit.retention_update",
+        actor = &auth.did,
+        resource = retention_days,
+        outcome = "success"
+    );
+    let _ = audit::record(
+        audit_ks,
+        "audit.retention_update",
+        &auth.did,
+        Some(&retention_days.to_string()),
+        "success",
+        Some(channel),
+        None,
+    )
+    .await;
     Ok(result)
 }

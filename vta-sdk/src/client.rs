@@ -92,13 +92,35 @@ pub struct CreateKeyRequest {
 
 impl CreateKeyRequest {
     pub fn new(key_type: KeyType) -> Self {
-        Self { key_type, derivation_path: None, key_id: None, mnemonic: None, label: None, context_id: None }
+        Self {
+            key_type,
+            derivation_path: None,
+            key_id: None,
+            mnemonic: None,
+            label: None,
+            context_id: None,
+        }
     }
-    pub fn derivation_path(mut self, path: impl Into<String>) -> Self { self.derivation_path = Some(path.into()); self }
-    pub fn key_id(mut self, id: impl Into<String>) -> Self { self.key_id = Some(id.into()); self }
-    pub fn mnemonic(mut self, m: impl Into<String>) -> Self { self.mnemonic = Some(m.into()); self }
-    pub fn label(mut self, label: impl Into<String>) -> Self { self.label = Some(label.into()); self }
-    pub fn context(mut self, ctx: impl Into<String>) -> Self { self.context_id = Some(ctx.into()); self }
+    pub fn derivation_path(mut self, path: impl Into<String>) -> Self {
+        self.derivation_path = Some(path.into());
+        self
+    }
+    pub fn key_id(mut self, id: impl Into<String>) -> Self {
+        self.key_id = Some(id.into());
+        self
+    }
+    pub fn mnemonic(mut self, m: impl Into<String>) -> Self {
+        self.mnemonic = Some(m.into());
+        self
+    }
+    pub fn label(mut self, label: impl Into<String>) -> Self {
+        self.label = Some(label.into());
+        self
+    }
+    pub fn context(mut self, ctx: impl Into<String>) -> Self {
+        self.context_id = Some(ctx.into());
+        self
+    }
 }
 
 // ── Import key types ───────────────────────────────────────────────
@@ -149,9 +171,16 @@ pub struct CreateContextRequest {
 
 impl CreateContextRequest {
     pub fn new(id: impl Into<String>, name: impl Into<String>) -> Self {
-        Self { id: id.into(), name: name.into(), description: None }
+        Self {
+            id: id.into(),
+            name: name.into(),
+            description: None,
+        }
     }
-    pub fn description(mut self, desc: impl Into<String>) -> Self { self.description = Some(desc.into()); self }
+    pub fn description(mut self, desc: impl Into<String>) -> Self {
+        self.description = Some(desc.into());
+        self
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -297,10 +326,21 @@ pub struct CreateAclRequest {
 
 impl CreateAclRequest {
     pub fn new(did: impl Into<String>, role: impl Into<String>) -> Self {
-        Self { did: did.into(), role: role.into(), label: None, allowed_contexts: Vec::new() }
+        Self {
+            did: did.into(),
+            role: role.into(),
+            label: None,
+            allowed_contexts: Vec::new(),
+        }
     }
-    pub fn label(mut self, label: impl Into<String>) -> Self { self.label = Some(label.into()); self }
-    pub fn contexts(mut self, contexts: Vec<String>) -> Self { self.allowed_contexts = contexts; self }
+    pub fn label(mut self, label: impl Into<String>) -> Self {
+        self.label = Some(label.into());
+        self
+    }
+    pub fn contexts(mut self, contexts: Vec<String>) -> Self {
+        self.allowed_contexts = contexts;
+        self
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -369,10 +409,20 @@ pub struct GenerateCredentialsRequest {
 
 impl GenerateCredentialsRequest {
     pub fn new(role: impl Into<String>) -> Self {
-        Self { role: role.into(), label: None, allowed_contexts: Vec::new() }
+        Self {
+            role: role.into(),
+            label: None,
+            allowed_contexts: Vec::new(),
+        }
     }
-    pub fn label(mut self, label: impl Into<String>) -> Self { self.label = Some(label.into()); self }
-    pub fn contexts(mut self, contexts: Vec<String>) -> Self { self.allowed_contexts = contexts; self }
+    pub fn label(mut self, label: impl Into<String>) -> Self {
+        self.label = Some(label.into());
+        self
+    }
+    pub fn contexts(mut self, contexts: Vec<String>) -> Self {
+        self.allowed_contexts = contexts;
+        self
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -422,9 +472,7 @@ impl VtaClient {
         }
     }
 
-    async fn handle_delete_response(
-        resp: reqwest::Response,
-    ) -> Result<(), VtaError> {
+    async fn handle_delete_response(resp: reqwest::Response) -> Result<(), VtaError> {
         if resp.status().is_success() {
             Ok(())
         } else {
@@ -606,27 +654,32 @@ impl VtaClient {
         };
 
         // Try refresh token first (cheaper than full re-auth)
-        if let Some(ref refresh_tok) = guard.refresh_token {
-            if let Some(refresh_exp) = guard.refresh_expires_at {
-                let now = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_secs();
-                if now < refresh_exp {
-                    if let Ok(result) = crate::auth_light::refresh_token_light(
-                        client, base_url, &cred.did, &cred.vta_did, refresh_tok,
-                    ).await {
-                        guard.token = Some(result.access_token);
-                        guard.expires_at = Some(result.access_expires_at);
-                        if let Some(new_refresh) = result.refresh_token {
-                            guard.refresh_token = Some(new_refresh);
-                        }
-                        guard.refresh_expires_at = result.refresh_expires_at;
-                        return Ok(());
-                    }
-                    // Refresh failed — fall through to full re-auth
+        if let Some(ref refresh_tok) = guard.refresh_token
+            && let Some(refresh_exp) = guard.refresh_expires_at
+        {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            if now < refresh_exp
+                && let Ok(result) = crate::auth_light::refresh_token_light(
+                    client,
+                    base_url,
+                    &cred.did,
+                    &cred.vta_did,
+                    refresh_tok,
+                )
+                .await
+            {
+                guard.token = Some(result.access_token);
+                guard.expires_at = Some(result.access_expires_at);
+                if let Some(new_refresh) = result.refresh_token {
+                    guard.refresh_token = Some(new_refresh);
                 }
+                guard.refresh_expires_at = result.refresh_expires_at;
+                return Ok(());
             }
+            // Refresh failed or expired — fall through to full re-auth
         }
 
         // Full re-authentication
@@ -635,9 +688,8 @@ impl VtaClient {
         let vta = cred.vta_did.clone();
         drop(guard); // Release lock before async call
 
-        let result = crate::auth_light::challenge_response_light(
-            client, base_url, &did, &pk, &vta,
-        ).await?;
+        let result =
+            crate::auth_light::challenge_response_light(client, base_url, &did, &pk, &vta).await?;
 
         let mut guard = auth.lock().await;
         guard.token = Some(result.access_token);
@@ -671,12 +723,10 @@ impl VtaClient {
                 Self::handle_response(resp).await
             }
             #[cfg(feature = "session")]
-            Transport::DIDComm { session, .. } => {
-                session
-                    .send_and_wait(msg_type, body, result_type, timeout)
-                    .await
-                    .map_err(|e| VtaError::Protocol(e.to_string()))
-            }
+            Transport::DIDComm { session, .. } => session
+                .send_and_wait(msg_type, body, result_type, timeout)
+                .await
+                .map_err(|e| VtaError::Protocol(e.to_string())),
         }
     }
 
@@ -751,7 +801,10 @@ impl VtaClient {
             serde_json::json!({}),
             vta_management::RESTART_RESULT,
             30,
-            |c, url| c.post(format!("{url}/vta/restart")).json(&serde_json::json!({})),
+            |c, url| {
+                c.post(format!("{url}/vta/restart"))
+                    .json(&serde_json::json!({}))
+            },
         )
         .await
     }
@@ -770,8 +823,9 @@ impl VtaClient {
             crate::protocols::backup_management::EXPORT_BACKUP_RESULT,
             120, // backup can take longer
             |c, url| {
-                c.post(format!("{url}/backup/export"))
-                    .json(&serde_json::json!({ "password": password, "include_audit": include_audit }))
+                c.post(format!("{url}/backup/export")).json(
+                    &serde_json::json!({ "password": password, "include_audit": include_audit }),
+                )
             },
         )
         .await
@@ -826,10 +880,7 @@ impl VtaClient {
 
     // ── Key methods ─────────────────────────────────────────────────
 
-    pub async fn create_key(
-        &self,
-        req: CreateKeyRequest,
-    ) -> Result<CreateKeyResponse, VtaError> {
+    pub async fn create_key(&self, req: CreateKeyRequest) -> Result<CreateKeyResponse, VtaError> {
         self.rpc(
             key_management::CREATE_KEY,
             serde_json::json!({
@@ -888,10 +939,7 @@ impl VtaClient {
         .await
     }
 
-    pub async fn get_key_secret(
-        &self,
-        key_id: &str,
-    ) -> Result<GetKeySecretResponse, VtaError> {
+    pub async fn get_key_secret(&self, key_id: &str) -> Result<GetKeySecretResponse, VtaError> {
         self.rpc(
             key_management::GET_KEY_SECRET,
             serde_json::json!({ "key_id": key_id }),
@@ -934,10 +982,7 @@ impl VtaClient {
         .await
     }
 
-    pub async fn invalidate_key(
-        &self,
-        key_id: &str,
-    ) -> Result<InvalidateKeyResponse, VtaError> {
+    pub async fn invalidate_key(&self, key_id: &str) -> Result<InvalidateKeyResponse, VtaError> {
         self.rpc(
             key_management::REVOKE_KEY,
             serde_json::json!({ "key_id": key_id }),
@@ -985,17 +1030,14 @@ impl VtaClient {
                 Self::handle_response(resp).await
             }
             #[cfg(feature = "session")]
-            Transport::DIDComm { .. } => {
-                Err(VtaError::Other("wrapping key not needed for DIDComm transport".into()))
-            }
+            Transport::DIDComm { .. } => Err(VtaError::Other(
+                "wrapping key not needed for DIDComm transport".into(),
+            )),
         }
     }
 
     /// Import an externally-created private key into the VTA.
-    pub async fn import_key(
-        &self,
-        req: ImportKeyRequest,
-    ) -> Result<ImportKeyResponse, VtaError> {
+    pub async fn import_key(&self, req: ImportKeyRequest) -> Result<ImportKeyResponse, VtaError> {
         self.rpc(
             key_management::IMPORT_KEY,
             serde_json::to_value(&req)?,
@@ -1038,10 +1080,7 @@ impl VtaClient {
 
     // ── ACL methods ─────────────────────────────────────────────────
 
-    pub async fn list_acl(
-        &self,
-        context: Option<&str>,
-    ) -> Result<AclListResponse, VtaError> {
+    pub async fn list_acl(&self, context: Option<&str>) -> Result<AclListResponse, VtaError> {
         self.rpc(
             acl_management::LIST_ACL,
             serde_json::json!({ "context": context }),
@@ -1069,10 +1108,7 @@ impl VtaClient {
         .await
     }
 
-    pub async fn create_acl(
-        &self,
-        req: CreateAclRequest,
-    ) -> Result<AclEntryResponse, VtaError> {
+    pub async fn create_acl(&self, req: CreateAclRequest) -> Result<AclEntryResponse, VtaError> {
         self.rpc(
             acl_management::CREATE_ACL,
             serde_json::to_value(&req)?,
@@ -1146,10 +1182,7 @@ impl VtaClient {
         .await
     }
 
-    pub async fn get_context(
-        &self,
-        id: &str,
-    ) -> Result<ContextResponse, VtaError> {
+    pub async fn get_context(&self, id: &str) -> Result<ContextResponse, VtaError> {
         self.rpc(
             context_management::GET_CONTEXT,
             serde_json::json!({ "id": id }),
@@ -1220,16 +1253,18 @@ impl VtaClient {
     pub async fn preview_delete_context(
         &self,
         id: &str,
-    ) -> Result<
-        context_management::delete::DeleteContextPreviewResultBody,
-        VtaError,
-    > {
+    ) -> Result<context_management::delete::DeleteContextPreviewResultBody, VtaError> {
         self.rpc(
             context_management::PREVIEW_DELETE_CONTEXT,
             serde_json::json!({ "id": id }),
             context_management::PREVIEW_DELETE_CONTEXT_RESULT,
             30,
-            |c, url| c.get(format!("{url}/contexts/{}/delete-preview", encode_path_segment(id))),
+            |c, url| {
+                c.get(format!(
+                    "{url}/contexts/{}/delete-preview",
+                    encode_path_segment(id)
+                ))
+            },
         )
         .await
     }
@@ -1269,10 +1304,8 @@ impl VtaClient {
 
     pub async fn list_webvh_servers(
         &self,
-    ) -> Result<
-        crate::protocols::did_management::servers::ListWebvhServersResultBody,
-        VtaError,
-    > {
+    ) -> Result<crate::protocols::did_management::servers::ListWebvhServersResultBody, VtaError>
+    {
         self.rpc(
             did_management::LIST_WEBVH_SERVERS,
             serde_json::json!({}),
@@ -1317,10 +1350,7 @@ impl VtaClient {
     pub async fn create_did_webvh(
         &self,
         req: CreateDidWebvhRequest,
-    ) -> Result<
-        crate::protocols::did_management::create::CreateDidWebvhResultBody,
-        VtaError,
-    > {
+    ) -> Result<crate::protocols::did_management::create::CreateDidWebvhResultBody, VtaError> {
         self.rpc(
             did_management::CREATE_DID_WEBVH,
             serde_json::to_value(&req)?,
@@ -1335,10 +1365,7 @@ impl VtaClient {
         &self,
         context_id: Option<&str>,
         server_id: Option<&str>,
-    ) -> Result<
-        crate::protocols::did_management::list::ListDidsWebvhResultBody,
-        VtaError,
-    > {
+    ) -> Result<crate::protocols::did_management::list::ListDidsWebvhResultBody, VtaError> {
         self.rpc(
             did_management::LIST_DIDS_WEBVH,
             serde_json::json!({
@@ -1363,10 +1390,7 @@ impl VtaClient {
         .await
     }
 
-    pub async fn get_did_webvh(
-        &self,
-        did: &str,
-    ) -> Result<crate::webvh::WebvhDidRecord, VtaError> {
+    pub async fn get_did_webvh(&self, did: &str) -> Result<crate::webvh::WebvhDidRecord, VtaError> {
         self.rpc(
             did_management::GET_DID_WEBVH,
             serde_json::json!({ "did": did }),
@@ -1377,10 +1401,7 @@ impl VtaClient {
         .await
     }
 
-    pub async fn get_did_webvh_log(
-        &self,
-        did: &str,
-    ) -> Result<GetDidLogResponse, VtaError> {
+    pub async fn get_did_webvh_log(&self, did: &str) -> Result<GetDidLogResponse, VtaError> {
         self.rpc(
             did_management::GET_DID_WEBVH_LOG,
             serde_json::json!({ "did": did }),
@@ -1420,12 +1441,24 @@ impl VtaClient {
                     format!("page={}", params.page),
                     format!("page_size={}", params.page_size),
                 ];
-                if let Some(from) = params.from { qs.push(format!("from={from}")); }
-                if let Some(to) = params.to { qs.push(format!("to={to}")); }
-                if let Some(ref action) = params.action { qs.push(format!("action={action}")); }
-                if let Some(ref actor) = params.actor { qs.push(format!("actor={actor}")); }
-                if let Some(ref outcome) = params.outcome { qs.push(format!("outcome={outcome}")); }
-                if let Some(ref ctx) = params.context_id { qs.push(format!("context_id={ctx}")); }
+                if let Some(from) = params.from {
+                    qs.push(format!("from={from}"));
+                }
+                if let Some(to) = params.to {
+                    qs.push(format!("to={to}"));
+                }
+                if let Some(ref action) = params.action {
+                    qs.push(format!("action={action}"));
+                }
+                if let Some(ref actor) = params.actor {
+                    qs.push(format!("actor={actor}"));
+                }
+                if let Some(ref outcome) = params.outcome {
+                    qs.push(format!("outcome={outcome}"));
+                }
+                if let Some(ref ctx) = params.context_id {
+                    qs.push(format!("context_id={ctx}"));
+                }
                 c.get(format!("{url}/audit/logs?{}", qs.join("&")))
             },
         )
@@ -1532,10 +1565,10 @@ impl VtaClient {
                 // verification method ID (e.g., "did:webvh:...#key-0"). The setup
                 // wizard and provisioning flows set labels to match the DID document,
                 // so this lets consumers use the bundle directly without remapping.
-                if let Some(label) = key.label.as_deref() {
-                    if label.contains('#') || label.starts_with("did:") {
-                        entry.key_id = label.to_string();
-                    }
+                if let Some(label) = key.label.as_deref()
+                    && (label.contains('#') || label.starts_with("did:"))
+                {
+                    entry.key_id = label.to_string();
                 }
                 secrets.push(entry);
             }

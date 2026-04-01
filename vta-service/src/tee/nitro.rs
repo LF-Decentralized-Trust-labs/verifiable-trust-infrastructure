@@ -55,11 +55,7 @@ impl TeeProvider for NitroProvider {
         })
     }
 
-    fn attest(
-        &self,
-        user_data: &[u8],
-        nonce: &[u8],
-    ) -> Result<AttestationReport, AppError> {
+    fn attest(&self, user_data: &[u8], nonce: &[u8]) -> Result<AttestationReport, AppError> {
         debug!(
             user_data_len = user_data.len(),
             nonce_len = nonce.len(),
@@ -68,7 +64,10 @@ impl TeeProvider for NitroProvider {
 
         let evidence = request_nsm_attestation(user_data, nonce)?;
 
-        debug!(evidence_len = evidence.len(), "Nitro attestation document generated");
+        debug!(
+            evidence_len = evidence.len(),
+            "Nitro attestation document generated"
+        );
 
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -104,7 +103,7 @@ impl TeeProvider for NitroProvider {
         // CBOR array(4): 0x84
         let first_byte = evidence[0];
         let valid_start = first_byte == 0xD8  // CBOR tag (2-byte form)
-            || first_byte == 0x84;             // CBOR array(4) — untagged COSE_Sign1
+            || first_byte == 0x84; // CBOR array(4) — untagged COSE_Sign1
 
         if !valid_start {
             debug!(
@@ -161,9 +160,7 @@ fn request_nsm_attestation(user_data: &[u8], nonce: &[u8]) -> Result<Vec<u8>, Ap
 /// only the enclave (holding the private key) can decrypt it.
 ///
 /// `public_key_der` must be the RSA public key in DER-encoded SPKI format.
-pub(crate) fn request_nsm_attestation_for_kms(
-    public_key_der: &[u8],
-) -> Result<Vec<u8>, AppError> {
+pub(crate) fn request_nsm_attestation_for_kms(public_key_der: &[u8]) -> Result<Vec<u8>, AppError> {
     let fd = open_nsm_device()?;
     let request = build_nsm_request(&[], &[], Some(public_key_der));
     let response = nsm_ioctl(fd.as_raw_fd(), &request)?;
@@ -181,7 +178,9 @@ impl NsmFd {
 
 impl Drop for NsmFd {
     fn drop(&mut self) {
-        unsafe { libc::close(self.0); }
+        unsafe {
+            libc::close(self.0);
+        }
     }
 }
 
@@ -235,22 +234,16 @@ fn nsm_ioctl(fd: std::os::unix::io::RawFd, request: &[u8]) -> Result<Vec<u8>, Ap
         },
     };
 
-    let ret = unsafe {
-        libc::ioctl(fd, NSM_IOCTL_REQUEST, &mut msg as *mut NsmMessage)
-    };
+    let ret = unsafe { libc::ioctl(fd, NSM_IOCTL_REQUEST, &mut msg as *mut NsmMessage) };
 
     if ret != 0 {
         let err = std::io::Error::last_os_error();
-        return Err(tee_attestation_error(format!(
-            "NSM ioctl failed: {err}"
-        )));
+        return Err(tee_attestation_error(format!("NSM ioctl failed: {err}")));
     }
 
     let actual_len = msg.response.len as usize;
     if actual_len == 0 {
-        return Err(tee_attestation_error(
-            "empty response from NSM device",
-        ));
+        return Err(tee_attestation_error("empty response from NSM device"));
     }
 
     response_buf.truncate(actual_len);
@@ -312,11 +305,7 @@ fn extract_attestation_document(response: &[u8]) -> Result<Vec<u8>, AppError> {
     let pos = response
         .windows(marker.len())
         .position(|w| w == marker)
-        .ok_or_else(|| {
-            tee_attestation_error(
-                "NSM response does not contain 'document' field",
-            )
-        })?;
+        .ok_or_else(|| tee_attestation_error("NSM response does not contain 'document' field"))?;
 
     // The byte string follows immediately after the "document" text
     let after_key = pos + marker.len();

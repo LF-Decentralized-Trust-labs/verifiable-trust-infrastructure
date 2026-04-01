@@ -1,7 +1,7 @@
 mod acl;
-mod audit;
 #[cfg(feature = "tee")]
 mod attestation;
+mod audit;
 mod auth;
 mod backup;
 mod cache;
@@ -102,10 +102,7 @@ pub fn router() -> Router<AppState> {
     // TEE attestation routes (feature-gated)
     #[cfg(feature = "tee")]
     let router = router
-        .route(
-            "/attestation/status",
-            get(attestation::status),
-        )
+        .route("/attestation/status", get(attestation::status))
         .route(
             "/attestation/report",
             get(attestation::cached_report).post(attestation::generate_report),
@@ -116,10 +113,7 @@ pub fn router() -> Router<AppState> {
             get(attestation::mnemonic_status).post(attestation::mnemonic_export),
         )
         // Auto-generated DID log (unauthenticated — public data)
-        .route(
-            "/attestation/did-log",
-            get(attestation::did_log),
-        )
+        .route("/attestation/did-log", get(attestation::did_log))
         // Bootstrapped admin credential (unauthenticated — one-time retrieval)
         .route(
             "/attestation/admin-credential",
@@ -146,10 +140,7 @@ pub fn router() -> Router<AppState> {
             "/webvh/dids/{did}",
             get(did_webvh::get_did_handler).delete(did_webvh::delete_did_handler),
         )
-        .route(
-            "/webvh/dids/{did}/log",
-            get(did_webvh::get_did_log_handler),
-        );
+        .route("/webvh/dids/{did}/log", get(did_webvh::get_did_log_handler));
 
     // VTA management routes
     let router = router

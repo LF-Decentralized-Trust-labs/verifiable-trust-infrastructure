@@ -23,12 +23,7 @@ where
     F: FnOnce() -> Result<T, AppError> + Send + 'static,
     T: Send + 'static,
 {
-    match tokio::time::timeout(
-        STORE_OP_TIMEOUT,
-        tokio::task::spawn_blocking(f),
-    )
-    .await
-    {
+    match tokio::time::timeout(STORE_OP_TIMEOUT, tokio::task::spawn_blocking(f)).await {
         Ok(Ok(result)) => result,
         Ok(Err(e)) => Err(AppError::Internal(format!("blocking task panicked: {e}"))),
         Err(_) => Err(AppError::Internal(format!(
@@ -85,7 +80,6 @@ impl Store {
             Store::Vsock(s) => s.persist().await,
         }
     }
-
 }
 
 // ===========================================================================
@@ -183,10 +177,7 @@ impl KeyspaceHandle {
         }
     }
 
-    pub async fn prefix_keys(
-        &self,
-        prefix: impl Into<Vec<u8>>,
-    ) -> Result<Vec<Vec<u8>>, AppError> {
+    pub async fn prefix_keys(&self, prefix: impl Into<Vec<u8>>) -> Result<Vec<Vec<u8>>, AppError> {
         match self {
             KeyspaceHandle::Local(h) => h.prefix_keys(prefix).await,
             #[cfg(feature = "vsock-store")]
@@ -267,9 +258,13 @@ impl LocalKeyspaceHandle {
 
     pub fn is_encrypted(&self) -> bool {
         #[cfg(feature = "encryption")]
-        { self.encryption_key.is_some() }
+        {
+            self.encryption_key.is_some()
+        }
         #[cfg(not(feature = "encryption"))]
-        { false }
+        {
+            false
+        }
     }
 
     pub async fn insert<V: Serialize>(
@@ -292,20 +287,18 @@ impl LocalKeyspaceHandle {
         let ks = self.keyspace.clone();
         #[cfg(feature = "encryption")]
         let enc_key = self.encryption_key.clone();
-        blocking_with_timeout(move || {
-            match ks.get(key)? {
-                Some(bytes) => {
-                    #[cfg(feature = "encryption")]
-                    let bytes = {
-                        let k = enc_key.as_ref().map(|arc| &***arc);
-                        encryption::maybe_decrypt_bytes(k, &bytes)?
-                    };
-                    #[cfg(not(feature = "encryption"))]
-                    let bytes = bytes.to_vec();
-                    Ok(Some(serde_json::from_slice(&bytes)?))
-                }
-                None => Ok(None),
+        blocking_with_timeout(move || match ks.get(key)? {
+            Some(bytes) => {
+                #[cfg(feature = "encryption")]
+                let bytes = {
+                    let k = enc_key.as_ref().map(|arc| &***arc);
+                    encryption::maybe_decrypt_bytes(k, &bytes)?
+                };
+                #[cfg(not(feature = "encryption"))]
+                let bytes = bytes.to_vec();
+                Ok(Some(serde_json::from_slice(&bytes)?))
             }
+            None => Ok(None),
         })
         .await
     }
@@ -332,20 +325,18 @@ impl LocalKeyspaceHandle {
         let ks = self.keyspace.clone();
         #[cfg(feature = "encryption")]
         let enc_key = self.encryption_key.clone();
-        blocking_with_timeout(move || {
-            match ks.get(key)? {
-                Some(bytes) => {
-                    #[cfg(feature = "encryption")]
-                    let bytes = {
-                        let k = enc_key.as_ref().map(|arc| &***arc);
-                        encryption::maybe_decrypt_bytes(k, &bytes)?
-                    };
-                    #[cfg(not(feature = "encryption"))]
-                    let bytes = bytes.to_vec();
-                    Ok(Some(bytes))
-                }
-                None => Ok(None),
+        blocking_with_timeout(move || match ks.get(key)? {
+            Some(bytes) => {
+                #[cfg(feature = "encryption")]
+                let bytes = {
+                    let k = enc_key.as_ref().map(|arc| &***arc);
+                    encryption::maybe_decrypt_bytes(k, &bytes)?
+                };
+                #[cfg(not(feature = "encryption"))]
+                let bytes = bytes.to_vec();
+                Ok(Some(bytes))
             }
+            None => Ok(None),
         })
         .await
     }
@@ -376,10 +367,7 @@ impl LocalKeyspaceHandle {
         .await
     }
 
-    pub async fn prefix_keys(
-        &self,
-        prefix: impl Into<Vec<u8>>,
-    ) -> Result<Vec<Vec<u8>>, AppError> {
+    pub async fn prefix_keys(&self, prefix: impl Into<Vec<u8>>) -> Result<Vec<Vec<u8>>, AppError> {
         let prefix = prefix.into();
         let ks = self.keyspace.clone();
         blocking_with_timeout(move || {
@@ -429,7 +417,9 @@ impl LocalKeyspaceHandle {
             }
         }
         #[cfg(not(feature = "encryption"))]
-        { Ok(plaintext) }
+        {
+            Ok(plaintext)
+        }
     }
 }
 
@@ -548,10 +538,7 @@ mod tests {
         let enc_key = [0x42; 32];
 
         // Write with encryption
-        let ks_enc = store
-            .keyspace("secrets")
-            .unwrap()
-            .with_encryption(enc_key);
+        let ks_enc = store.keyspace("secrets").unwrap().with_encryption(enc_key);
         ks_enc
             .insert_raw("test", b"plaintext secret".to_vec())
             .await

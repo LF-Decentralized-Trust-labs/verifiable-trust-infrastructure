@@ -27,7 +27,9 @@ pub async fn cmd_context_bootstrap(
     admin_label: Option<String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut ctx_req = CreateContextRequest::new(id, name);
-    if let Some(desc) = description { ctx_req = ctx_req.description(desc); }
+    if let Some(desc) = description {
+        ctx_req = ctx_req.description(desc);
+    }
     let ctx = client.create_context(ctx_req).await?;
     println!("Context created:");
     println!("  ID:        {}", ctx.id);
@@ -35,7 +37,9 @@ pub async fn cmd_context_bootstrap(
     println!("  Base Path: {}", ctx.base_path);
 
     let mut cred_req = GenerateCredentialsRequest::new("admin").contexts(vec![id.to_string()]);
-    if let Some(l) = admin_label { cred_req = cred_req.label(l); }
+    if let Some(l) = admin_label {
+        cred_req = cred_req.label(l);
+    }
     let resp = client.generate_credentials(cred_req).await?;
     println!();
     println!("Admin credential created:");
@@ -204,7 +208,10 @@ pub async fn cmd_context_delete(
         || !preview.acl_entries_updated.is_empty();
 
     if has_resources {
-        println!("Deleting context '{}' will remove the following resources:\n", id);
+        println!(
+            "Deleting context '{}' will remove the following resources:\n",
+            id
+        );
 
         if !preview.keys.is_empty() {
             println!("  Keys ({}):", preview.keys.len());
@@ -221,7 +228,10 @@ pub async fn cmd_context_delete(
         }
 
         if !preview.acl_entries_removed.is_empty() {
-            println!("  ACL entries removed ({}):", preview.acl_entries_removed.len());
+            println!(
+                "  ACL entries removed ({}):",
+                preview.acl_entries_removed.len()
+            );
             for did in &preview.acl_entries_removed {
                 println!("    - {did}");
             }
@@ -270,13 +280,17 @@ pub async fn cmd_context_provision(
     // 1. Create the context
     eprintln!("Creating context '{id}'...");
     let mut ctx_req = CreateContextRequest::new(id, name);
-    if let Some(desc) = description { ctx_req = ctx_req.description(desc); }
+    if let Some(desc) = description {
+        ctx_req = ctx_req.description(desc);
+    }
     client.create_context(ctx_req).await?;
 
     // 2. Generate admin credentials scoped to this context
     eprintln!("Generating admin credentials...");
     let mut cred_req = GenerateCredentialsRequest::new("admin").contexts(vec![id.to_string()]);
-    if let Some(l) = admin_label { cred_req = cred_req.label(l); }
+    if let Some(l) = admin_label {
+        cred_req = cred_req.label(l);
+    }
     let cred_resp = client.generate_credentials(cred_req).await?;
 
     // 3. Fetch VTA config for URL/DID
@@ -302,7 +316,12 @@ pub async fn cmd_context_provision(
         eprintln!("Fetching DID key secrets...");
         let mut secrets: Vec<SecretEntry> = Vec::new();
         // Signing key
-        secrets.push(client.get_key_secret(&did_result.signing_key_id).await?.into());
+        secrets.push(
+            client
+                .get_key_secret(&did_result.signing_key_id)
+                .await?
+                .into(),
+        );
         // Key-agreement key
         secrets.push(client.get_key_secret(&did_result.ka_key_id).await?.into());
         // Pre-rotation keys
@@ -404,9 +423,7 @@ pub async fn cmd_context_reprovision(
         credential_from_key(client, kid, vta_did, config.public_url.as_deref()).await?
     } else {
         // Interactive: list existing Ed25519 keys and let user choose
-        let keys_resp = client
-            .list_keys(0, 10000, Some("active"), Some(id))
-            .await?;
+        let keys_resp = client.list_keys(0, 10000, Some("active"), Some(id)).await?;
         let ed25519_keys: Vec<_> = keys_resp
             .keys
             .iter()

@@ -55,10 +55,7 @@ impl VtaError {
             404 => Self::NotFound(body),
             400 | 422 => Self::Validation(body),
             409 => Self::Conflict(body),
-            s if s >= 500 => Self::Server {
-                status: s,
-                body,
-            },
+            s if s >= 500 => Self::Server { status: s, body },
             s => Self::Other(format!("{s}: {body}")),
         }
     }

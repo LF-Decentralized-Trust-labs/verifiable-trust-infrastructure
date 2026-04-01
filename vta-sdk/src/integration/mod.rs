@@ -124,30 +124,28 @@ pub async fn startup(
     cache: &(impl SecretCache + ?Sized),
 ) -> Result<StartupResult, VtaIntegrationError> {
     match authenticate(config).await {
-        Ok(client) => {
-            match client.fetch_did_secrets_bundle(&config.context).await {
-                Ok(bundle) => {
-                    if let Err(e) = cache.store(&bundle).await {
-                        tracing::warn!("Failed to cache VTA secrets locally: {e}");
-                    }
-                    tracing::info!(
-                        context = config.context,
-                        secrets = bundle.secrets.len(),
-                        "Loaded fresh secrets from VTA",
-                    );
-                    Ok(StartupResult {
-                        did: bundle.did.clone(),
-                        bundle,
-                        source: SecretSource::Vta,
-                        client: Some(client),
-                    })
+        Ok(client) => match client.fetch_did_secrets_bundle(&config.context).await {
+            Ok(bundle) => {
+                if let Err(e) = cache.store(&bundle).await {
+                    tracing::warn!("Failed to cache VTA secrets locally: {e}");
                 }
-                Err(e) => {
-                    tracing::warn!("VTA reachable but secret fetch failed: {e}");
-                    load_from_cache(cache, &config.context).await
-                }
+                tracing::info!(
+                    context = config.context,
+                    secrets = bundle.secrets.len(),
+                    "Loaded fresh secrets from VTA",
+                );
+                Ok(StartupResult {
+                    did: bundle.did.clone(),
+                    bundle,
+                    source: SecretSource::Vta,
+                    client: Some(client),
+                })
             }
-        }
+            Err(e) => {
+                tracing::warn!("VTA reachable but secret fetch failed: {e}");
+                load_from_cache(cache, &config.context).await
+            }
+        },
         Err(e) => {
             tracing::warn!("VTA unreachable ({e}), falling back to cached secrets");
             load_from_cache(cache, &config.context).await

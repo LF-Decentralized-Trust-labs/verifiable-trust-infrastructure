@@ -196,16 +196,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 4. Send a trust-ping
     // ---------------------------------------------------------------
     info!("sending trust-ping to mediator...");
-    let ping = TrustPing::default()
-        .generate_ping_message(Some(&did), &args.mediator_did, true)?;
+    let ping = TrustPing::default().generate_ping_message(Some(&did), &args.mediator_did, true)?;
 
     let (packed, _) = atm
-        .pack_encrypted(
-            &ping,
-            &args.mediator_did,
-            Some(&did),
-            Some(&did),
-        )
+        .pack_encrypted(&ping, &args.mediator_did, Some(&did), Some(&did))
         .await
         .map_err(|e| format!("pack_encrypted failed: {e}"))?;
 
@@ -218,9 +212,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ---------------------------------------------------------------
     // 5. Listen for inbound messages
     // ---------------------------------------------------------------
-    let mut rx = atm
-        .get_inbound_channel()
-        .ok_or("no inbound channel")?;
+    let mut rx = atm.get_inbound_channel().ok_or("no inbound channel")?;
 
     info!(
         listen_secs = args.listen_secs,

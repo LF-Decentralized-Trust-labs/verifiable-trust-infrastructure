@@ -20,8 +20,9 @@ pub trait SecretCache: Send + Sync {
     /// Returns `Ok(None)` when no cached data exists (first run before VTA contact).
     fn load(
         &self,
-    ) -> impl Future<Output = Result<Option<DidSecretsBundle>, Box<dyn std::error::Error + Send + Sync>>>
-           + Send;
+    ) -> impl Future<
+        Output = Result<Option<DidSecretsBundle>, Box<dyn std::error::Error + Send + Sync>>,
+    > + Send;
 }
 
 use std::future::Future;

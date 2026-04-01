@@ -64,7 +64,6 @@ impl Drop for BootstrappedSecrets {
     }
 }
 
-
 /// Well-known keys in the bootstrap keyspace.
 ///
 /// The data key is generated via KMS `GenerateDataKey` (with attestation when
@@ -101,9 +100,9 @@ pub async fn bootstrap_secrets(
             Ok(data_key) => {
                 let seed = aes_gcm_decrypt(&data_key, &seed_ciphertext)?;
                 let jwt_bytes = aes_gcm_decrypt(&data_key, &jwt_ciphertext)?;
-                let jwt_key: [u8; 32] = jwt_bytes.try_into().map_err(|_| {
-                    tee_attestation_error("JWT key must be exactly 32 bytes")
-                })?;
+                let jwt_key: [u8; 32] = jwt_bytes
+                    .try_into()
+                    .map_err(|_| tee_attestation_error("JWT key must be exactly 32 bytes"))?;
 
                 verify_jwt_fingerprint(&bs_ks, &jwt_key).await?;
                 info!("secrets decrypted from KMS — subsequent boot");
@@ -161,8 +160,12 @@ pub async fn bootstrap_secrets(
     let jwt_ciphertext = aes_gcm_encrypt(&data_key, &jwt_key)?;
 
     bs_ks.insert_raw(BOOTSTRAP_DK_CT_KEY, dk_ciphertext).await?;
-    bs_ks.insert_raw(BOOTSTRAP_SEED_CT_KEY, seed_ciphertext).await?;
-    bs_ks.insert_raw(BOOTSTRAP_JWT_CT_KEY, jwt_ciphertext).await?;
+    bs_ks
+        .insert_raw(BOOTSTRAP_SEED_CT_KEY, seed_ciphertext)
+        .await?;
+    bs_ks
+        .insert_raw(BOOTSTRAP_JWT_CT_KEY, jwt_ciphertext)
+        .await?;
     store_jwt_fingerprint(&bs_ks, &jwt_key).await?;
 
     // Flush to ensure ciphertexts survive if the enclave crashes during startup
@@ -212,8 +215,12 @@ pub async fn re_encrypt_bootstrap_secrets(
 
     // Store everything in the bootstrap keyspace
     bs_ks.insert_raw(BOOTSTRAP_DK_CT_KEY, dk_ciphertext).await?;
-    bs_ks.insert_raw(BOOTSTRAP_SEED_CT_KEY, seed_ciphertext).await?;
-    bs_ks.insert_raw(BOOTSTRAP_JWT_CT_KEY, jwt_ciphertext).await?;
+    bs_ks
+        .insert_raw(BOOTSTRAP_SEED_CT_KEY, seed_ciphertext)
+        .await?;
+    bs_ks
+        .insert_raw(BOOTSTRAP_JWT_CT_KEY, jwt_ciphertext)
+        .await?;
     store_jwt_fingerprint(&bs_ks, jwt_key).await?;
 
     // Flush immediately so ciphertexts survive if enclave restarts
@@ -243,7 +250,12 @@ async fn store_jwt_fingerprint(
     key: &[u8; 32],
 ) -> Result<(), AppError> {
     let fingerprint = jwt_fingerprint(key);
-    bs_ks.insert_raw(BOOTSTRAP_JWT_FINGERPRINT_KEY, fingerprint.as_bytes().to_vec()).await?;
+    bs_ks
+        .insert_raw(
+            BOOTSTRAP_JWT_FINGERPRINT_KEY,
+            fingerprint.as_bytes().to_vec(),
+        )
+        .await?;
     debug!(fingerprint = %fingerprint, "JWT key fingerprint stored");
     Ok(())
 }
@@ -295,15 +307,13 @@ pub(crate) fn derive_storage_key(seed: &[u8], salt: &str) -> [u8; 32] {
     type HmacSha256 = Hmac<Sha256>;
 
     // HKDF-Extract: PRK = HMAC-SHA256(salt, seed)
-    let mut mac = HmacSha256::new_from_slice(salt.as_bytes())
-        .expect("HMAC accepts any key length");
+    let mut mac = HmacSha256::new_from_slice(salt.as_bytes()).expect("HMAC accepts any key length");
     mac.update(seed);
     let prk = mac.finalize().into_bytes();
 
     // HKDF-Expand: OKM = HMAC-SHA256(PRK, info || 0x01)
     let info = b"aes-256-gcm-storage";
-    let mut mac = HmacSha256::new_from_slice(&prk)
-        .expect("HMAC accepts any key length");
+    let mut mac = HmacSha256::new_from_slice(&prk).expect("HMAC accepts any key length");
     mac.update(info);
     mac.update(&[0x01]);
     let okm = mac.finalize().into_bytes();
@@ -329,32 +339,24 @@ async fn kms_client(config: &TeeKmsConfig) -> aws_sdk_kms::Client {
 /// Generate an ephemeral RSA-2048 keypair and obtain an NSM attestation
 /// document binding the public key. Returns `(private_key, recipient_info)`
 /// for use with KMS attested operations.
-fn nsm_attested_recipient() -> Result<
-    (rsa::RsaPrivateKey, aws_sdk_kms::types::RecipientInfo),
-    AppError,
-> {
+fn nsm_attested_recipient()
+-> Result<(rsa::RsaPrivateKey, aws_sdk_kms::types::RecipientInfo), AppError> {
     use rsa::pkcs8::EncodePublicKey;
 
     let mut rng = rsa::rand_core::OsRng;
-    let private_key = rsa::RsaPrivateKey::new(&mut rng, 2048).map_err(|e| {
-        tee_attestation_error(format!("RSA key generation failed: {e}"))
-    })?;
+    let private_key = rsa::RsaPrivateKey::new(&mut rng, 2048)
+        .map_err(|e| tee_attestation_error(format!("RSA key generation failed: {e}")))?;
 
     let public_key_der = private_key
         .to_public_key()
         .to_public_key_der()
-        .map_err(|e| {
-            tee_attestation_error(format!("RSA public key DER encoding failed: {e}"))
-        })?;
+        .map_err(|e| tee_attestation_error(format!("RSA public key DER encoding failed: {e}")))?;
 
-    let attestation_doc =
-        super::nitro::request_nsm_attestation_for_kms(public_key_der.as_ref())?;
+    let attestation_doc = super::nitro::request_nsm_attestation_for_kms(public_key_der.as_ref())?;
 
     let recipient = aws_sdk_kms::types::RecipientInfo::builder()
         .attestation_document(aws_sdk_kms::primitives::Blob::new(attestation_doc))
-        .key_encryption_algorithm(
-            aws_sdk_kms::types::KeyEncryptionMechanism::RsaesOaepSha256,
-        )
+        .key_encryption_algorithm(aws_sdk_kms::types::KeyEncryptionMechanism::RsaesOaepSha256)
         .build();
 
     Ok((private_key, recipient))
@@ -430,10 +432,7 @@ async fn kms_decrypt_attested(
 }
 
 /// Direct KMS Decrypt without the Recipient parameter.
-async fn kms_decrypt_direct(
-    config: &TeeKmsConfig,
-    ciphertext: &[u8],
-) -> Result<Vec<u8>, AppError> {
+async fn kms_decrypt_direct(config: &TeeKmsConfig, ciphertext: &[u8]) -> Result<Vec<u8>, AppError> {
     let client = kms_client(config).await;
 
     let resp = client
@@ -457,9 +456,7 @@ async fn kms_decrypt_direct(
 ///
 /// Without NSM, calls `GenerateDataKey` directly (KMS returns plaintext in
 /// the response — suitable for development/simulated mode only).
-async fn kms_generate_data_key(
-    config: &TeeKmsConfig,
-) -> Result<(Vec<u8>, [u8; 32]), AppError> {
+async fn kms_generate_data_key(config: &TeeKmsConfig) -> Result<(Vec<u8>, [u8; 32]), AppError> {
     if std::path::Path::new("/dev/nsm").exists() {
         match kms_generate_data_key_attested(config).await {
             Ok(result) => {
@@ -501,11 +498,14 @@ async fn kms_generate_data_key_attested(
         .to_vec();
 
     let data_key_vec = unwrap_cms_response(resp.ciphertext_for_recipient(), &private_key)?;
-    let data_key: [u8; 32] = data_key_vec.try_into().map_err(|_| {
-        tee_attestation_error("data key is not 32 bytes")
-    })?;
+    let data_key: [u8; 32] = data_key_vec
+        .try_into()
+        .map_err(|_| tee_attestation_error("data key is not 32 bytes"))?;
 
-    debug!(kms_ct_len = kms_ciphertext.len(), "obtained attested data key");
+    debug!(
+        kms_ct_len = kms_ciphertext.len(),
+        "obtained attested data key"
+    );
     Ok((kms_ciphertext, data_key))
 }
 
@@ -532,9 +532,10 @@ async fn kms_generate_data_key_direct(
     let plaintext = resp
         .plaintext()
         .ok_or_else(|| tee_attestation_error("GenerateDataKey returned no Plaintext"))?;
-    let data_key: [u8; 32] = plaintext.as_ref().try_into().map_err(|_| {
-        tee_attestation_error("data key is not 32 bytes")
-    })?;
+    let data_key: [u8; 32] = plaintext
+        .as_ref()
+        .try_into()
+        .map_err(|_| tee_attestation_error("data key is not 32 bytes"))?;
 
     Ok((kms_ciphertext, data_key))
 }
@@ -545,16 +546,16 @@ async fn kms_generate_data_key_direct(
 
 /// AES-256-GCM encrypt, returning `[nonce: 12 bytes][ciphertext]`.
 fn aes_gcm_encrypt(key: &[u8; 32], plaintext: &[u8]) -> Result<Vec<u8>, AppError> {
-    use aes_gcm::{Aes256Gcm, KeyInit, aead::Aead};
     use aes_gcm::aead::generic_array::GenericArray;
+    use aes_gcm::{Aes256Gcm, KeyInit, aead::Aead};
 
     let cipher = Aes256Gcm::new(GenericArray::from_slice(key));
     let mut nonce_bytes = [0u8; 12];
     rand::fill(&mut nonce_bytes);
     let nonce = GenericArray::from_slice(&nonce_bytes);
-    let ciphertext = cipher.encrypt(nonce, plaintext).map_err(|e| {
-        tee_attestation_error(format!("AES-GCM encryption failed: {e}"))
-    })?;
+    let ciphertext = cipher
+        .encrypt(nonce, plaintext)
+        .map_err(|e| tee_attestation_error(format!("AES-GCM encryption failed: {e}")))?;
 
     let mut out = Vec::with_capacity(12 + ciphertext.len());
     out.extend_from_slice(&nonce_bytes);
@@ -564,8 +565,8 @@ fn aes_gcm_encrypt(key: &[u8; 32], plaintext: &[u8]) -> Result<Vec<u8>, AppError
 
 /// AES-256-GCM decrypt a `[nonce: 12 bytes][ciphertext]` blob.
 fn aes_gcm_decrypt(key: &[u8], blob: &[u8]) -> Result<Vec<u8>, AppError> {
-    use aes_gcm::{Aes256Gcm, KeyInit, aead::Aead};
     use aes_gcm::aead::generic_array::GenericArray;
+    use aes_gcm::{Aes256Gcm, KeyInit, aead::Aead};
 
     if key.len() != 32 {
         return Err(tee_attestation_error(format!(
@@ -580,9 +581,9 @@ fn aes_gcm_decrypt(key: &[u8], blob: &[u8]) -> Result<Vec<u8>, AppError> {
     let nonce = GenericArray::from_slice(&blob[..12]);
     let ciphertext = &blob[12..];
     let cipher = Aes256Gcm::new(GenericArray::from_slice(key));
-    cipher.decrypt(nonce, ciphertext).map_err(|e| {
-        tee_attestation_error(format!("AES-GCM decryption failed: {e}"))
-    })
+    cipher
+        .decrypt(nonce, ciphertext)
+        .map_err(|e| tee_attestation_error(format!("AES-GCM decryption failed: {e}")))
 }
 
 // ---------------------------------------------------------------------------
@@ -623,9 +624,7 @@ fn decrypt_cms_envelope(
             let padding = Oaep::new_with_mgf_hash::<sha2::Sha256, sha1::Sha1>();
             private_key.decrypt(padding, &fields.encrypted_key)
         })
-        .map_err(|e| {
-            tee_attestation_error(format!("RSA-OAEP decryption of CEK failed: {e}"))
-        })?;
+        .map_err(|e| tee_attestation_error(format!("RSA-OAEP decryption of CEK failed: {e}")))?;
 
     debug!(
         cek_len = cek.len(),
@@ -662,9 +661,8 @@ fn decrypt_cms_envelope(
         }
 
         let mut buf = fields.ciphertext.clone();
-        let decryptor = Aes256CbcDec::new_from_slices(&cek, &fields.iv).map_err(|e| {
-            tee_attestation_error(format!("AES-256-CBC init failed: {e}"))
-        })?;
+        let decryptor = Aes256CbcDec::new_from_slices(&cek, &fields.iv)
+            .map_err(|e| tee_attestation_error(format!("AES-256-CBC init failed: {e}")))?;
         let plaintext = decryptor
             .decrypt_padded_mut::<cbc::cipher::block_padding::Pkcs7>(&mut buf)
             .map_err(|e| {
@@ -673,8 +671,8 @@ fn decrypt_cms_envelope(
         plaintext.to_vec()
     } else if fields.content_encryption_oid == aes_256_gcm_oid {
         // AES-256-GCM
-        use aes_gcm::{AesGcm, KeyInit, aead::Aead};
         use aes_gcm::aead::generic_array::GenericArray;
+        use aes_gcm::{AesGcm, KeyInit, aead::Aead};
 
         match fields.iv.len() {
             12 => {
@@ -682,20 +680,22 @@ fn decrypt_cms_envelope(
                     GenericArray::from_slice(&cek),
                 );
                 cipher
-                    .decrypt(GenericArray::from_slice(&fields.iv), fields.ciphertext.as_ref())
-                    .map_err(|e| {
-                        tee_attestation_error(format!("AES-GCM decryption failed: {e}"))
-                    })?
+                    .decrypt(
+                        GenericArray::from_slice(&fields.iv),
+                        fields.ciphertext.as_ref(),
+                    )
+                    .map_err(|e| tee_attestation_error(format!("AES-GCM decryption failed: {e}")))?
             }
             16 => {
                 let cipher = AesGcm::<aes_gcm::aes::Aes256, aes_gcm::aead::consts::U16>::new(
                     GenericArray::from_slice(&cek),
                 );
                 cipher
-                    .decrypt(GenericArray::from_slice(&fields.iv), fields.ciphertext.as_ref())
-                    .map_err(|e| {
-                        tee_attestation_error(format!("AES-GCM decryption failed: {e}"))
-                    })?
+                    .decrypt(
+                        GenericArray::from_slice(&fields.iv),
+                        fields.ciphertext.as_ref(),
+                    )
+                    .map_err(|e| tee_attestation_error(format!("AES-GCM decryption failed: {e}")))?
             }
             n => {
                 return Err(tee_attestation_error(format!(
@@ -710,7 +710,10 @@ fn decrypt_cms_envelope(
         )));
     };
 
-    debug!(plaintext_len = plaintext.len(), "CMS envelope decrypted successfully");
+    debug!(
+        plaintext_len = plaintext.len(),
+        "CMS envelope decrypted successfully"
+    );
     Ok(plaintext)
 }
 
@@ -812,10 +815,11 @@ mod cms_der {
         Ok(ek_value.to_vec())
     }
 
+    /// (algorithm_oid, iv_or_nonce, ciphertext) parsed from CMS EncryptedContentInfo.
+    type EncryptedContentParts = (Vec<u8>, Vec<u8>, Vec<u8>);
+
     /// Returns (algorithm_oid, iv_or_nonce, ciphertext).
-    fn parse_encrypted_content_info(
-        eci_data: &[u8],
-    ) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>), AppError> {
+    fn parse_encrypted_content_info(eci_data: &[u8]) -> Result<EncryptedContentParts, AppError> {
         let mut pos = 0;
         // contentType OID — skip
         let _ = read_tlv(eci_data, &mut pos, "ECI contentType")?;
@@ -839,7 +843,9 @@ mod cms_der {
         pos += 1;
 
         if pos >= eci_data.len() {
-            return Err(tee_attestation_error("CMS: truncated encryptedContent length"));
+            return Err(tee_attestation_error(
+                "CMS: truncated encryptedContent length",
+            ));
         }
         let first_len = eci_data[pos];
         pos += 1;
@@ -1119,10 +1125,10 @@ mod tests {
     /// decrypt_cms_envelope round-trip without needing real KMS or NSM.
     #[test]
     fn test_cms_envelope_roundtrip() {
-        use aes_gcm::{Aes256Gcm, KeyInit, aead::Aead};
         use aes_gcm::aead::generic_array::GenericArray;
-        use rsa::{RsaPrivateKey, Oaep};
+        use aes_gcm::{Aes256Gcm, KeyInit, aead::Aead};
         use rsa::pkcs8::EncodePublicKey;
+        use rsa::{Oaep, RsaPrivateKey};
 
         // Generate RSA keypair (the "ephemeral" key the enclave would create)
         let mut rng = rsa::rand_core::OsRng;

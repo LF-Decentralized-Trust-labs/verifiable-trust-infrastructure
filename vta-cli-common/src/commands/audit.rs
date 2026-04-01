@@ -38,9 +38,7 @@ pub async fn cmd_list_audit_logs(
             let outcome_style = if entry.outcome == "success" {
                 Style::default().fg(Color::Green)
             } else if entry.outcome.starts_with("denied") {
-                Style::default()
-                    .fg(Color::Red)
-                    .add_modifier(Modifier::BOLD)
+                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)
             } else {
                 Style::default().fg(Color::Yellow)
             };
@@ -121,7 +119,7 @@ pub async fn cmd_list_audit_logs(
             Constraint::Length(19), // Timestamp
             Constraint::Length(22), // Action
             Constraint::Length(30), // Actor
-            Constraint::Min(16),   // Resource
+            Constraint::Min(16),    // Resource
             Constraint::Length(20), // Outcome
         ],
     )
@@ -143,9 +141,7 @@ pub async fn cmd_list_audit_logs(
 }
 
 /// Display the current audit retention period.
-pub async fn cmd_get_retention(
-    client: &VtaClient,
-) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn cmd_get_retention(client: &VtaClient) -> Result<(), Box<dyn std::error::Error>> {
     let result = client.get_audit_retention().await?;
     println!("\n  \x1b[1mAudit Retention\x1b[0m");
     println!(

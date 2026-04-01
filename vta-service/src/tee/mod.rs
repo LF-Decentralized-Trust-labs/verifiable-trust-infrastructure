@@ -1,6 +1,6 @@
 pub mod admin_bootstrap;
-pub mod did_autogen;
 mod detect;
+pub mod did_autogen;
 pub mod kms_bootstrap;
 pub mod mnemonic_guard;
 pub mod provider;
@@ -75,14 +75,18 @@ pub fn init_tee(config: &TeeConfig) -> Result<Option<TeeState>, AppError> {
                 }
                 None => {
                     if config.mode == TeeMode::Required {
-                        error!("TEE mode is 'required' but no TEE hardware detected — refusing to start");
+                        error!(
+                            "TEE mode is 'required' but no TEE hardware detected — refusing to start"
+                        );
                         Err(tee_attestation_error(
                             "TEE mode is 'required' but no TEE hardware was detected. \
                              Set tee.mode = 'optional' or 'disabled' to run without TEE, \
                              or deploy on TEE-capable hardware (AMD SEV-SNP, AWS Nitro).",
                         ))
                     } else {
-                        warn!("TEE mode is 'optional' but no TEE hardware detected — attestation will not be available");
+                        warn!(
+                            "TEE mode is 'optional' but no TEE hardware detected — attestation will not be available"
+                        );
                         Ok(None)
                     }
                 }

@@ -133,7 +133,8 @@ pub async fn cmd_webvh_did_create(
         println!("DID Document:");
         println!(
             "{}",
-            serde_json::to_string_pretty(did_document).unwrap_or_else(|_| format!("{did_document}"))
+            serde_json::to_string_pretty(did_document)
+                .unwrap_or_else(|_| format!("{did_document}"))
         );
     }
     if let Some(ref log_entry) = result.log_entry {

@@ -60,7 +60,6 @@ pub struct TeeContext {
 #[cfg(not(feature = "tee"))]
 pub struct TeeContext(());
 
-
 /// Trigger a soft restart after a short delay, allowing the current
 /// response to be sent before threads shut down.
 pub fn trigger_restart(restart_tx: &watch::Sender<bool>) {
@@ -269,7 +268,8 @@ pub async fn run(
 
         // Shared DIDComm bridge (still used by REST handlers for WebVH request-response)
         #[cfg(feature = "didcomm")]
-        let didcomm_bridge: Arc<tokio::sync::RwLock<Option<DIDCommBridge>>> = Arc::new(tokio::sync::RwLock::new(None));
+        let didcomm_bridge: Arc<tokio::sync::RwLock<Option<DIDCommBridge>>> =
+            Arc::new(tokio::sync::RwLock::new(None));
 
         // Build VtaState for the DIDComm service router
         #[cfg(feature = "didcomm")]
@@ -388,10 +388,14 @@ pub async fn run(
                         }],
                     };
 
-                    let router = messaging::router::build_router(Arc::clone(vta_state))
-                        .map_err(|e| AppError::Internal(format!("failed to build DIDComm router: {e}")))?;
+                    let router =
+                        messaging::router::build_router(Arc::clone(vta_state)).map_err(|e| {
+                            AppError::Internal(format!("failed to build DIDComm router: {e}"))
+                        })?;
 
-                    match DIDCommService::start(service_config, router, didcomm_shutdown.clone()).await {
+                    match DIDCommService::start(service_config, router, didcomm_shutdown.clone())
+                        .await
+                    {
                         Ok(service) => {
                             info!("DIDComm service started");
                             Some(service)
@@ -598,8 +602,7 @@ fn run_rest_thread(
                     .on_response(DefaultOnResponse::new().level(Level::INFO)),
             );
 
-        let app = traced_routes
-            .merge(routes::health_router().with_state(state));
+        let app = traced_routes.merge(routes::health_router().with_state(state));
 
         let shutdown_rx = shutdown_rx.clone();
         axum::serve(listener, app)
@@ -763,14 +766,24 @@ async fn init_auth(
             Ok(k) => k,
             Err(e) => {
                 warn!("failed to load JWT signing key: {e} — auth endpoints will not work");
-                return (Some(did_resolver), Some(Arc::new(secrets_resolver)), None, None);
+                return (
+                    Some(did_resolver),
+                    Some(Arc::new(secrets_resolver)),
+                    None,
+                    None,
+                );
             }
         },
         None => {
             warn!(
                 "auth.jwt_signing_key not configured — auth endpoints will not work (run setup first)"
             );
-            return (Some(did_resolver), Some(Arc::new(secrets_resolver)), None, None);
+            return (
+                Some(did_resolver),
+                Some(Arc::new(secrets_resolver)),
+                None,
+                None,
+            );
         }
     };
 
@@ -784,13 +797,15 @@ async fn init_auth(
             .build();
         match tdk_config {
             Ok(cfg) => match TDKSharedState::new(cfg).await {
-                Ok(tdk) => match ATM::new(ATMConfig::builder().build().unwrap(), Arc::new(tdk)).await {
-                    Ok(a) => Some(a),
-                    Err(e) => {
-                        warn!("failed to create ATM for auth unpack: {e}");
-                        None
+                Ok(tdk) => {
+                    match ATM::new(ATMConfig::builder().build().unwrap(), Arc::new(tdk)).await {
+                        Ok(a) => Some(a),
+                        Err(e) => {
+                            warn!("failed to create ATM for auth unpack: {e}");
+                            None
+                        }
                     }
-                },
+                }
                 Err(e) => {
                     warn!("failed to create TDK shared state: {e}");
                     None

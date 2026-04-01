@@ -162,7 +162,8 @@ pub async fn run_create_did(
     };
 
     let did_resolver = DIDCacheClient::new(DIDCacheConfigBuilder::default().build()).await?;
-    let no_bridge: Arc<tokio::sync::RwLock<Option<DIDCommBridge>>> = Arc::new(tokio::sync::RwLock::new(None));
+    let no_bridge: Arc<tokio::sync::RwLock<Option<DIDCommBridge>>> =
+        Arc::new(tokio::sync::RwLock::new(None));
     let result = operations::did_webvh::create_did_webvh(
         &keys_ks,
         &contexts_ks,
@@ -249,7 +250,8 @@ pub async fn run_delete_did(
 
     let auth = cli_super_admin();
     let did_resolver = DIDCacheClient::new(DIDCacheConfigBuilder::default().build()).await?;
-    let no_bridge: Arc<tokio::sync::RwLock<Option<DIDCommBridge>>> = Arc::new(tokio::sync::RwLock::new(None));
+    let no_bridge: Arc<tokio::sync::RwLock<Option<DIDCommBridge>>> =
+        Arc::new(tokio::sync::RwLock::new(None));
     operations::did_webvh::delete_did_webvh(
         &webvh_ks,
         &keys_ks,

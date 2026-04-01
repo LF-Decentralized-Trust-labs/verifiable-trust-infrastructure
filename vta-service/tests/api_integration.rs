@@ -50,13 +50,10 @@ impl TestApp {
         let webvh_ks = store.keyspace("webvh").unwrap();
 
         let jwt_seed = [0x42u8; 32];
-        let jwt_keys = Arc::new(
-            JwtKeys::from_ed25519_bytes(&jwt_seed, "VTA").expect("jwt keys"),
-        );
+        let jwt_keys = Arc::new(JwtKeys::from_ed25519_bytes(&jwt_seed, "VTA").expect("jwt keys"));
 
-        let seed_store: Arc<dyn vta_service::keys::seed_store::SeedStore> = Arc::new(
-            TestSeedStore(vec![0xABu8; 32]),
-        );
+        let seed_store: Arc<dyn vta_service::keys::seed_store::SeedStore> =
+            Arc::new(TestSeedStore(vec![0xABu8; 32]));
 
         let mut config: AppConfig = toml::from_str(&format!(
             r#"
@@ -123,8 +120,8 @@ impl TestApp {
             .expect("request failed");
         let status = resp.status();
         let body = resp.into_body().collect().await.unwrap().to_bytes();
-        let json: Value =
-            serde_json::from_slice(&body).unwrap_or_else(|_| json!({"raw": String::from_utf8_lossy(&body).to_string()}));
+        let json: Value = serde_json::from_slice(&body)
+            .unwrap_or_else(|_| json!({"raw": String::from_utf8_lossy(&body).to_string()}));
         (status, json)
     }
 }
@@ -185,11 +182,24 @@ impl TestContext {
 struct TestSeedStore(Vec<u8>);
 
 impl vta_service::keys::seed_store::SeedStore for TestSeedStore {
-    fn get(&self) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Option<Vec<u8>>, vti_common::error::AppError>> + Send + '_>> {
+    fn get(
+        &self,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = Result<Option<Vec<u8>>, vti_common::error::AppError>>
+                + Send
+                + '_,
+        >,
+    > {
         let seed = self.0.clone();
         Box::pin(async move { Ok(Some(seed)) })
     }
-    fn set(&self, _seed: &[u8]) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), vti_common::error::AppError>> + Send + '_>> {
+    fn set(
+        &self,
+        _seed: &[u8],
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<(), vti_common::error::AppError>> + Send + '_>,
+    > {
         Box::pin(async { Ok(()) })
     }
 }
@@ -344,11 +354,7 @@ async fn initiator_cannot_access_super_admin_endpoints() {
         .await;
     // PATCH /config requires super admin
     let (status, _) = app
-        .request(patch_auth(
-            "/config",
-            &token,
-            json!({"vta_name": "hacked"}),
-        ))
+        .request(patch_auth("/config", &token, json!({"vta_name": "hacked"})))
         .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
 }
@@ -385,11 +391,7 @@ async fn scoped_admin_cannot_update_config() {
         .auth_token("did:key:z6MkScoped", "admin", vec!["ctx1".into()])
         .await;
     let (status, _) = app
-        .request(patch_auth(
-            "/config",
-            &token,
-            json!({"vta_name": "nope"}),
-        ))
+        .request(patch_auth("/config", &token, json!({"vta_name": "nope"})))
         .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
 }
@@ -559,7 +561,11 @@ async fn backup_export_rejects_short_password() {
             json!({"password": "short", "include_audit": false}),
         ))
         .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "should reject short password: {body}");
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "should reject short password: {body}"
+    );
 }
 
 #[tokio::test]
@@ -618,9 +624,7 @@ async fn cache_put_get_delete() {
     assert_eq!(body["value"], "hello");
 
     // DELETE
-    let (status, _) = app
-        .request(delete_auth("/cache/test-key", &token))
-        .await;
+    let (status, _) = app.request(delete_auth("/cache/test-key", &token)).await;
     assert!(status.is_success(), "DELETE cache: {status}");
 
     // GET again → 404
@@ -656,28 +660,50 @@ async fn scoped_admin_can_only_access_own_context_keys() {
     let super_token = ctx.auth_token("did:key:z6MkSuper", "admin", vec![]).await;
 
     // Create two contexts
-    app.request(post_auth("/contexts", &super_token, json!({"id": "ctx-a", "name": "A"}))).await;
-    app.request(post_auth("/contexts", &super_token, json!({"id": "ctx-b", "name": "B"}))).await;
+    app.request(post_auth(
+        "/contexts",
+        &super_token,
+        json!({"id": "ctx-a", "name": "A"}),
+    ))
+    .await;
+    app.request(post_auth(
+        "/contexts",
+        &super_token,
+        json!({"id": "ctx-b", "name": "B"}),
+    ))
+    .await;
 
     // Create a key in ctx-a
-    let (status, key_body) = app.request(post_auth(
-        "/keys", &super_token, json!({"key_type": "ed25519", "context_id": "ctx-a"}),
-    )).await;
+    let (status, key_body) = app
+        .request(post_auth(
+            "/keys",
+            &super_token,
+            json!({"key_type": "ed25519", "context_id": "ctx-a"}),
+        ))
+        .await;
     assert!(status.is_success());
     let key_id = key_body["key_id"].as_str().unwrap();
 
     // Scoped admin for ctx-b cannot get the key in ctx-a (returns 403 or 404 — both are valid)
     let encoded_id = urlencoding::encode(key_id);
-    let scoped_b_token = ctx.auth_token("did:key:z6MkB", "admin", vec!["ctx-b".into()]).await;
-    let (status, _) = app.request(get_auth(&format!("/keys/{encoded_id}"), &scoped_b_token)).await;
+    let scoped_b_token = ctx
+        .auth_token("did:key:z6MkB", "admin", vec!["ctx-b".into()])
+        .await;
+    let (status, _) = app
+        .request(get_auth(&format!("/keys/{encoded_id}"), &scoped_b_token))
+        .await;
     assert!(
         status == StatusCode::FORBIDDEN || status == StatusCode::NOT_FOUND,
         "scoped admin should not access other context's key, got {status}"
     );
 
     // Scoped admin for ctx-a CAN get the key
-    let scoped_a_token = ctx.auth_token("did:key:z6MkA", "admin", vec!["ctx-a".into()]).await;
-    let (status, body) = app.request(get_auth(&format!("/keys/{encoded_id}"), &scoped_a_token)).await;
+    let scoped_a_token = ctx
+        .auth_token("did:key:z6MkA", "admin", vec!["ctx-a".into()])
+        .await;
+    let (status, body) = app
+        .request(get_auth(&format!("/keys/{encoded_id}"), &scoped_a_token))
+        .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["key_id"], key_id);
 }
@@ -690,20 +716,33 @@ async fn key_create_revoke_list_lifecycle() {
     let token = ctx.auth_token("did:key:z6MkAdmin", "admin", vec![]).await;
 
     // Create context + key
-    app.request(post_auth("/contexts", &token, json!({"id": "lc", "name": "Lifecycle"}))).await;
-    let (_, key_body) = app.request(post_auth(
-        "/keys", &token, json!({"key_type": "ed25519", "context_id": "lc"}),
-    )).await;
+    app.request(post_auth(
+        "/contexts",
+        &token,
+        json!({"id": "lc", "name": "Lifecycle"}),
+    ))
+    .await;
+    let (_, key_body) = app
+        .request(post_auth(
+            "/keys",
+            &token,
+            json!({"key_type": "ed25519", "context_id": "lc"}),
+        ))
+        .await;
     let key_id = key_body["key_id"].as_str().unwrap();
     assert_eq!(key_body["status"], "active");
 
     // Revoke the key (key_id may contain slashes from derivation path, URL-encode it)
     let encoded_id = urlencoding::encode(key_id);
-    let (status, body) = app.request(delete_auth(&format!("/keys/{encoded_id}"), &token)).await;
+    let (status, body) = app
+        .request(delete_auth(&format!("/keys/{encoded_id}"), &token))
+        .await;
     assert!(status.is_success(), "revoke: {status} {body}");
 
     // Get key — should show revoked status
-    let (status, body) = app.request(get_auth(&format!("/keys/{encoded_id}"), &token)).await;
+    let (status, body) = app
+        .request(get_auth(&format!("/keys/{encoded_id}"), &token))
+        .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["status"], "revoked");
 }
@@ -713,17 +752,30 @@ async fn key_rename() {
     let (app, ctx) = TestApp::new().await;
     let token = ctx.auth_token("did:key:z6MkAdmin", "admin", vec![]).await;
 
-    app.request(post_auth("/contexts", &token, json!({"id": "rn", "name": "Rename"}))).await;
-    let (_, key_body) = app.request(post_auth(
-        "/keys", &token, json!({"key_type": "ed25519", "context_id": "rn", "label": "original"}),
-    )).await;
+    app.request(post_auth(
+        "/contexts",
+        &token,
+        json!({"id": "rn", "name": "Rename"}),
+    ))
+    .await;
+    let (_, key_body) = app
+        .request(post_auth(
+            "/keys",
+            &token,
+            json!({"key_type": "ed25519", "context_id": "rn", "label": "original"}),
+        ))
+        .await;
     let key_id = key_body["key_id"].as_str().unwrap();
 
     // Rename the key (PATCH expects new key_id in body)
     let encoded_id = urlencoding::encode(key_id);
-    let (status, body) = app.request(patch_auth(
-        &format!("/keys/{encoded_id}"), &token, json!({"key_id": "renamed-key"}),
-    )).await;
+    let (status, body) = app
+        .request(patch_auth(
+            &format!("/keys/{encoded_id}"),
+            &token,
+            json!({"key_id": "renamed-key"}),
+        ))
+        .await;
     assert!(status.is_success(), "rename: {status} {body}");
     assert_eq!(body["key_id"], "renamed-key");
 }
@@ -747,16 +799,28 @@ async fn operations_create_audit_entries() {
     let token = ctx.auth_token("did:key:z6MkAdmin", "admin", vec![]).await;
 
     // Perform some operations that create audit entries
-    app.request(post_auth("/contexts", &token, json!({"id": "aud", "name": "Audit Test"}))).await;
     app.request(post_auth(
-        "/keys", &token, json!({"key_type": "ed25519", "context_id": "aud"}),
-    )).await;
+        "/contexts",
+        &token,
+        json!({"id": "aud", "name": "Audit Test"}),
+    ))
+    .await;
+    app.request(post_auth(
+        "/keys",
+        &token,
+        json!({"key_type": "ed25519", "context_id": "aud"}),
+    ))
+    .await;
 
     // Check audit logs contain entries
     let (status, body) = app.request(get_auth("/audit/logs", &token)).await;
     assert_eq!(status, StatusCode::OK);
     let entries = body["entries"].as_array().expect("entries");
-    assert!(!entries.is_empty(), "should have at least 1 audit entry, got {}", entries.len());
+    assert!(
+        !entries.is_empty(),
+        "should have at least 1 audit entry, got {}",
+        entries.len()
+    );
 
     // Verify audit entries have expected fields
     let entry = &entries[0];
@@ -779,9 +843,13 @@ async fn audit_retention_get_and_update() {
     assert!(body["retention_days"].is_number());
 
     // Update retention
-    let (status, body) = app.request(patch_auth(
-        "/audit/retention", &token, json!({"retention_days": 90}),
-    )).await;
+    let (status, body) = app
+        .request(patch_auth(
+            "/audit/retention",
+            &token,
+            json!({"retention_days": 90}),
+        ))
+        .await;
     assert!(status.is_success(), "update retention: {status} {body}");
 }
 
@@ -793,18 +861,28 @@ async fn backup_import_wrong_password_returns_auth_error() {
     let token = ctx.auth_token("did:key:z6MkSuper", "admin", vec![]).await;
 
     // Export with one password
-    let (status, envelope) = app.request(post_auth(
-        "/backup/export", &token,
-        json!({"password": "correct-password!!", "include_audit": false}),
-    )).await;
+    let (status, envelope) = app
+        .request(post_auth(
+            "/backup/export",
+            &token,
+            json!({"password": "correct-password!!", "include_audit": false}),
+        ))
+        .await;
     assert_eq!(status, StatusCode::OK);
 
     // Import with wrong password
-    let (status, body) = app.request(post_auth(
-        "/backup/import", &token,
-        json!({"backup": envelope, "password": "wrong-password!!!", "confirm": false}),
-    )).await;
-    assert_eq!(status, StatusCode::UNAUTHORIZED, "wrong password should → 401: {body}");
+    let (status, body) = app
+        .request(post_auth(
+            "/backup/import",
+            &token,
+            json!({"backup": envelope, "password": "wrong-password!!!", "confirm": false}),
+        ))
+        .await;
+    assert_eq!(
+        status,
+        StatusCode::UNAUTHORIZED,
+        "wrong password should → 401: {body}"
+    );
 }
 
 // ── ACL CRUD full lifecycle ────────────────────────────────────────
@@ -815,32 +893,46 @@ async fn acl_get_update_delete_lifecycle() {
     let token = ctx.auth_token("did:key:z6MkAdmin", "admin", vec![]).await;
 
     // Create
-    app.request(post_auth("/acl", &token, json!({
-        "did": "did:key:z6MkTarget",
-        "role": "application",
-        "label": "test",
-        "allowed_contexts": ["ctx1"]
-    }))).await;
+    app.request(post_auth(
+        "/acl",
+        &token,
+        json!({
+            "did": "did:key:z6MkTarget",
+            "role": "application",
+            "label": "test",
+            "allowed_contexts": ["ctx1"]
+        }),
+    ))
+    .await;
 
     // Get
-    let (status, body) = app.request(get_auth("/acl/did:key:z6MkTarget", &token)).await;
+    let (status, body) = app
+        .request(get_auth("/acl/did:key:z6MkTarget", &token))
+        .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["role"], "application");
 
     // Update
-    let (status, body) = app.request(patch_auth(
-        "/acl/did:key:z6MkTarget", &token,
-        json!({"role": "initiator", "label": "updated"}),
-    )).await;
+    let (status, body) = app
+        .request(patch_auth(
+            "/acl/did:key:z6MkTarget",
+            &token,
+            json!({"role": "initiator", "label": "updated"}),
+        ))
+        .await;
     assert!(status.is_success(), "update: {status} {body}");
     assert_eq!(body["role"], "initiator");
 
     // Delete
-    let (status, _) = app.request(delete_auth("/acl/did:key:z6MkTarget", &token)).await;
+    let (status, _) = app
+        .request(delete_auth("/acl/did:key:z6MkTarget", &token))
+        .await;
     assert!(status.is_success());
 
     // Verify deleted
-    let (status, _) = app.request(get_auth("/acl/did:key:z6MkTarget", &token)).await;
+    let (status, _) = app
+        .request(get_auth("/acl/did:key:z6MkTarget", &token))
+        .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
@@ -852,9 +944,13 @@ async fn context_create_get_update_delete() {
     let token = ctx.auth_token("did:key:z6MkSuper", "admin", vec![]).await;
 
     // Create
-    let (status, _) = app.request(post_auth(
-        "/contexts", &token, json!({"id": "lifecycle", "name": "Test", "description": "A test context"}),
-    )).await;
+    let (status, _) = app
+        .request(post_auth(
+            "/contexts",
+            &token,
+            json!({"id": "lifecycle", "name": "Test", "description": "A test context"}),
+        ))
+        .await;
     assert!(status.is_success());
 
     // Get
@@ -864,9 +960,13 @@ async fn context_create_get_update_delete() {
     assert_eq!(body["description"], "A test context");
 
     // Update
-    let (status, body) = app.request(patch_auth(
-        "/contexts/lifecycle", &token, json!({"name": "Updated"}),
-    )).await;
+    let (status, body) = app
+        .request(patch_auth(
+            "/contexts/lifecycle",
+            &token,
+            json!({"name": "Updated"}),
+        ))
+        .await;
     assert!(status.is_success(), "update: {status} {body}");
     assert_eq!(body["name"], "Updated");
 
@@ -877,7 +977,9 @@ async fn context_create_get_update_delete() {
     assert!(contexts.iter().any(|c| c["id"] == "lifecycle"));
 
     // Delete
-    let (status, _) = app.request(delete_auth("/contexts/lifecycle", &token)).await;
+    let (status, _) = app
+        .request(delete_auth("/contexts/lifecycle", &token))
+        .await;
     assert!(status.is_success());
 }
 
@@ -888,11 +990,20 @@ async fn create_p256_key() {
     let (app, ctx) = TestApp::new().await;
     let token = ctx.auth_token("did:key:z6MkAdmin", "admin", vec![]).await;
 
-    app.request(post_auth("/contexts", &token, json!({"id": "p256", "name": "P256 Test"}))).await;
+    app.request(post_auth(
+        "/contexts",
+        &token,
+        json!({"id": "p256", "name": "P256 Test"}),
+    ))
+    .await;
 
-    let (status, body) = app.request(post_auth(
-        "/keys", &token, json!({"key_type": "p256", "context_id": "p256"}),
-    )).await;
+    let (status, body) = app
+        .request(post_auth(
+            "/keys",
+            &token,
+            json!({"key_type": "p256", "context_id": "p256"}),
+        ))
+        .await;
     assert!(status.is_success(), "create p256: {status} {body}");
     assert_eq!(body["key_type"], "p256");
     assert!(body["public_key"].is_string());
@@ -936,8 +1047,18 @@ async fn context_admin_cannot_update_other_context_did() {
     let super_token = ctx.auth_token("did:key:z6MkAdmin", "admin", vec![]).await;
 
     // Create two contexts
-    app.request(post_auth("/contexts", &super_token, json!({"id": "ctx-a", "name": "A"}))).await;
-    app.request(post_auth("/contexts", &super_token, json!({"id": "ctx-b", "name": "B"}))).await;
+    app.request(post_auth(
+        "/contexts",
+        &super_token,
+        json!({"id": "ctx-a", "name": "A"}),
+    ))
+    .await;
+    app.request(post_auth(
+        "/contexts",
+        &super_token,
+        json!({"id": "ctx-b", "name": "B"}),
+    ))
+    .await;
 
     // Admin scoped to ctx-a cannot update ctx-b's DID
     let scoped_token = ctx
@@ -958,7 +1079,12 @@ async fn super_admin_can_update_any_context_did() {
     let (app, ctx) = TestApp::new().await;
     let token = ctx.auth_token("did:key:z6MkAdmin", "admin", vec![]).await;
 
-    app.request(post_auth("/contexts", &token, json!({"id": "anyctx", "name": "Any"}))).await;
+    app.request(post_auth(
+        "/contexts",
+        &token,
+        json!({"id": "anyctx", "name": "Any"}),
+    ))
+    .await;
 
     let (status, body) = app
         .request(put_auth(
@@ -967,7 +1093,10 @@ async fn super_admin_can_update_any_context_did() {
             json!({"did": "did:webvh:xyz:example.com"}),
         ))
         .await;
-    assert!(status.is_success(), "super admin update did: {status} {body}");
+    assert!(
+        status.is_success(),
+        "super admin update did: {status} {body}"
+    );
     assert_eq!(body["did"], "did:webvh:xyz:example.com");
 }
 
@@ -976,7 +1105,12 @@ async fn non_admin_cannot_update_context_did() {
     let (app, ctx) = TestApp::new().await;
     let super_token = ctx.auth_token("did:key:z6MkAdmin", "admin", vec![]).await;
 
-    app.request(post_auth("/contexts", &super_token, json!({"id": "restricted", "name": "R"}))).await;
+    app.request(post_auth(
+        "/contexts",
+        &super_token,
+        json!({"id": "restricted", "name": "R"}),
+    ))
+    .await;
 
     // Application role cannot update DID
     let app_token = ctx

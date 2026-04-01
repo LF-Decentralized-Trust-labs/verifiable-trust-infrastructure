@@ -119,10 +119,12 @@ pub async fn init_didcomm_connection(
         match atm.list_messages(&profile, Folder::Inbox).await {
             Ok(messages) if !messages.is_empty() => {
                 let ids: Vec<String> = messages.iter().map(|m| m.msg_id.clone()).collect();
-                info!(count = ids.len(), "flushing stale queued messages from mediator inbox");
-                let delete_req = affinidi_tdk::messaging::messages::DeleteMessageRequest {
-                    message_ids: ids,
-                };
+                info!(
+                    count = ids.len(),
+                    "flushing stale queued messages from mediator inbox"
+                );
+                let delete_req =
+                    affinidi_tdk::messaging::messages::DeleteMessageRequest { message_ids: ids };
                 match atm.delete_messages_direct(&profile, &delete_req).await {
                     Ok(resp) => {
                         info!(
@@ -174,12 +176,7 @@ pub async fn handle_trust_ping(
     let pong = TrustPing::default().generate_pong_message(ping, Some(service_did))?;
 
     let (packed, _) = atm
-        .pack_encrypted(
-            &pong,
-            sender_did,
-            Some(service_did),
-            Some(service_did),
-        )
+        .pack_encrypted(&pong, sender_did, Some(service_did), Some(service_did))
         .await?;
 
     atm.send_message(profile, &packed, &pong.id, false, false)

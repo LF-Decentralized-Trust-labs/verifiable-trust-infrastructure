@@ -42,9 +42,11 @@ fn decrypt_value(key: &[u8; 32], data: &[u8]) -> Result<Vec<u8>, AppError> {
     let nonce = Nonce::from_slice(&data[..NONCE_LEN]);
     let ciphertext = &data[NONCE_LEN..];
 
-    cipher
-        .decrypt(nonce, ciphertext)
-        .map_err(|e| AppError::Internal(format!("AES-GCM decryption failed (data may be corrupt or key mismatch): {e}")))
+    cipher.decrypt(nonce, ciphertext).map_err(|e| {
+        AppError::Internal(format!(
+            "AES-GCM decryption failed (data may be corrupt or key mismatch): {e}"
+        ))
+    })
 }
 
 /// Decrypt bytes if an encryption key is provided, otherwise return a copy.

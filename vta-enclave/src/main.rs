@@ -44,12 +44,23 @@ async fn main() {
     let cli = Cli::parse();
 
     // Load config — resolve the path first so we can print diagnostics on failure
-    let config_path = cli.config.clone()
-        .or_else(|| std::env::var("VTA_CONFIG_PATH").ok().map(std::path::PathBuf::from))
+    let config_path = cli
+        .config
+        .clone()
+        .or_else(|| {
+            std::env::var("VTA_CONFIG_PATH")
+                .ok()
+                .map(std::path::PathBuf::from)
+        })
         .unwrap_or_else(|| std::path::PathBuf::from("config.toml"));
     eprintln!("Loading config from: {}", config_path.display());
     if config_path.exists() {
-        eprintln!("Config file exists ({} bytes)", std::fs::metadata(&config_path).map(|m| m.len()).unwrap_or(0));
+        eprintln!(
+            "Config file exists ({} bytes)",
+            std::fs::metadata(&config_path)
+                .map(|m| m.len())
+                .unwrap_or(0)
+        );
     } else {
         eprintln!("Config file NOT FOUND at {}", config_path.display());
     }
@@ -178,11 +189,14 @@ async fn main() {
 
         if let Some(ref bootstrap) = tee_bootstrap {
             if let (Some(entropy), Some(window_secs)) = (bootstrap.entropy, export_window) {
-                Some(Arc::new(
-                    tee::mnemonic_guard::MnemonicExportGuard::new(entropy, window_secs),
-                ))
+                Some(Arc::new(tee::mnemonic_guard::MnemonicExportGuard::new(
+                    entropy,
+                    window_secs,
+                )))
             } else if bootstrap.entropy.is_some() && export_window.is_none() {
-                info!("first boot but VTA_MNEMONIC_EXPORT_WINDOW not set — mnemonic export disabled");
+                info!(
+                    "first boot but VTA_MNEMONIC_EXPORT_WINDOW not set — mnemonic export disabled"
+                );
                 Some(Arc::new(tee::mnemonic_guard::MnemonicExportGuard::empty()))
             } else {
                 Some(Arc::new(tee::mnemonic_guard::MnemonicExportGuard::empty()))

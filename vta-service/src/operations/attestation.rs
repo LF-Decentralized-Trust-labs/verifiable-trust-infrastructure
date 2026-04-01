@@ -33,7 +33,10 @@ pub async fn generate_attestation_report(
     let vta_did = config.read().await.vta_did.clone();
     let user_data = vta_did.as_deref().unwrap_or("").as_bytes();
 
-    debug!(nonce_len = nonce_bytes.len(), "generating attestation report");
+    debug!(
+        nonce_len = nonce_bytes.len(),
+        "generating attestation report"
+    );
 
     // Generate the report via the platform provider
     let mut report = tee_state.provider.attest(user_data, &nonce_bytes)?;

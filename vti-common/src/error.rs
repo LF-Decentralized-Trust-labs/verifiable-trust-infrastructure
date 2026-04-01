@@ -47,10 +47,7 @@ pub enum AppError {
     /// Catch-all for service-specific errors (e.g., KeyDerivation, BadGateway, TeeAttestation).
     /// Services create helper functions to construct these with appropriate status codes.
     #[error("{message}")]
-    ServiceError {
-        status: StatusCode,
-        message: String,
-    },
+    ServiceError { status: StatusCode, message: String },
 }
 
 impl IntoResponse for AppError {

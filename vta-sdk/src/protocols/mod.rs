@@ -1,8 +1,8 @@
 pub mod acl_management;
 pub mod attestation_management;
 pub mod audit_management;
-pub mod backup_management;
 pub mod auth;
+pub mod backup_management;
 pub mod context_management;
 pub mod credential_management;
 pub mod did_management;

@@ -24,10 +24,18 @@ pub async fn cmd_key_create(
         }
     };
     let mut req = CreateKeyRequest::new(key_type);
-    if let Some(p) = derivation_path { req = req.derivation_path(p); }
-    if let Some(m) = mnemonic { req = req.mnemonic(m); }
-    if let Some(l) = label { req = req.label(l); }
-    if let Some(c) = context_id { req = req.context(c); }
+    if let Some(p) = derivation_path {
+        req = req.derivation_path(p);
+    }
+    if let Some(m) = mnemonic {
+        req = req.mnemonic(m);
+    }
+    if let Some(l) = label {
+        req = req.label(l);
+    }
+    if let Some(c) = context_id {
+        req = req.context(c);
+    }
     let resp = client.create_key(req).await?;
     println!("Key created:");
     println!("  Key ID:          {}", resp.key_id);
@@ -55,7 +63,9 @@ pub async fn cmd_key_import(
         "x25519" => KeyType::X25519,
         "p256" => KeyType::P256,
         other => {
-            return Err(format!("unknown key type '{other}', expected ed25519, x25519, or p256").into());
+            return Err(
+                format!("unknown key type '{other}', expected ed25519, x25519, or p256").into(),
+            );
         }
     };
 
@@ -110,7 +120,9 @@ pub async fn cmd_key_import(
     }
     println!("  Created At: {}", resp.created_at);
     eprintln!();
-    eprintln!("\x1b[1;33mWarning: securely delete the source key material \u{2014} the VTA now holds this secret.\x1b[0m");
+    eprintln!(
+        "\x1b[1;33mWarning: securely delete the source key material \u{2014} the VTA now holds this secret.\x1b[0m"
+    );
 
     Ok(())
 }
@@ -149,15 +161,16 @@ fn wrap_private_key(
         .map_err(|e| format!("hkdf: {e}"))?;
 
     // AES-256-GCM encrypt
-    use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
     use aes_gcm::aead::Aead;
     use aes_gcm::aead::rand_core::RngCore;
+    use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
 
     let cipher = Aes256Gcm::new_from_slice(&aes_key)?;
     let mut nonce_bytes = [0u8; 12];
     aes_gcm::aead::OsRng.fill_bytes(&mut nonce_bytes);
     let nonce = Nonce::from_slice(&nonce_bytes);
-    let ciphertext = cipher.encrypt(nonce, key_bytes.as_ref())
+    let ciphertext = cipher
+        .encrypt(nonce, key_bytes.as_ref())
         .map_err(|e| format!("encrypt: {e}"))?;
 
     // Format: kid.ephemeral_pub.nonce.ciphertext

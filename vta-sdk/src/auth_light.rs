@@ -33,7 +33,7 @@ pub async fn challenge_response_light(
     vta_did: &str,
 ) -> Result<AuthResult, crate::error::VtaError> {
     let _ = private_key_multibase; // Sender identity is in the plaintext `from` field;
-                                    // anoncrypt doesn't use sender's private key for encryption.
+    // anoncrypt doesn't use sender's private key for encryption.
 
     // Step 1: Request challenge
     let challenge_url = format!("{base_url}/auth/challenge");

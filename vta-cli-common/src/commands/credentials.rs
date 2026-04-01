@@ -10,7 +10,9 @@ pub async fn cmd_auth_credential_create(
 ) -> Result<(), Box<dyn std::error::Error>> {
     validate_role(&role)?;
     let mut req = GenerateCredentialsRequest::new(role).contexts(contexts);
-    if let Some(l) = label { req = req.label(l); }
+    if let Some(l) = label {
+        req = req.label(l);
+    }
     let resp = client.generate_credentials(req).await?;
     println!("Credentials generated:");
     println!("  DID:  {}", resp.did);

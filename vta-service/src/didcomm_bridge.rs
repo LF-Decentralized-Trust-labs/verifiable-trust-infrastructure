@@ -4,7 +4,7 @@ use std::sync::Arc;
 use affinidi_tdk::didcomm::Message;
 use affinidi_tdk::messaging::ATM;
 use affinidi_tdk::messaging::profiles::ATMProfile;
-use vta_sdk::didcomm_transport::{PendingMap, send_and_wait_raw};
+use vta_sdk::didcomm_transport::{DIDCommSendParams, PendingMap, send_and_wait_raw};
 
 use crate::error::{AppError, bad_gateway_error};
 
@@ -51,18 +51,18 @@ impl DIDCommBridge {
         problem_report_type: &str,
         timeout_secs: u64,
     ) -> Result<Message, AppError> {
-        send_and_wait_raw(
-            &self.atm,
-            &self.profile,
-            &self.pending,
-            vta_did,
-            server_did,
+        send_and_wait_raw(DIDCommSendParams {
+            atm: &self.atm,
+            profile: &self.profile,
+            pending: &self.pending,
+            from_did: vta_did,
+            to_did: server_did,
             msg_type,
             body,
             expected_type,
             problem_report_type,
             timeout_secs,
-        )
+        })
         .await
         .map_err(bad_gateway_error)
     }

@@ -52,7 +52,7 @@ pub async fn set_salt(keys_ks: &KeyspaceHandle, salt: &[u8]) -> Result<(), AppEr
 
 /// Get the KEK salt if it exists (for backup export).
 pub async fn get_salt(keys_ks: &KeyspaceHandle) -> Result<Option<Vec<u8>>, AppError> {
-    Ok(keys_ks.get_raw(KEK_SALT_KEY).await?)
+    keys_ks.get_raw(KEK_SALT_KEY).await
 }
 
 /// Encrypt and store an imported secret.
@@ -67,8 +67,8 @@ pub async fn store_secret(
     let salt = get_or_create_salt(keys_ks).await?;
     let mut kek = derive_kek(seed, &salt);
 
-    let cipher = Aes256Gcm::new_from_slice(&kek)
-        .map_err(|e| AppError::Internal(format!("aes key: {e}")))?;
+    let cipher =
+        Aes256Gcm::new_from_slice(&kek).map_err(|e| AppError::Internal(format!("aes key: {e}")))?;
 
     // Random nonce
     use aes_gcm::aead::rand_core::RngCore;
@@ -120,8 +120,8 @@ pub async fn load_secret(
     let salt = get_or_create_salt(keys_ks).await?;
     let mut kek = derive_kek(seed, &salt);
 
-    let cipher = Aes256Gcm::new_from_slice(&kek)
-        .map_err(|e| AppError::Internal(format!("aes key: {e}")))?;
+    let cipher =
+        Aes256Gcm::new_from_slice(&kek).map_err(|e| AppError::Internal(format!("aes key: {e}")))?;
 
     let nonce = Nonce::from_slice(&blob[..NONCE_LEN]);
     let aad = build_aad(key_id, key_type);
@@ -133,7 +133,11 @@ pub async fn load_secret(
                 aad: &aad,
             },
         )
-        .map_err(|_| AppError::Internal("imported secret decryption failed (AAD mismatch or corruption)".into()))?;
+        .map_err(|_| {
+            AppError::Internal(
+                "imported secret decryption failed (AAD mismatch or corruption)".into(),
+            )
+        })?;
 
     kek.zeroize();
 
@@ -142,10 +146,7 @@ pub async fn load_secret(
 }
 
 /// Securely delete an imported secret (overwrite then remove).
-pub async fn delete_secret(
-    imported_ks: &KeyspaceHandle,
-    key_id: &str,
-) -> Result<(), AppError> {
+pub async fn delete_secret(imported_ks: &KeyspaceHandle, key_id: &str) -> Result<(), AppError> {
     let store_key = format!("{SECRET_PREFIX}{key_id}");
     // Overwrite with zeros before deletion
     if let Some(blob) = imported_ks.get_raw(store_key.clone()).await? {
@@ -236,9 +237,7 @@ pub async fn reencrypt_all(
 }
 
 /// List all imported secret key IDs (for backup export).
-pub async fn list_secret_ids(
-    imported_ks: &KeyspaceHandle,
-) -> Result<Vec<String>, AppError> {
+pub async fn list_secret_ids(imported_ks: &KeyspaceHandle) -> Result<Vec<String>, AppError> {
     let raw = imported_ks.prefix_iter_raw(SECRET_PREFIX).await?;
     Ok(raw
         .into_iter()
@@ -309,9 +308,16 @@ mod tests {
         let keys_ks = store.keyspace("keys").unwrap();
         let seed = [42u8; 32];
 
-        store_secret(&imported_ks, &keys_ks, &seed, "del-key", "ed25519", b"secret")
-            .await
-            .unwrap();
+        store_secret(
+            &imported_ks,
+            &keys_ks,
+            &seed,
+            "del-key",
+            "ed25519",
+            b"secret",
+        )
+        .await
+        .unwrap();
 
         delete_secret(&imported_ks, "del-key").await.unwrap();
 

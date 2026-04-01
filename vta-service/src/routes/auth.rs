@@ -12,14 +12,14 @@ use vta_sdk::protocols::credential_management::generate::GenerateCredentialsResu
 
 use crate::acl::{Role, check_acl, check_acl_full};
 use crate::audit::audit;
-use crate::auth::{AdminAuth, AuthClaims, ManageAuth};
 use crate::auth::session::{
     Session, SessionState, delete_session, get_session, get_session_by_refresh, list_sessions,
     now_epoch, store_refresh_index, store_session, update_session,
 };
+use crate::auth::{AdminAuth, AuthClaims, ManageAuth};
+use crate::error::AppError;
 #[cfg(feature = "tee")]
 use crate::error::tee_attestation_error;
-use crate::error::AppError;
 use crate::operations;
 use crate::server::AppState;
 #[cfg(feature = "tee")]
@@ -64,13 +64,19 @@ pub async fn challenge(
     // Challenges are random 32 bytes so collision is negligible, but this
     // provides defense in depth against replay attacks.
     let nonce_key = format!("nonce:{challenge}");
-    if state.sessions_ks.get_raw(nonce_key.clone()).await?.is_some() {
+    if state
+        .sessions_ks
+        .get_raw(nonce_key.clone())
+        .await?
+        .is_some()
+    {
         warn!(challenge = %challenge, "challenge nonce collision detected — regenerating");
         // Extremely unlikely (2^-256) but handle gracefully
         rand::fill(&mut challenge_bytes);
         challenge = hex::encode(challenge_bytes);
     }
-    state.sessions_ks
+    state
+        .sessions_ks
         .insert_raw(format!("nonce:{challenge}"), session_id.as_bytes().to_vec())
         .await?;
 
@@ -114,7 +120,9 @@ pub async fn challenge(
                         "TEE attestation failed (mode=required): {e}"
                     )));
                 }
-                warn!("TEE attestation failed (mode=optional) — challenge served without attestation: {e}");
+                warn!(
+                    "TEE attestation failed (mode=optional) — challenge served without attestation: {e}"
+                );
                 None
             }
         }
@@ -125,7 +133,12 @@ pub async fn challenge(
     let tee_attestation = None;
 
     info!(did = %session.did, session_id = %session.session_id, "auth challenge issued");
-    audit!("auth.challenge", actor = &session.did, resource =&session.session_id, outcome = "success");
+    audit!(
+        "auth.challenge",
+        actor = &session.did,
+        resource = &session.session_id,
+        outcome = "success"
+    );
 
     Ok(Json(ChallengeResponse {
         session_id,
@@ -187,34 +200,58 @@ pub async fn authenticate(
 
     if session.state != SessionState::ChallengeSent {
         warn!(session_id, "authentication rejected: session replay");
-        audit!("auth.authenticate", actor = sender_did.split('#').next().unwrap_or(sender_did), resource =session_id, outcome = "denied:replay");
+        audit!(
+            "auth.authenticate",
+            actor = sender_did.split('#').next().unwrap_or(sender_did),
+            resource = session_id,
+            outcome = "denied:replay"
+        );
         return Err(AppError::Authentication(
             "session already authenticated (replay)".into(),
         ));
     }
     if session.challenge != challenge {
         warn!(session_id, "authentication rejected: challenge mismatch");
-        audit!("auth.authenticate", actor = sender_did.split('#').next().unwrap_or(sender_did), resource =session_id, outcome = "denied:challenge_mismatch");
+        audit!(
+            "auth.authenticate",
+            actor = sender_did.split('#').next().unwrap_or(sender_did),
+            resource = session_id,
+            outcome = "denied:challenge_mismatch"
+        );
         return Err(AppError::Authentication("challenge mismatch".into()));
     }
     // Match the DID (compare base DID, ignoring any fragment)
     let sender_base = sender_did.split('#').next().unwrap_or(sender_did);
     if session.did != sender_base {
         warn!(session_id, sender = %sender_base, expected = %session.did, "authentication rejected: DID mismatch");
-        audit!("auth.authenticate", actor = sender_base, resource =session_id, outcome = "denied:did_mismatch");
+        audit!(
+            "auth.authenticate",
+            actor = sender_base,
+            resource = session_id,
+            outcome = "denied:did_mismatch"
+        );
         return Err(AppError::Authentication("DID mismatch".into()));
     }
 
     // Read all auth config values in a single lock acquisition
     let (challenge_ttl, access_expiry, refresh_expiry) = {
         let config = state.config.read().await;
-        (config.auth.challenge_ttl, config.auth.access_token_expiry, config.auth.refresh_token_expiry)
+        (
+            config.auth.challenge_ttl,
+            config.auth.access_token_expiry,
+            config.auth.refresh_token_expiry,
+        )
     };
 
     // Check challenge TTL
     if now_epoch().saturating_sub(session.created_at) > challenge_ttl {
         warn!(session_id, "authentication rejected: challenge expired");
-        audit!("auth.authenticate", actor = sender_base, resource =session_id, outcome = "denied:expired");
+        audit!(
+            "auth.authenticate",
+            actor = sender_base,
+            resource = session_id,
+            outcome = "denied:expired"
+        );
         return Err(AppError::Authentication("challenge expired".into()));
     }
 
@@ -251,7 +288,12 @@ pub async fn authenticate(
     store_refresh_index(&state.sessions_ks, &refresh_token, &session.session_id).await?;
 
     info!(did = %session.did, session_id = %session.session_id, "authentication successful");
-    audit!("auth.authenticate", actor = &session.did, resource =&session.session_id, outcome = "success");
+    audit!(
+        "auth.authenticate",
+        actor = &session.did,
+        resource = &session.session_id,
+        outcome = "success"
+    );
 
     Ok(Json(AuthenticateResponse {
         session_id: Some(session.session_id),
@@ -358,7 +400,12 @@ pub async fn refresh(
     let access_token = jwt_keys.encode(&claims)?;
 
     info!(did = %session.did, session_id = %session.session_id, "token refreshed");
-    audit!("auth.refresh", actor = &session.did, resource =&session.session_id, outcome = "success");
+    audit!(
+        "auth.refresh",
+        actor = &session.did,
+        resource = &session.session_id,
+        outcome = "success"
+    );
 
     Ok(Json(RefreshResponse {
         session_id: session.session_id,
@@ -396,7 +443,12 @@ pub async fn generate_credentials(
         "rest",
     )
     .await?;
-    audit!("credentials.generate", actor = &auth.0.did, resource =&role_str, outcome = "success");
+    audit!(
+        "credentials.generate",
+        actor = &auth.0.did,
+        resource = &role_str,
+        outcome = "success"
+    );
     Ok((StatusCode::CREATED, Json(result)))
 }
 
@@ -456,7 +508,12 @@ pub async fn revoke_session(
 
     delete_session(&state.sessions_ks, &session_id).await?;
     info!(caller = %auth.did, session_id = %session_id, "session revoked");
-    audit!("session.revoke", actor = &auth.did, resource =&session_id, outcome = "success");
+    audit!(
+        "session.revoke",
+        actor = &auth.did,
+        resource = &session_id,
+        outcome = "success"
+    );
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -489,6 +546,11 @@ pub async fn revoke_sessions_by_did(
     }
 
     info!(caller = %_auth.0.did, target_did = %query.did, revoked, "sessions revoked by DID");
-    audit!("session.revoke_by_did", actor = &_auth.0.did, resource =&query.did, outcome = "success");
+    audit!(
+        "session.revoke_by_did",
+        actor = &_auth.0.did,
+        resource = &query.did,
+        outcome = "success"
+    );
     Ok(Json(RevokeByDidResponse { revoked }))
 }

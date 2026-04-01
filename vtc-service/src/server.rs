@@ -11,9 +11,9 @@ use affinidi_tdk::secrets_resolver::{SecretsResolver, ThreadedSecretsResolver, s
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD as BASE64;
 
+use crate::auth::AuthState;
 use crate::auth::jwt::JwtKeys;
 use crate::auth::session::cleanup_expired_sessions;
-use crate::auth::AuthState;
 use crate::config::{AppConfig, AuthConfig};
 use crate::error::AppError;
 use crate::keys::seed_store::SecretStore;
@@ -389,14 +389,24 @@ async fn init_auth(
             Ok(k) => k,
             Err(e) => {
                 warn!("failed to load JWT signing key: {e} — auth endpoints will not work");
-                return (Some(did_resolver), Some(Arc::new(secrets_resolver)), None, None);
+                return (
+                    Some(did_resolver),
+                    Some(Arc::new(secrets_resolver)),
+                    None,
+                    None,
+                );
             }
         },
         None => {
             warn!(
                 "auth.jwt_signing_key not configured — auth endpoints will not work (run setup first)"
             );
-            return (Some(did_resolver), Some(Arc::new(secrets_resolver)), None, None);
+            return (
+                Some(did_resolver),
+                Some(Arc::new(secrets_resolver)),
+                None,
+                None,
+            );
         }
     };
 
@@ -410,13 +420,15 @@ async fn init_auth(
             .build();
         match tdk_config {
             Ok(cfg) => match TDKSharedState::new(cfg).await {
-                Ok(tdk) => match ATM::new(ATMConfig::builder().build().unwrap(), Arc::new(tdk)).await {
-                    Ok(a) => Some(a),
-                    Err(e) => {
-                        warn!("failed to create ATM for auth unpack: {e}");
-                        None
+                Ok(tdk) => {
+                    match ATM::new(ATMConfig::builder().build().unwrap(), Arc::new(tdk)).await {
+                        Ok(a) => Some(a),
+                        Err(e) => {
+                            warn!("failed to create ATM for auth unpack: {e}");
+                            None
+                        }
                     }
-                },
+                }
                 Err(e) => {
                     warn!("failed to create TDK shared state: {e}");
                     None

@@ -787,10 +787,7 @@ async fn cmd_health(
                 .as_deref()
                 .map(|v| format!(" (v{v})"))
                 .unwrap_or_default();
-            println!(
-                "  {CYAN}{:<13}{RESET} {GREEN}✓{RESET} ok{ver}",
-                "Service"
-            );
+            println!("  {CYAN}{:<13}{RESET} {GREEN}✓{RESET} ok{ver}", "Service");
         }
         Err(e) => {
             println!(
@@ -884,10 +881,7 @@ async fn print_personal_vta_section(
                 .as_deref()
                 .map(|v| format!(" (v{v})"))
                 .unwrap_or_default();
-            println!(
-                "  {CYAN}{:<13}{RESET} {GREEN}✓{RESET} ok{ver}",
-                "Service"
-            );
+            println!("  {CYAN}{:<13}{RESET} {GREEN}✓{RESET} ok{ver}", "Service");
         }
         Err(e) => {
             println!(

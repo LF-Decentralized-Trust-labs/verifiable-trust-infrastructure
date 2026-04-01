@@ -21,12 +21,7 @@ const AES_KEY_LEN: usize = 32;
 // ── DIDComm message builder ─────────────────────────────────────────
 
 /// Build a DIDComm v2 plaintext message JSON.
-pub fn build_message(
-    msg_type: &str,
-    body: serde_json::Value,
-    from: &str,
-    to: &str,
-) -> String {
+pub fn build_message(msg_type: &str, body: serde_json::Value, from: &str, to: &str) -> String {
     serde_json::json!({
         "id": uuid::Uuid::new_v4().to_string(),
         "typ": "application/didcomm-plain+json",
@@ -86,8 +81,7 @@ pub fn pack_anoncrypt(
     let encrypted_key = aes_key_wrap(&kek, &cek)?;
 
     // 7. AES-256-GCM encrypt the plaintext with CEK
-    let cipher = Aes256Gcm::new_from_slice(&cek)
-        .map_err(|e| format!("aes-gcm key: {e}"))?;
+    let cipher = Aes256Gcm::new_from_slice(&cek).map_err(|e| format!("aes-gcm key: {e}"))?;
     let mut nonce_bytes = [0u8; GCM_NONCE_LEN];
     aes_gcm::aead::OsRng.fill_bytes(&mut nonce_bytes);
     let nonce = Nonce::from_slice(&nonce_bytes);
@@ -167,16 +161,15 @@ fn concat_kdf(
 /// Input: 32-byte KEK, key to wrap (multiple of 8 bytes).
 /// Output: wrapped key (input_len + 8 bytes).
 fn aes_key_wrap(kek: &[u8; 32], plaintext: &[u8]) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
-    use aes::cipher::{BlockEncrypt, KeyInit as AesKeyInit};
     use aes::Aes256;
+    use aes::cipher::{BlockEncrypt, KeyInit as AesKeyInit};
 
-    if plaintext.len() % 8 != 0 || plaintext.is_empty() {
+    if !plaintext.len().is_multiple_of(8) || plaintext.is_empty() {
         return Err("key wrap input must be a non-empty multiple of 8 bytes".into());
     }
 
     let n = plaintext.len() / 8;
-    let cipher = Aes256::new_from_slice(kek)
-        .map_err(|e| format!("aes key wrap: {e}"))?;
+    let cipher = Aes256::new_from_slice(kek).map_err(|e| format!("aes key wrap: {e}"))?;
 
     // Initialize: A = IV (0xA6 repeated 8 times), R[1..n] = plaintext blocks
     let mut a = [0xA6u8; 8];
@@ -191,13 +184,13 @@ fn aes_key_wrap(kek: &[u8; 32], plaintext: &[u8]) -> Result<Vec<u8>, Box<dyn std
 
     // Wrap: 6 rounds
     for j in 0..6u64 {
-        for i in 0..n {
+        for (i, ri) in r.iter_mut().enumerate().take(n) {
             let t = (n as u64) * j + (i as u64) + 1;
 
             // B = AES(K, A || R[i])
             let mut block = aes::Block::default();
             block[..8].copy_from_slice(&a);
-            block[8..].copy_from_slice(&r[i]);
+            block[8..].copy_from_slice(ri);
             cipher.encrypt_block(&mut block);
 
             // A = MSB(64, B) ^ t
@@ -208,7 +201,7 @@ fn aes_key_wrap(kek: &[u8; 32], plaintext: &[u8]) -> Result<Vec<u8>, Box<dyn std
             }
 
             // R[i] = LSB(64, B)
-            r[i].copy_from_slice(&block[8..]);
+            ri.copy_from_slice(&block[8..]);
         }
     }
 
@@ -223,9 +216,12 @@ fn aes_key_wrap(kek: &[u8; 32], plaintext: &[u8]) -> Result<Vec<u8>, Box<dyn std
 
 /// Unwrap a key using AES-256 Key Unwrap (RFC 3394). Used for testing.
 #[cfg(test)]
-fn aes_key_unwrap(kek: &[u8; 32], ciphertext: &[u8]) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
-    use aes::cipher::{BlockDecrypt, KeyInit as AesKeyInit};
+fn aes_key_unwrap(
+    kek: &[u8; 32],
+    ciphertext: &[u8],
+) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
     use aes::Aes256;
+    use aes::cipher::{BlockDecrypt, KeyInit as AesKeyInit};
 
     if ciphertext.len() % 8 != 0 || ciphertext.len() < 24 {
         return Err("key unwrap input must be at least 24 bytes and a multiple of 8".into());
@@ -279,9 +275,7 @@ fn aes_key_unwrap(kek: &[u8; 32], ciphertext: &[u8]) -> Result<Vec<u8>, Box<dyn 
 
 /// Extract the Ed25519 public key bytes from a `did:key:z6Mk...` identifier.
 pub fn parse_did_key_ed25519(did: &str) -> Result<[u8; 32], Box<dyn std::error::Error>> {
-    let multibase_part = did
-        .strip_prefix("did:key:")
-        .ok_or("not a did:key")?;
+    let multibase_part = did.strip_prefix("did:key:").ok_or("not a did:key")?;
     let (_, decoded) = multibase::decode(multibase_part)?;
     // Expect 34 bytes: 2-byte multicodec (0xed 0x01) + 32-byte key
     if decoded.len() != 34 || decoded[0] != 0xed || decoded[1] != 0x01 {
@@ -293,7 +287,9 @@ pub fn parse_did_key_ed25519(did: &str) -> Result<[u8; 32], Box<dyn std::error::
 }
 
 /// Convert an Ed25519 public key to an X25519 public key (Edwards → Montgomery).
-pub fn ed25519_pub_to_x25519_pub(ed_pub: &[u8; 32]) -> Result<[u8; 32], Box<dyn std::error::Error>> {
+pub fn ed25519_pub_to_x25519_pub(
+    ed_pub: &[u8; 32],
+) -> Result<[u8; 32], Box<dyn std::error::Error>> {
     let compressed = curve25519_dalek::edwards::CompressedEdwardsY(*ed_pub);
     let edwards = compressed
         .decompress()
@@ -452,10 +448,9 @@ mod tests {
         assert!(jwe["tag"].is_string());
 
         // Verify protected header
-        let protected_json: serde_json::Value = serde_json::from_slice(
-            &B64.decode(jwe["protected"].as_str().unwrap()).unwrap(),
-        )
-        .unwrap();
+        let protected_json: serde_json::Value =
+            serde_json::from_slice(&B64.decode(jwe["protected"].as_str().unwrap()).unwrap())
+                .unwrap();
         assert_eq!(protected_json["alg"], "ECDH-ES+A256KW");
         assert_eq!(protected_json["enc"], "A256GCM");
         assert_eq!(protected_json["typ"], "application/didcomm-encrypted+json");

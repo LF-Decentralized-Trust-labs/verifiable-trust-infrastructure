@@ -207,15 +207,17 @@ pub async fn preview_delete_context(
 }
 
 pub async fn delete_context(
-    contexts_ks: &KeyspaceHandle,
-    keys_ks: &KeyspaceHandle,
-    acl_ks: &KeyspaceHandle,
-    #[cfg(feature = "webvh")] webvh_ks: &KeyspaceHandle,
+    ks: &super::Keyspaces<'_>,
     auth: &AuthClaims,
     id: &str,
     force: bool,
     channel: &str,
 ) -> Result<DeleteContextResultBody, AppError> {
+    let contexts_ks = ks.contexts;
+    let keys_ks = ks.keys;
+    let acl_ks = ks.acl;
+    #[cfg(feature = "webvh")]
+    let webvh_ks = ks.webvh;
     auth.require_super_admin()?;
 
     get_context(contexts_ks, id)
@@ -244,9 +246,7 @@ pub async fn delete_context(
 
     // Delete keys
     for key_id in &preview.keys {
-        keys_ks
-            .remove(crate::keys::store_key(key_id))
-            .await?;
+        keys_ks.remove(crate::keys::store_key(key_id)).await?;
     }
 
     // Delete WebVH DIDs and their logs

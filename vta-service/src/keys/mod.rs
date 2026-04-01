@@ -180,7 +180,8 @@ pub async fn derive_entity_keys(
                 .map_err(|e| format!("Invalid derivation path: {e}"))?,
         )
         .map_err(|e| format!("Key derivation failed: {e}"))?;
-    let signing_priv = encode_private_multibase(&KeyType::Ed25519, signing_derived.signing_key.as_bytes());
+    let signing_priv =
+        encode_private_multibase(&KeyType::Ed25519, signing_derived.signing_key.as_bytes());
     let signing_secret =
         Secret::generate_ed25519(None, Some(signing_derived.signing_key.as_bytes()));
     let signing_pub = signing_secret
@@ -267,8 +268,8 @@ mod tests {
 
     fn test_seed() -> Vec<u8> {
         vec![
-            7, 26, 142, 230, 65, 85, 188, 182, 29, 129, 52, 229, 217, 159, 243, 182,
-            73, 89, 196, 246, 58, 28, 100, 144, 187, 21, 157, 39, 4, 188, 154, 180,
+            7, 26, 142, 230, 65, 85, 188, 182, 29, 129, 52, 229, 217, 159, 243, 182, 73, 89, 196,
+            246, 58, 28, 100, 144, 187, 21, 157, 39, 4, 188, 154, 180,
         ]
     }
 
@@ -293,11 +294,9 @@ mod tests {
         let did = "did:webvh:abc123:example.com:vta";
 
         // === CREATION (first boot — derive_entity_keys + save) ===
-        let derived = derive_entity_keys(
-            &seed, "m/44'/0'", "signing", "key-agreement", &keys_ks,
-        )
-        .await
-        .unwrap();
+        let derived = derive_entity_keys(&seed, "m/44'/0'", "signing", "key-agreement", &keys_ks)
+            .await
+            .unwrap();
 
         save_entity_key_records(did, &derived, &keys_ks, Some("vta"), Some(0))
             .await
@@ -326,7 +325,9 @@ mod tests {
 
         let root = ExtendedSigningKey::from_seed(&seed).unwrap();
 
-        let recovered_signing = root.derive_ed25519(&signing_record.derivation_path).unwrap();
+        let recovered_signing = root
+            .derive_ed25519(&signing_record.derivation_path)
+            .unwrap();
         let recovered_ka = root.derive_x25519(&ka_record.derivation_path).unwrap();
 
         let recovered_signing_pub = recovered_signing.get_public_keymultibase().unwrap();
@@ -367,15 +368,15 @@ mod tests {
 
         // Create and save
         {
-            let config = StoreConfig { data_dir: dir.path().to_path_buf() };
+            let config = StoreConfig {
+                data_dir: dir.path().to_path_buf(),
+            };
             let store = Store::open(&config).unwrap();
             let keys_ks = store.keyspace("keys").unwrap();
 
-            let derived = derive_entity_keys(
-                &seed, "m/44'/0'", "signing", "ka", &keys_ks,
-            )
-            .await
-            .unwrap();
+            let derived = derive_entity_keys(&seed, "m/44'/0'", "signing", "ka", &keys_ks)
+                .await
+                .unwrap();
 
             save_entity_key_records(did, &derived, &keys_ks, Some("vta"), Some(0))
                 .await
@@ -386,7 +387,9 @@ mod tests {
 
         // Reopen and verify
         {
-            let config = StoreConfig { data_dir: dir.path().to_path_buf() };
+            let config = StoreConfig {
+                data_dir: dir.path().to_path_buf(),
+            };
             let store = Store::open(&config).unwrap();
             let keys_ks = store.keyspace("keys").unwrap();
 

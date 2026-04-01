@@ -24,9 +24,9 @@ pub use crate::did_secrets::{DidSecretsBundle, SecretEntry};
 pub use crate::client::{
     AclEntryResponse, AclListResponse, ConfigResponse, ContextListResponse, ContextResponse,
     CreateAclRequest, CreateContextRequest, CreateKeyRequest, CreateKeyResponse,
-    GenerateCredentialsRequest, GenerateCredentialsResponse, GetKeySecretResponse,
-    HealthResponse, ImportKeyRequest, ImportKeyResponse, InvalidateKeyResponse,
-    ListKeysResponse, RenameKeyResponse, SignResponse, UpdateAclRequest, UpdateConfigRequest,
+    GenerateCredentialsRequest, GenerateCredentialsResponse, GetKeySecretResponse, HealthResponse,
+    ImportKeyRequest, ImportKeyResponse, InvalidateKeyResponse, ListKeysResponse,
+    RenameKeyResponse, SignResponse, UpdateAclRequest, UpdateConfigRequest,
     UpdateContextDidRequest, VtaClient, WrappingKeyResponse,
 };
 
@@ -39,8 +39,8 @@ pub use crate::did_key::secret_from_key_response;
 // Integration (feature-gated)
 #[cfg(feature = "integration")]
 pub use crate::integration::{
-    SecretCache, SecretSource, StartupResult, VtaIntegrationError, VtaServiceConfig,
-    authenticate, startup,
+    SecretCache, SecretSource, StartupResult, VtaIntegrationError, VtaServiceConfig, authenticate,
+    startup,
 };
 
 // Protocols — commonly used request/response bodies

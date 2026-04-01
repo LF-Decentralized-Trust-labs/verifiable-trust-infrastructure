@@ -33,9 +33,7 @@ pub async fn authenticate(config: &VtaServiceConfig) -> Result<VtaClient, VtaErr
             let vta_url = url_override
                 .or(credential.vta_url.as_deref())
                 .ok_or_else(|| {
-                    VtaError::Validation(
-                        "VTA URL not found in credential or url_override".into(),
-                    )
+                    VtaError::Validation("VTA URL not found in credential or url_override".into())
                 })?;
 
             let token_result = crate::session::challenge_response(

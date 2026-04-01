@@ -10,10 +10,10 @@ use vta_sdk::protocols::seed_management::{
 };
 
 use crate::error::AppError;
+use crate::keys::KeyRecord;
 use crate::keys::imported;
 use crate::keys::seed_store::SeedStore;
 use crate::keys::seeds::{self as seeds, get_active_seed_id, load_seed_bytes};
-use crate::keys::KeyRecord;
 use crate::store::KeyspaceHandle;
 
 pub async fn list_seeds(
@@ -86,13 +86,32 @@ pub async fn rotate_seed(
         .collect();
 
     if !imported_keys.is_empty() {
-        let count = imported::reencrypt_all(imported_ks, keys_ks, &old_seed, &new_seed, &imported_keys).await?;
-        info!(channel, count, "re-encrypted imported secrets after seed rotation");
+        let count =
+            imported::reencrypt_all(imported_ks, keys_ks, &old_seed, &new_seed, &imported_keys)
+                .await?;
+        info!(
+            channel,
+            count, "re-encrypted imported secrets after seed rotation"
+        );
     }
 
     info!(channel, previous_id, new_id, "seed rotated");
-    audit!("seed.rotate", actor = actor, resource = "seed", outcome = "success");
-    let _ = audit::record(audit_ks, "seed.rotate", actor, Some("seed"), "success", Some(channel), None).await;
+    audit!(
+        "seed.rotate",
+        actor = actor,
+        resource = "seed",
+        outcome = "success"
+    );
+    let _ = audit::record(
+        audit_ks,
+        "seed.rotate",
+        actor,
+        Some("seed"),
+        "success",
+        Some(channel),
+        None,
+    )
+    .await;
 
     Ok(RotateSeedResultBody {
         previous_seed_id: previous_id,

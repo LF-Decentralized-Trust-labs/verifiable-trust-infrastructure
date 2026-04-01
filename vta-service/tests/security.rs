@@ -98,7 +98,6 @@ mod auth_enforcement {
         assert!(application_claims().require_manage().is_err());
     }
 
-
     // ── context access ──
 
     #[test]

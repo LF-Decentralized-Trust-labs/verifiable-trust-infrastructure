@@ -105,9 +105,9 @@ pub async fn run_unseal_challenge(store: &Store) -> Result<(), AppError> {
     let acl_ks = store.keyspace("acl")?;
 
     // Verify the VTA is actually sealed
-    let seal = get_seal(&acl_ks).await?.ok_or_else(|| {
-        AppError::Config("VTA is not sealed — nothing to unseal".into())
-    })?;
+    let seal = get_seal(&acl_ks)
+        .await?
+        .ok_or_else(|| AppError::Config("VTA is not sealed — nothing to unseal".into()))?;
 
     // Find super admin DIDs
     let entries = acl::list_acl_entries(&acl_ks).await?;
@@ -131,11 +131,18 @@ pub async fn run_unseal_challenge(store: &Store) -> Result<(), AppError> {
     eprintln!("=== VTA Unseal Challenge ===");
     eprintln!();
     eprintln!("  Sealed by: {}", seal.sealed_by);
-    eprintln!("  Sealed at: {}", seal.sealed_at.format("%Y-%m-%d %H:%M:%S UTC"));
+    eprintln!(
+        "  Sealed at: {}",
+        seal.sealed_at.format("%Y-%m-%d %H:%M:%S UTC")
+    );
     eprintln!();
     eprintln!("  Authorized super admin DIDs:");
     for admin in &super_admins {
-        eprintln!("    - {} ({})", admin.did, admin.label.as_deref().unwrap_or("no label"));
+        eprintln!(
+            "    - {} ({})",
+            admin.did,
+            admin.label.as_deref().unwrap_or("no label")
+        );
     }
     eprintln!();
     eprintln!("  Challenge (hex):");
@@ -160,9 +167,7 @@ pub async fn run_unseal_challenge(store: &Store) -> Result<(), AppError> {
     let admin_entry = super_admins
         .iter()
         .find(|e| e.did == admin_did)
-        .ok_or_else(|| {
-            AppError::Forbidden(format!("DID is not a super admin: {admin_did}"))
-        })?;
+        .ok_or_else(|| AppError::Forbidden(format!("DID is not a super admin: {admin_did}")))?;
 
     // Read the signature
     eprint!("  Signature (hex): ");
@@ -183,7 +188,8 @@ pub async fn run_unseal_challenge(store: &Store) -> Result<(), AppError> {
 
     eprintln!();
     eprintln!("  VTA unsealed successfully.");
-    eprintln!("  Authenticated as: {} ({})",
+    eprintln!(
+        "  Authenticated as: {} ({})",
         admin_did,
         admin_entry.label.as_deref().unwrap_or("no label")
     );
@@ -248,11 +254,12 @@ fn verify_challenge_signature(
         .map_err(|e| AppError::Validation(format!("invalid Ed25519 signature: {e}")))?;
 
     // Verify
-    verifying_key
-        .verify(challenge, &signature)
-        .map_err(|_| AppError::Forbidden(
-            "signature verification failed — challenge was not signed by this DID's private key".into(),
-        ))?;
+    verifying_key.verify(challenge, &signature).map_err(|_| {
+        AppError::Forbidden(
+            "signature verification failed — challenge was not signed by this DID's private key"
+                .into(),
+        )
+    })?;
 
     Ok(())
 }

@@ -17,14 +17,9 @@ pub async fn export(
     Json(req): Json<ExportRequest>,
 ) -> Result<Json<BackupEnvelope>, AppError> {
     let config = state.config.read().await;
+    let ks = operations::Keyspaces::from_app_state(&state);
     let envelope = operations::backup::export_backup(
-        &state.keys_ks,
-        &state.acl_ks,
-        &state.contexts_ks,
-        &state.audit_ks,
-        &state.imported_ks,
-        #[cfg(feature = "webvh")]
-        &state.webvh_ks,
+        &ks,
         &*state.seed_store,
         &config,
         &auth,
@@ -65,15 +60,10 @@ pub async fn import(
     // Full import — decrypt once (skip building a throwaway preview)
     let payload = operations::backup::decrypt_backup(&req.backup, &req.password)?;
 
+    let ks = operations::Keyspaces::from_app_state(&state);
     let result = operations::backup::apply_import(
         &payload,
-        &state.keys_ks,
-        &state.acl_ks,
-        &state.contexts_ks,
-        &state.audit_ks,
-        &state.imported_ks,
-        #[cfg(feature = "webvh")]
-        &state.webvh_ks,
+        &ks,
         &state.seed_store,
         &state.config,
         None, // Store passed for TEE re-encryption (REST has no store access; handled on restart)

@@ -18,11 +18,7 @@ pub trait TeeProvider: Send + Sync {
     ///
     /// The `user_data` is typically the VTA DID (UTF-8 encoded).
     /// The `nonce` is a client-provided value for replay prevention.
-    fn attest(
-        &self,
-        user_data: &[u8],
-        nonce: &[u8],
-    ) -> Result<AttestationReport, AppError>;
+    fn attest(&self, user_data: &[u8], nonce: &[u8]) -> Result<AttestationReport, AppError>;
 
     /// Verify an attestation report (self-check).
     ///

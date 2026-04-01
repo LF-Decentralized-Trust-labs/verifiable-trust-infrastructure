@@ -8,11 +8,11 @@ pub mod context_provision;
 pub mod contexts;
 pub mod credentials;
 pub mod did_key;
-#[cfg(feature = "client")]
-pub mod didcomm_light;
 pub mod did_secrets;
 #[cfg(feature = "didcomm")]
 pub mod didcomm_init;
+#[cfg(feature = "client")]
+pub mod didcomm_light;
 #[cfg(feature = "session")]
 pub mod didcomm_session;
 #[cfg(feature = "didcomm")]

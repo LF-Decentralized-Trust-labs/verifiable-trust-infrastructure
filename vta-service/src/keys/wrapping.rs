@@ -39,6 +39,14 @@ pub struct WrappingKeyCache {
     entries: Arc<Mutex<HashMap<String, WrappingEntry>>>,
 }
 
+impl Default for WrappingKeyCache {
+    fn default() -> Self {
+        Self {
+            entries: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+}
+
 impl WrappingKeyCache {
     pub fn new() -> Self {
         Self {
@@ -92,10 +100,14 @@ impl WrappingKeyCache {
             .map_err(|e| AppError::Validation(format!("invalid ciphertext: {e}")))?;
 
         if ephemeral_pub_bytes.len() != 32 {
-            return Err(AppError::Validation("ephemeral public key must be 32 bytes".into()));
+            return Err(AppError::Validation(
+                "ephemeral public key must be 32 bytes".into(),
+            ));
         }
         if nonce_bytes.len() != NONCE_LEN {
-            return Err(AppError::Validation(format!("nonce must be {NONCE_LEN} bytes")));
+            return Err(AppError::Validation(format!(
+                "nonce must be {NONCE_LEN} bytes"
+            )));
         }
 
         // Look up and consume the wrapping key
@@ -135,9 +147,9 @@ impl WrappingKeyCache {
         let cipher = Aes256Gcm::new_from_slice(&aes_key)
             .map_err(|e| AppError::Internal(format!("aes key: {e}")))?;
         let nonce = Nonce::from_slice(&nonce_bytes);
-        let mut plaintext = cipher
-            .decrypt(nonce, ciphertext.as_ref())
-            .map_err(|_| AppError::Authentication("failed to unwrap key (ECDH mismatch or tampering)".into()))?;
+        let mut plaintext = cipher.decrypt(nonce, ciphertext.as_ref()).map_err(|_| {
+            AppError::Authentication("failed to unwrap key (ECDH mismatch or tampering)".into())
+        })?;
 
         aes_key.zeroize();
 
@@ -166,11 +178,7 @@ mod tests {
     use super::*;
 
     /// Client-side wrapping helper for tests.
-    fn wrap_for_test(
-        vta_pub_bytes: &[u8; 32],
-        kid: &str,
-        plaintext: &[u8],
-    ) -> String {
+    fn wrap_for_test(vta_pub_bytes: &[u8; 32], kid: &str, plaintext: &[u8]) -> String {
         let vta_pub = PublicKey::from(*vta_pub_bytes);
         let client_secret = StaticSecret::random_from_rng(aes_gcm::aead::OsRng);
         let client_pub = PublicKey::from(&client_secret);
@@ -178,7 +186,8 @@ mod tests {
         let shared = client_secret.diffie_hellman(&vta_pub);
         let hkdf = Hkdf::<Sha256>::new(None, shared.as_bytes());
         let mut aes_key = [0u8; 32];
-        hkdf.expand(b"vta-key-import-wrapping", &mut aes_key).unwrap();
+        hkdf.expand(b"vta-key-import-wrapping", &mut aes_key)
+            .unwrap();
 
         let cipher = Aes256Gcm::new_from_slice(&aes_key).unwrap();
         use aes_gcm::aead::rand_core::RngCore;
