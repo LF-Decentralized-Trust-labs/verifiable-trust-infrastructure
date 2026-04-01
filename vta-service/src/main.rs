@@ -95,7 +95,7 @@ enum Commands {
         /// The DID to import
         #[arg(long)]
         did: String,
-        /// Role to assign (admin, initiator, application)
+        /// Role to assign (admin, initiator, application, reader)
         #[arg(long)]
         role: Option<String>,
         /// Human-readable label for the ACL entry
@@ -232,7 +232,7 @@ enum AclCommands {
         /// Filter by context
         #[arg(long)]
         context: Option<String>,
-        /// Filter by role (admin, initiator, application)
+        /// Filter by role (admin, initiator, application, reader)
         #[arg(long)]
         role: Option<String>,
     },
@@ -245,7 +245,7 @@ enum AclCommands {
     Update {
         /// The DID to update
         did: String,
-        /// New role (admin, initiator, application)
+        /// New role (admin, initiator, application, reader)
         #[arg(long)]
         role: Option<String>,
         /// New label (empty string to clear)

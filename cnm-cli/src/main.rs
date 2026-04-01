@@ -217,7 +217,7 @@ enum AclCommands {
         /// DID to grant access to
         #[arg(long)]
         did: String,
-        /// Role: admin, initiator, or application
+        /// Role: admin, initiator, application, or reader
         #[arg(long)]
         role: String,
         /// Human-readable label
@@ -252,7 +252,7 @@ enum AclCommands {
 enum AuthCredentialCommands {
     /// Generate a new auth credential (did:key + ACL entry) for a service or application
     Create {
-        /// Role: admin, initiator, or application
+        /// Role: admin, initiator, application, or reader
         #[arg(long)]
         role: String,
         /// Human-readable label

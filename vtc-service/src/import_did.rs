@@ -27,7 +27,7 @@ pub async fn run_import_did(args: ImportDidArgs) -> Result<(), Box<dyn std::erro
     let role = match args.role {
         Some(r) => Role::parse(&r)?,
         None => {
-            let roles = ["admin", "initiator", "application"];
+            let roles = ["admin", "initiator", "application", "reader"];
             let selection = Select::new()
                 .with_prompt("Select role for this DID")
                 .items(roles)
