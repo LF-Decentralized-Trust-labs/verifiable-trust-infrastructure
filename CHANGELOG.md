@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.5.0 — 2026-04-01
+## 0.3.0 — 2026-04-01
 
 ### Reader Role & Action Classification
 
@@ -43,15 +43,7 @@ Super Admin  (Admin + unrestricted)
 
 ### Version Bumps
 
-| Crate          | Old   | New   |
-| -------------- | ----- | ----- |
-| vti-common     | 0.3.0 | 0.4.0 |
-| vta-service    | 0.4.0 | 0.5.0 |
-| vta-cli-common | 0.4.0 | 0.5.0 |
-| pnm-cli        | 0.4.0 | 0.5.0 |
-| cnm-cli        | 0.4.0 | 0.5.0 |
-| vta-enclave    | 0.2.2 | 0.2.3 |
-| vtc-service    | 0.2.2 | 0.2.3 |
+All crates bumped from 0.2.1 to **0.3.0**.
 
 ### Testing
 
@@ -60,10 +52,6 @@ Super Admin  (Admin + unrestricted)
   roles, Initiator/Admin can create Reader), integration tests (Reader
   can list keys, cannot sign, cannot create keys).
 - **Total: 263 tests** (up from 245).
-
----
-
-## 0.4.0 — 2026-04-01
 
 ### VTA SDK Integration Module
 
@@ -112,16 +100,6 @@ Super Admin  (Admin + unrestricted)
 - **`WebvhClient` refactor** — Extracted `send()` and `with_auth()`
   helpers to eliminate repeated request/error-handling boilerplate
   across 4 methods.
-
-### Version Bumps
-
-| Crate          | Old   | New   |
-| -------------- | ----- | ----- |
-| vta-sdk        | 0.3.0 | 0.4.0 |
-| vta-service    | 0.3.0 | 0.4.0 |
-| vta-cli-common | 0.3.0 | 0.4.0 |
-| pnm-cli        | 0.3.0 | 0.4.0 |
-| cnm-cli        | 0.3.0 | 0.4.0 |
 
 ### Code Quality
 

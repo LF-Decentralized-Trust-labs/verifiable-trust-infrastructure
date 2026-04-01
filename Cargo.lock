@@ -1581,7 +1581,7 @@ dependencies = [
 
 [[package]]
 name = "cnm-cli"
-version = "0.5.0"
+version = "0.3.0"
 dependencies = [
  "affinidi-did-resolver-cache-sdk",
  "clap",
@@ -2197,7 +2197,7 @@ dependencies = [
 
 [[package]]
 name = "didcomm-test"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "affinidi-did-resolver-cache-sdk",
  "affinidi-tdk",
@@ -5023,7 +5023,7 @@ checksum = "7edddbd0b52d732b21ad9a5fab5c704c14cd949e5e9a1ec5929a24fded1b904c"
 
 [[package]]
 name = "pnm-cli"
-version = "0.5.0"
+version = "0.3.0"
 dependencies = [
  "affinidi-did-resolver-cache-sdk",
  "chrono",
@@ -7671,7 +7671,7 @@ dependencies = [
 
 [[package]]
 name = "vta-cli-common"
-version = "0.5.0"
+version = "0.3.0"
 dependencies = [
  "aes-gcm",
  "base64 0.22.1",
@@ -7688,7 +7688,7 @@ dependencies = [
 
 [[package]]
 name = "vta-enclave"
-version = "0.2.3"
+version = "0.3.0"
 dependencies = [
  "base64 0.22.1",
  "clap",
@@ -7703,7 +7703,7 @@ dependencies = [
 
 [[package]]
 name = "vta-sdk"
-version = "0.4.0"
+version = "0.3.0"
 dependencies = [
  "aes",
  "aes-gcm",
@@ -7730,7 +7730,7 @@ dependencies = [
 
 [[package]]
 name = "vta-service"
-version = "0.5.0"
+version = "0.3.0"
 dependencies = [
  "aes",
  "aes-gcm",
@@ -7798,7 +7798,7 @@ dependencies = [
 
 [[package]]
 name = "vtc-service"
-version = "0.2.3"
+version = "0.3.0"
 dependencies = [
  "affinidi-did-resolver-cache-sdk",
  "affinidi-tdk",
@@ -7843,7 +7843,7 @@ dependencies = [
 
 [[package]]
 name = "vti-common"
-version = "0.4.0"
+version = "0.3.0"
 dependencies = [
  "aes-gcm",
  "affinidi-tdk",
