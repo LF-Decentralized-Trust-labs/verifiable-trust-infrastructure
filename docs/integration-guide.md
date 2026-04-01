@@ -262,9 +262,12 @@ complete API reference.
 2. **Encrypt cached secrets** — The `SecretCache` file contains private keys.
    Encrypt it at rest or use a secret manager backend.
 
-3. **Use context scoping** — Each application should have its own VTA context
-   with the minimum required role (typically `application`). Avoid sharing
-   admin credentials across services.
+3. **Use context scoping and least-privilege roles** — Each application
+   should have its own VTA context with the minimum required role:
+   - **Reader** — for services that only need to read keys and config
+   - **Application** — for services that need to sign or write to cache
+   - **Admin** — only for services that manage keys and DIDs
+   Avoid sharing admin credentials across services.
 
 4. **Prefer server-side signing** — Use `POST /keys/{id}/sign` instead of
    exporting private keys when possible. This keeps keys inside the VTA's

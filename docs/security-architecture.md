@@ -34,7 +34,13 @@ The VTA implements a defense-in-depth security model with eight layers of protec
 
 ### Layer 5: Identity & Access Control
 - DID-based authentication via challenge-response (Ed25519 signatures)
-- Role hierarchy: super-admin > admin > initiator > application
+- Role hierarchy: super-admin > admin > initiator > application > reader > monitor
+- Action classification: every endpoint is classified as read, write, or manage
+  - **Reader**: read-only access to business data (keys, contexts, DIDs) within allowed contexts
+  - **Application**: can sign and write to cache (write actions)
+  - **Initiator**: can manage ACL entries and credentials (manage actions)
+  - **Admin**: full key/DID/audit management within contexts
+  - **Monitor**: infrastructure-only (metrics, health)
 - Context scoping restricts access to assigned application contexts
 - DID method whitelist blocks unsafe `did:web` in TEE mode
 - Session state machine prevents challenge replay

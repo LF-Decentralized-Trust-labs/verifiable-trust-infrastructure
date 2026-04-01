@@ -1,5 +1,68 @@
 # Changelog
 
+## 0.5.0 — 2026-04-01
+
+### Reader Role & Action Classification
+
+- **New `Reader` role** — Context-scoped read-only access to keys,
+  contexts, DIDs, and configuration. Sits between Application and
+  Monitor in the hierarchy. Readers can observe all business data
+  within their allowed contexts but cannot sign, write to cache,
+  create keys, or perform any mutating operation.
+- **Action classification** — Every endpoint is now classified as
+  read, write, or manage:
+  - **Read** (Reader+): list/get keys, contexts, DIDs, config, cache
+  - **Write** (Application+): sign, cache write/delete
+  - **Admin**: key create/delete/import, seeds, audit, DID management
+  - **Manage** (Initiator+): ACL operations, credential generation
+  - **Super Admin**: config update, context CRUD, backup, restart
+- **`require_read()` / `require_write()`** — New methods on
+  `AuthClaims` for action-level authorization checks.
+- **`WriteAuth` extractor** — Route-level extractor requiring at
+  least Application role. Applied to sign and cache write endpoints.
+- **Tightened auth on sign and cache** — `POST /keys/{id}/sign`,
+  `PUT /cache/{key}`, and `DELETE /cache/{key}` now require
+  Application role or higher (previously any authenticated user).
+- **Backup export route** — Changed from `AuthClaims` to
+  `SuperAdminAuth` extractor, matching the operations layer.
+- **DIDComm handler auth fixes** — 17 handlers now have explicit
+  role checks matching their REST counterparts (defense-in-depth).
+  Fixed `handle_update_retention` from `require_admin()` to
+  `require_super_admin()` to match REST.
+
+### Role Hierarchy (updated)
+
+```
+Super Admin  (Admin + unrestricted)
+  Admin      — key mgmt, DID ops, audit, seeds
+    Initiator  — ACL management, credential generation
+      Application — sign, cache write, standard API
+        Reader     — read-only business data access
+          Monitor  — metrics and health only
+```
+
+### Version Bumps
+
+| Crate          | Old   | New   |
+| -------------- | ----- | ----- |
+| vti-common     | 0.3.0 | 0.4.0 |
+| vta-service    | 0.4.0 | 0.5.0 |
+| vta-cli-common | 0.4.0 | 0.5.0 |
+| pnm-cli        | 0.4.0 | 0.5.0 |
+| cnm-cli        | 0.4.0 | 0.5.0 |
+| vta-enclave    | 0.2.2 | 0.2.3 |
+| vtc-service    | 0.2.2 | 0.2.3 |
+
+### Testing
+
+- **18 new tests** — Reader role parsing, `require_read`/`require_write`
+  enforcement across all roles, ACL validation (Reader cannot assign
+  roles, Initiator/Admin can create Reader), integration tests (Reader
+  can list keys, cannot sign, cannot create keys).
+- **Total: 263 tests** (up from 245).
+
+---
+
 ## 0.4.0 — 2026-04-01
 
 ### VTA SDK Integration Module
