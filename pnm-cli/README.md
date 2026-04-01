@@ -185,13 +185,16 @@ url = "http://localhost:3000"
 | Command                                                                    | Description     |
 | -------------------------------------------------------------------------- | --------------- |
 | `keys list [--status active\|revoked] [--limit N] [--offset N]`            | List keys       |
-| `keys create --key-type ed25519\|x25519 [--context-id ID] [--label LABEL]` | Create a key    |
+| `keys create --key-type ed25519\|x25519 [--context-id ID] [--label LABEL]` | Create a key (BIP-32 derived) |
+| `keys import --key-type TYPE --private-key KEY [--label L] [--context-id ID]` | Import an external private key |
 | `keys get <key_id>`                                                        | Get a key by ID |
 | `keys revoke <key_id>`                                                     | Revoke a key               |
 | `keys rename <key_id> <new_key_id>`                                        | Rename a key               |
 | `keys secrets [key_ids...] [--context ID]`                                 | Export secret key material |
 | `keys seeds`                                                               | List seed generations      |
 | `keys rotate-seed [--mnemonic PHRASE]`                                     | Rotate to a new seed       |
+
+The `keys import` command accepts `--private-key <multibase>` or `--private-key-file <path>` and supports key types `ed25519`, `x25519`, and `p256`. The private key is wrapped with ECDH-ES+AES-256-GCM before transmission over REST.
 
 ### Contexts
 

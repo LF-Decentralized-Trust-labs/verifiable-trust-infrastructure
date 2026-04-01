@@ -24,8 +24,8 @@ use crate::operations;
 use super::router::VtaState;
 
 use vta_sdk::protocols::{
-    acl_management, audit_management, context_management, credential_management,
-    key_management, seed_management, vta_management,
+    acl_management, audit_management, context_management, credential_management, key_management,
+    seed_management, vta_management,
 };
 
 type HandlerResult = Result<Option<DIDCommResponse>, DIDCommServiceError>;
@@ -53,23 +53,34 @@ pub async fn handle_create_key(
     message: Message,
     Extension(state): Extension<Arc<VtaState>>,
 ) -> HandlerResult {
-    let auth = auth_from_message(&message, &state.acl_ks).await.map_err(handler_err)?;
+    let auth = auth_from_message(&message, &state.acl_ks)
+        .await
+        .map_err(handler_err)?;
     auth.require_admin().map_err(handler_err)?;
     let body: vta_sdk::protocols::key_management::create::CreateKeyBody =
         serde_json::from_value(message.body).map_err(handler_err)?;
     let result = operations::keys::create_key(
-        &state.keys_ks, &state.contexts_ks, &state.seed_store, &state.audit_ks,
+        &state.keys_ks,
+        &state.contexts_ks,
+        &state.seed_store,
+        &state.audit_ks,
         &auth,
         operations::keys::CreateKeyParams {
             key_type: body.key_type,
-            derivation_path: if body.derivation_path.is_empty() { None } else { Some(body.derivation_path) },
+            derivation_path: if body.derivation_path.is_empty() {
+                None
+            } else {
+                Some(body.derivation_path)
+            },
             key_id: None,
             mnemonic: body.mnemonic,
             label: body.label,
             context_id: body.context_id,
         },
         "didcomm",
-    ).await.map_err(handler_err)?;
+    )
+    .await
+    .map_err(handler_err)?;
     response(key_management::CREATE_KEY_RESULT, &result)
 }
 
@@ -78,11 +89,14 @@ pub async fn handle_get_key(
     message: Message,
     Extension(state): Extension<Arc<VtaState>>,
 ) -> HandlerResult {
-    let auth = auth_from_message(&message, &state.acl_ks).await.map_err(handler_err)?;
+    let auth = auth_from_message(&message, &state.acl_ks)
+        .await
+        .map_err(handler_err)?;
     let body: vta_sdk::protocols::key_management::get::GetKeyBody =
         serde_json::from_value(message.body).map_err(handler_err)?;
     let result = operations::keys::get_key(&state.keys_ks, &auth, &body.key_id, "didcomm")
-        .await.map_err(handler_err)?;
+        .await
+        .map_err(handler_err)?;
     response(key_management::GET_KEY_RESULT, &result)
 }
 
@@ -91,17 +105,24 @@ pub async fn handle_list_keys(
     message: Message,
     Extension(state): Extension<Arc<VtaState>>,
 ) -> HandlerResult {
-    let auth = auth_from_message(&message, &state.acl_ks).await.map_err(handler_err)?;
+    let auth = auth_from_message(&message, &state.acl_ks)
+        .await
+        .map_err(handler_err)?;
     let body: vta_sdk::protocols::key_management::list::ListKeysBody =
         serde_json::from_value(message.body).map_err(handler_err)?;
     let result = operations::keys::list_keys(
-        &state.keys_ks, &auth,
+        &state.keys_ks,
+        &auth,
         operations::keys::ListKeysParams {
-            offset: body.offset, limit: body.limit,
-            status: body.status, context_id: body.context_id,
+            offset: body.offset,
+            limit: body.limit,
+            status: body.status,
+            context_id: body.context_id,
         },
         "didcomm",
-    ).await.map_err(handler_err)?;
+    )
+    .await
+    .map_err(handler_err)?;
     response(key_management::LIST_KEYS_RESULT, &result)
 }
 
@@ -110,13 +131,22 @@ pub async fn handle_rename_key(
     message: Message,
     Extension(state): Extension<Arc<VtaState>>,
 ) -> HandlerResult {
-    let auth = auth_from_message(&message, &state.acl_ks).await.map_err(handler_err)?;
+    let auth = auth_from_message(&message, &state.acl_ks)
+        .await
+        .map_err(handler_err)?;
     auth.require_admin().map_err(handler_err)?;
     let body: vta_sdk::protocols::key_management::rename::RenameKeyBody =
         serde_json::from_value(message.body).map_err(handler_err)?;
     let result = operations::keys::rename_key(
-        &state.keys_ks, &state.audit_ks, &auth, &body.key_id, &body.new_key_id, "didcomm",
-    ).await.map_err(handler_err)?;
+        &state.keys_ks,
+        &state.audit_ks,
+        &auth,
+        &body.key_id,
+        &body.new_key_id,
+        "didcomm",
+    )
+    .await
+    .map_err(handler_err)?;
     response(key_management::RENAME_KEY_RESULT, &result)
 }
 
@@ -125,13 +155,22 @@ pub async fn handle_revoke_key(
     message: Message,
     Extension(state): Extension<Arc<VtaState>>,
 ) -> HandlerResult {
-    let auth = auth_from_message(&message, &state.acl_ks).await.map_err(handler_err)?;
+    let auth = auth_from_message(&message, &state.acl_ks)
+        .await
+        .map_err(handler_err)?;
     auth.require_admin().map_err(handler_err)?;
     let body: vta_sdk::protocols::key_management::revoke::RevokeKeyBody =
         serde_json::from_value(message.body).map_err(handler_err)?;
     let result = operations::keys::revoke_key(
-        &state.keys_ks, &state.audit_ks, &auth, &body.key_id, "didcomm",
-    ).await.map_err(handler_err)?;
+        &state.keys_ks,
+        &state.imported_ks,
+        &state.audit_ks,
+        &auth,
+        &body.key_id,
+        "didcomm",
+    )
+    .await
+    .map_err(handler_err)?;
     response(key_management::REVOKE_KEY_RESULT, &result)
 }
 
@@ -140,13 +179,23 @@ pub async fn handle_get_key_secret(
     message: Message,
     Extension(state): Extension<Arc<VtaState>>,
 ) -> HandlerResult {
-    let auth = auth_from_message(&message, &state.acl_ks).await.map_err(handler_err)?;
+    let auth = auth_from_message(&message, &state.acl_ks)
+        .await
+        .map_err(handler_err)?;
     auth.require_admin().map_err(handler_err)?;
     let body: vta_sdk::protocols::key_management::secret::GetKeySecretBody =
         serde_json::from_value(message.body).map_err(handler_err)?;
     let result = operations::keys::get_key_secret(
-        &state.keys_ks, &state.seed_store, &state.audit_ks, &auth, &body.key_id, "didcomm",
-    ).await.map_err(handler_err)?;
+        &state.keys_ks,
+        &state.imported_ks,
+        &state.seed_store,
+        &state.audit_ks,
+        &auth,
+        &body.key_id,
+        "didcomm",
+    )
+    .await
+    .map_err(handler_err)?;
     response(key_management::GET_KEY_SECRET_RESULT, &result)
 }
 
@@ -155,7 +204,10 @@ pub async fn handle_sign_request(
     message: Message,
     Extension(state): Extension<Arc<VtaState>>,
 ) -> HandlerResult {
-    let auth = auth_from_message(&message, &state.acl_ks).await.map_err(handler_err)?;
+    let auth = auth_from_message(&message, &state.acl_ks)
+        .await
+        .map_err(handler_err)?;
+    auth.require_write().map_err(handler_err)?;
     let body: vta_sdk::protocols::key_management::sign::SignRequestBody =
         serde_json::from_value(message.body).map_err(handler_err)?;
 
@@ -164,9 +216,17 @@ pub async fn handle_sign_request(
         .map_err(|e| handler_err(format!("invalid base64url payload: {e}")))?;
 
     let result = operations::keys::sign_payload(
-        &state.keys_ks, &state.seed_store, &auth,
-        &body.key_id, &payload, &body.algorithm, "didcomm",
-    ).await.map_err(handler_err)?;
+        &state.keys_ks,
+        &state.imported_ks,
+        &state.seed_store,
+        &auth,
+        &body.key_id,
+        &payload,
+        &body.algorithm,
+        "didcomm",
+    )
+    .await
+    .map_err(handler_err)?;
     response(key_management::SIGN_RESULT, &result)
 }
 
@@ -179,10 +239,13 @@ pub async fn handle_list_seeds(
     message: Message,
     Extension(state): Extension<Arc<VtaState>>,
 ) -> HandlerResult {
-    let auth = auth_from_message(&message, &state.acl_ks).await.map_err(handler_err)?;
+    let auth = auth_from_message(&message, &state.acl_ks)
+        .await
+        .map_err(handler_err)?;
     auth.require_admin().map_err(handler_err)?;
     let result = operations::seeds::list_seeds(&state.keys_ks, "didcomm")
-        .await.map_err(handler_err)?;
+        .await
+        .map_err(handler_err)?;
     response(seed_management::LIST_SEEDS_RESULT, &result)
 }
 
@@ -191,14 +254,23 @@ pub async fn handle_rotate_seed(
     message: Message,
     Extension(state): Extension<Arc<VtaState>>,
 ) -> HandlerResult {
-    let auth = auth_from_message(&message, &state.acl_ks).await.map_err(handler_err)?;
+    let auth = auth_from_message(&message, &state.acl_ks)
+        .await
+        .map_err(handler_err)?;
     auth.require_admin().map_err(handler_err)?;
     let body: vta_sdk::protocols::seed_management::rotate::RotateSeedBody =
         serde_json::from_value(message.body).map_err(handler_err)?;
     let result = operations::seeds::rotate_seed(
-        &state.keys_ks, &state.seed_store, &state.audit_ks, &auth.did,
-        body.mnemonic.as_deref(), "didcomm",
-    ).await.map_err(handler_err)?;
+        &state.keys_ks,
+        &state.imported_ks,
+        &state.seed_store,
+        &state.audit_ks,
+        &auth.did,
+        body.mnemonic.as_deref(),
+        "didcomm",
+    )
+    .await
+    .map_err(handler_err)?;
     response(seed_management::ROTATE_SEED_RESULT, &result)
 }
 
@@ -211,12 +283,22 @@ pub async fn handle_create_context(
     message: Message,
     Extension(state): Extension<Arc<VtaState>>,
 ) -> HandlerResult {
-    let auth = auth_from_message(&message, &state.acl_ks).await.map_err(handler_err)?;
+    let auth = auth_from_message(&message, &state.acl_ks)
+        .await
+        .map_err(handler_err)?;
+    auth.require_super_admin().map_err(handler_err)?;
     let body: vta_sdk::protocols::context_management::create::CreateContextBody =
         serde_json::from_value(message.body).map_err(handler_err)?;
     let result = operations::contexts::create_context(
-        &state.contexts_ks, &auth, &body.id, body.name, body.description, "didcomm",
-    ).await.map_err(handler_err)?;
+        &state.contexts_ks,
+        &auth,
+        &body.id,
+        body.name,
+        body.description,
+        "didcomm",
+    )
+    .await
+    .map_err(handler_err)?;
     response(context_management::CREATE_CONTEXT_RESULT, &result)
 }
 
@@ -225,12 +307,15 @@ pub async fn handle_get_context(
     message: Message,
     Extension(state): Extension<Arc<VtaState>>,
 ) -> HandlerResult {
-    let auth = auth_from_message(&message, &state.acl_ks).await.map_err(handler_err)?;
+    let auth = auth_from_message(&message, &state.acl_ks)
+        .await
+        .map_err(handler_err)?;
     let body: vta_sdk::protocols::context_management::get::GetContextBody =
         serde_json::from_value(message.body).map_err(handler_err)?;
-    let result = operations::contexts::get_context_op(
-        &state.contexts_ks, &auth, &body.id, "didcomm",
-    ).await.map_err(handler_err)?;
+    let result =
+        operations::contexts::get_context_op(&state.contexts_ks, &auth, &body.id, "didcomm")
+            .await
+            .map_err(handler_err)?;
     response(context_management::GET_CONTEXT_RESULT, &result)
 }
 
@@ -239,10 +324,12 @@ pub async fn handle_list_contexts(
     message: Message,
     Extension(state): Extension<Arc<VtaState>>,
 ) -> HandlerResult {
-    let auth = auth_from_message(&message, &state.acl_ks).await.map_err(handler_err)?;
-    let result = operations::contexts::list_contexts(
-        &state.contexts_ks, &auth, "didcomm",
-    ).await.map_err(handler_err)?;
+    let auth = auth_from_message(&message, &state.acl_ks)
+        .await
+        .map_err(handler_err)?;
+    let result = operations::contexts::list_contexts(&state.contexts_ks, &auth, "didcomm")
+        .await
+        .map_err(handler_err)?;
     response(context_management::LIST_CONTEXTS_RESULT, &result)
 }
 
@@ -251,17 +338,49 @@ pub async fn handle_update_context(
     message: Message,
     Extension(state): Extension<Arc<VtaState>>,
 ) -> HandlerResult {
-    let auth = auth_from_message(&message, &state.acl_ks).await.map_err(handler_err)?;
+    let auth = auth_from_message(&message, &state.acl_ks)
+        .await
+        .map_err(handler_err)?;
+    auth.require_super_admin().map_err(handler_err)?;
     let body: vta_sdk::protocols::context_management::update::UpdateContextBody =
         serde_json::from_value(message.body).map_err(handler_err)?;
     let result = operations::contexts::update_context(
-        &state.contexts_ks, &auth, &body.id,
+        &state.contexts_ks,
+        &auth,
+        &body.id,
         operations::contexts::UpdateContextParams {
-            name: body.name, did: body.did, description: body.description,
+            name: body.name,
+            did: body.did,
+            description: body.description,
         },
         "didcomm",
-    ).await.map_err(handler_err)?;
+    )
+    .await
+    .map_err(handler_err)?;
     response(context_management::UPDATE_CONTEXT_RESULT, &result)
+}
+
+pub async fn handle_update_context_did(
+    _ctx: HandlerContext,
+    message: Message,
+    Extension(state): Extension<Arc<VtaState>>,
+) -> HandlerResult {
+    let auth = auth_from_message(&message, &state.acl_ks)
+        .await
+        .map_err(handler_err)?;
+    auth.require_admin().map_err(handler_err)?;
+    let body: vta_sdk::protocols::context_management::update_did::UpdateContextDidBody =
+        serde_json::from_value(message.body).map_err(handler_err)?;
+    let result = operations::contexts::update_context_did(
+        &state.contexts_ks,
+        &auth,
+        &body.id,
+        body.did,
+        "didcomm",
+    )
+    .await
+    .map_err(handler_err)?;
+    response(context_management::UPDATE_CONTEXT_DID_RESULT, &result)
 }
 
 pub async fn handle_preview_delete_context(
@@ -269,15 +388,24 @@ pub async fn handle_preview_delete_context(
     message: Message,
     Extension(state): Extension<Arc<VtaState>>,
 ) -> HandlerResult {
-    let auth = auth_from_message(&message, &state.acl_ks).await.map_err(handler_err)?;
+    let auth = auth_from_message(&message, &state.acl_ks)
+        .await
+        .map_err(handler_err)?;
+    auth.require_super_admin().map_err(handler_err)?;
     let body: vta_sdk::protocols::context_management::delete::DeleteContextPreviewBody =
         serde_json::from_value(message.body).map_err(handler_err)?;
     let result = operations::contexts::preview_delete_context(
-        &state.contexts_ks, &state.keys_ks, &state.acl_ks,
+        &state.contexts_ks,
+        &state.keys_ks,
+        &state.acl_ks,
         #[cfg(feature = "webvh")]
         &state.webvh_ks,
-        &auth, &body.id, "didcomm",
-    ).await.map_err(handler_err)?;
+        &auth,
+        &body.id,
+        "didcomm",
+    )
+    .await
+    .map_err(handler_err)?;
     response(context_management::PREVIEW_DELETE_CONTEXT_RESULT, &result)
 }
 
@@ -286,15 +414,16 @@ pub async fn handle_delete_context(
     message: Message,
     Extension(state): Extension<Arc<VtaState>>,
 ) -> HandlerResult {
-    let auth = auth_from_message(&message, &state.acl_ks).await.map_err(handler_err)?;
+    let auth = auth_from_message(&message, &state.acl_ks)
+        .await
+        .map_err(handler_err)?;
+    auth.require_super_admin().map_err(handler_err)?;
     let body: vta_sdk::protocols::context_management::delete::DeleteContextBody =
         serde_json::from_value(message.body).map_err(handler_err)?;
-    let result = operations::contexts::delete_context(
-        &state.contexts_ks, &state.keys_ks, &state.acl_ks,
-        #[cfg(feature = "webvh")]
-        &state.webvh_ks,
-        &auth, &body.id, body.force, "didcomm",
-    ).await.map_err(handler_err)?;
+    let ks = operations::Keyspaces::from_vta_state(&state);
+    let result = operations::contexts::delete_context(&ks, &auth, &body.id, body.force, "didcomm")
+        .await
+        .map_err(handler_err)?;
     response(context_management::DELETE_CONTEXT_RESULT, &result)
 }
 
@@ -307,13 +436,25 @@ pub async fn handle_create_acl(
     message: Message,
     Extension(state): Extension<Arc<VtaState>>,
 ) -> HandlerResult {
-    let auth = auth_from_message(&message, &state.acl_ks).await.map_err(handler_err)?;
+    let auth = auth_from_message(&message, &state.acl_ks)
+        .await
+        .map_err(handler_err)?;
+    auth.require_manage().map_err(handler_err)?;
     let body: vta_sdk::protocols::acl_management::create::CreateAclBody =
         serde_json::from_value(message.body).map_err(handler_err)?;
     let role = Role::parse(&body.role).map_err(handler_err)?;
     let result = operations::acl::create_acl(
-        &state.acl_ks, &state.audit_ks, &auth, &body.did, role, body.label, body.allowed_contexts, "didcomm",
-    ).await.map_err(handler_err)?;
+        &state.acl_ks,
+        &state.audit_ks,
+        &auth,
+        &body.did,
+        role,
+        body.label,
+        body.allowed_contexts,
+        "didcomm",
+    )
+    .await
+    .map_err(handler_err)?;
     response(acl_management::CREATE_ACL_RESULT, &result)
 }
 
@@ -322,11 +463,15 @@ pub async fn handle_get_acl(
     message: Message,
     Extension(state): Extension<Arc<VtaState>>,
 ) -> HandlerResult {
-    let auth = auth_from_message(&message, &state.acl_ks).await.map_err(handler_err)?;
+    let auth = auth_from_message(&message, &state.acl_ks)
+        .await
+        .map_err(handler_err)?;
+    auth.require_manage().map_err(handler_err)?;
     let body: vta_sdk::protocols::acl_management::get::GetAclBody =
         serde_json::from_value(message.body).map_err(handler_err)?;
     let result = operations::acl::get_acl(&state.acl_ks, &auth, &body.did, "didcomm")
-        .await.map_err(handler_err)?;
+        .await
+        .map_err(handler_err)?;
     response(acl_management::GET_ACL_RESULT, &result)
 }
 
@@ -335,11 +480,16 @@ pub async fn handle_list_acl(
     message: Message,
     Extension(state): Extension<Arc<VtaState>>,
 ) -> HandlerResult {
-    let auth = auth_from_message(&message, &state.acl_ks).await.map_err(handler_err)?;
+    let auth = auth_from_message(&message, &state.acl_ks)
+        .await
+        .map_err(handler_err)?;
+    auth.require_manage().map_err(handler_err)?;
     let body: vta_sdk::protocols::acl_management::list::ListAclBody =
         serde_json::from_value(message.body).map_err(handler_err)?;
-    let result = operations::acl::list_acl(&state.acl_ks, &auth, body.context.as_deref(), "didcomm")
-        .await.map_err(handler_err)?;
+    let result =
+        operations::acl::list_acl(&state.acl_ks, &auth, body.context.as_deref(), "didcomm")
+            .await
+            .map_err(handler_err)?;
     response(acl_management::LIST_ACL_RESULT, &result)
 }
 
@@ -348,7 +498,10 @@ pub async fn handle_update_acl(
     message: Message,
     Extension(state): Extension<Arc<VtaState>>,
 ) -> HandlerResult {
-    let auth = auth_from_message(&message, &state.acl_ks).await.map_err(handler_err)?;
+    let auth = auth_from_message(&message, &state.acl_ks)
+        .await
+        .map_err(handler_err)?;
+    auth.require_manage().map_err(handler_err)?;
     let body: vta_sdk::protocols::acl_management::update::UpdateAclBody =
         serde_json::from_value(message.body).map_err(handler_err)?;
     let role = match body.role {
@@ -356,10 +509,19 @@ pub async fn handle_update_acl(
         None => None,
     };
     let result = operations::acl::update_acl(
-        &state.acl_ks, &state.audit_ks, &auth, &body.did,
-        operations::acl::UpdateAclParams { role, label: body.label, allowed_contexts: body.allowed_contexts },
+        &state.acl_ks,
+        &state.audit_ks,
+        &auth,
+        &body.did,
+        operations::acl::UpdateAclParams {
+            role,
+            label: body.label,
+            allowed_contexts: body.allowed_contexts,
+        },
         "didcomm",
-    ).await.map_err(handler_err)?;
+    )
+    .await
+    .map_err(handler_err)?;
     response(acl_management::UPDATE_ACL_RESULT, &result)
 }
 
@@ -368,12 +530,16 @@ pub async fn handle_delete_acl(
     message: Message,
     Extension(state): Extension<Arc<VtaState>>,
 ) -> HandlerResult {
-    let auth = auth_from_message(&message, &state.acl_ks).await.map_err(handler_err)?;
+    let auth = auth_from_message(&message, &state.acl_ks)
+        .await
+        .map_err(handler_err)?;
+    auth.require_manage().map_err(handler_err)?;
     let body: vta_sdk::protocols::acl_management::delete::DeleteAclBody =
         serde_json::from_value(message.body).map_err(handler_err)?;
-    let result = operations::acl::delete_acl(
-        &state.acl_ks, &state.audit_ks, &auth, &body.did, "didcomm",
-    ).await.map_err(handler_err)?;
+    let result =
+        operations::acl::delete_acl(&state.acl_ks, &state.audit_ks, &auth, &body.did, "didcomm")
+            .await
+            .map_err(handler_err)?;
     response(acl_management::DELETE_ACL_RESULT, &result)
 }
 
@@ -386,11 +552,15 @@ pub async fn handle_list_logs(
     message: Message,
     Extension(state): Extension<Arc<VtaState>>,
 ) -> HandlerResult {
-    let auth = auth_from_message(&message, &state.acl_ks).await.map_err(handler_err)?;
+    let auth = auth_from_message(&message, &state.acl_ks)
+        .await
+        .map_err(handler_err)?;
+    auth.require_admin().map_err(handler_err)?;
     let body: vta_sdk::protocols::audit_management::list::ListAuditLogsBody =
         serde_json::from_value(message.body).map_err(handler_err)?;
     let result = operations::audit::list_audit_logs(&state.audit_ks, &auth, &body, "didcomm")
-        .await.map_err(handler_err)?;
+        .await
+        .map_err(handler_err)?;
     response(audit_management::LIST_LOGS_RESULT, &result)
 }
 
@@ -399,9 +569,13 @@ pub async fn handle_get_retention(
     message: Message,
     Extension(state): Extension<Arc<VtaState>>,
 ) -> HandlerResult {
-    let auth = auth_from_message(&message, &state.acl_ks).await.map_err(handler_err)?;
+    let auth = auth_from_message(&message, &state.acl_ks)
+        .await
+        .map_err(handler_err)?;
+    auth.require_admin().map_err(handler_err)?;
     let result = operations::audit::get_retention(&state.config, &auth, "didcomm")
-        .await.map_err(handler_err)?;
+        .await
+        .map_err(handler_err)?;
     response(audit_management::GET_RETENTION_RESULT, &result)
 }
 
@@ -410,13 +584,21 @@ pub async fn handle_update_retention(
     message: Message,
     Extension(state): Extension<Arc<VtaState>>,
 ) -> HandlerResult {
-    let auth = auth_from_message(&message, &state.acl_ks).await.map_err(handler_err)?;
-    auth.require_admin().map_err(handler_err)?;
+    let auth = auth_from_message(&message, &state.acl_ks)
+        .await
+        .map_err(handler_err)?;
+    auth.require_super_admin().map_err(handler_err)?;
     let body: vta_sdk::protocols::audit_management::retention::UpdateRetentionBody =
         serde_json::from_value(message.body).map_err(handler_err)?;
     let result = operations::audit::update_retention(
-        &state.config, &state.audit_ks, &auth, body.retention_days, "didcomm",
-    ).await.map_err(handler_err)?;
+        &state.config,
+        &state.audit_ks,
+        &auth,
+        body.retention_days,
+        "didcomm",
+    )
+    .await
+    .map_err(handler_err)?;
     response(audit_management::UPDATE_RETENTION_RESULT, &result)
 }
 
@@ -429,9 +611,12 @@ pub async fn handle_get_config(
     message: Message,
     Extension(state): Extension<Arc<VtaState>>,
 ) -> HandlerResult {
-    let auth = auth_from_message(&message, &state.acl_ks).await.map_err(handler_err)?;
+    let auth = auth_from_message(&message, &state.acl_ks)
+        .await
+        .map_err(handler_err)?;
     let result = operations::config::get_config(&state.config, &auth, "didcomm")
-        .await.map_err(handler_err)?;
+        .await
+        .map_err(handler_err)?;
     response(vta_management::GET_CONFIG_RESULT, &result)
 }
 
@@ -440,16 +625,24 @@ pub async fn handle_update_config(
     message: Message,
     Extension(state): Extension<Arc<VtaState>>,
 ) -> HandlerResult {
-    let auth = auth_from_message(&message, &state.acl_ks).await.map_err(handler_err)?;
+    let auth = auth_from_message(&message, &state.acl_ks)
+        .await
+        .map_err(handler_err)?;
+    auth.require_super_admin().map_err(handler_err)?;
     let body: vta_sdk::protocols::vta_management::update_config::UpdateConfigBody =
         serde_json::from_value(message.body).map_err(handler_err)?;
     let result = operations::config::update_config(
-        &state.config, &auth,
+        &state.config,
+        &auth,
         operations::config::UpdateConfigParams {
-            vta_did: body.vta_did, vta_name: body.vta_name, public_url: body.public_url,
+            vta_did: body.vta_did,
+            vta_name: body.vta_name,
+            public_url: body.public_url,
         },
         "didcomm",
-    ).await.map_err(handler_err)?;
+    )
+    .await
+    .map_err(handler_err)?;
     response(vta_management::UPDATE_CONFIG_RESULT, &result)
 }
 
@@ -462,13 +655,24 @@ pub async fn handle_generate_credentials(
     message: Message,
     Extension(state): Extension<Arc<VtaState>>,
 ) -> HandlerResult {
-    let auth = auth_from_message(&message, &state.acl_ks).await.map_err(handler_err)?;
+    let auth = auth_from_message(&message, &state.acl_ks)
+        .await
+        .map_err(handler_err)?;
+    auth.require_manage().map_err(handler_err)?;
     let body: vta_sdk::protocols::credential_management::generate::GenerateCredentialsBody =
         serde_json::from_value(message.body).map_err(handler_err)?;
     let role = Role::parse(&body.role).map_err(handler_err)?;
     let result = operations::credentials::generate_credentials(
-        &state.acl_ks, &state.config, &auth, role, body.label, body.allowed_contexts, "didcomm",
-    ).await.map_err(handler_err)?;
+        &state.acl_ks,
+        &state.config,
+        &auth,
+        role,
+        body.label,
+        body.allowed_contexts,
+        "didcomm",
+    )
+    .await
+    .map_err(handler_err)?;
     response(credential_management::GENERATE_CREDENTIALS_RESULT, &result)
 }
 
@@ -482,11 +686,15 @@ pub async fn handle_create_did_webvh(
     message: Message,
     Extension(state): Extension<Arc<VtaState>>,
 ) -> HandlerResult {
-    let auth = auth_from_message(&message, &state.acl_ks).await.map_err(handler_err)?;
+    let auth = auth_from_message(&message, &state.acl_ks)
+        .await
+        .map_err(handler_err)?;
     let body: vta_sdk::protocols::did_management::create::CreateDidWebvhBody =
         serde_json::from_value(message.body).map_err(handler_err)?;
     let config = state.config.read().await;
-    let did_resolver = state.did_resolver.as_ref()
+    let did_resolver = state
+        .did_resolver
+        .as_ref()
         .ok_or_else(|| handler_err("DID resolver not available"))?;
 
     // NOTE: The DIDComm bridge for WebVH server communication is not yet
@@ -496,19 +704,33 @@ pub async fn handle_create_did_webvh(
     let bridge = std::sync::Arc::new(tokio::sync::RwLock::new(None));
 
     let result = operations::did_webvh::create_did_webvh(
-        &state.keys_ks, &state.contexts_ks, &state.webvh_ks, &*state.seed_store,
-        &config, &auth,
+        &state.keys_ks,
+        &state.contexts_ks,
+        &state.webvh_ks,
+        &*state.seed_store,
+        &config,
+        &auth,
         operations::did_webvh::CreateDidWebvhParams {
-            context_id: body.context_id, server_id: body.server_id,
-            url: body.url, path: body.path, label: body.label,
+            context_id: body.context_id,
+            server_id: body.server_id,
+            url: body.url,
+            path: body.path,
+            label: body.label,
             portable: body.portable.unwrap_or(true),
             add_mediator_service: body.add_mediator_service.unwrap_or(false),
             additional_services: body.additional_services,
             pre_rotation_count: body.pre_rotation_count.unwrap_or(0),
         },
-        did_resolver, &bridge, "didcomm",
-    ).await.map_err(handler_err)?;
-    response(vta_sdk::protocols::did_management::CREATE_DID_WEBVH_RESULT, &result)
+        did_resolver,
+        &bridge,
+        "didcomm",
+    )
+    .await
+    .map_err(handler_err)?;
+    response(
+        vta_sdk::protocols::did_management::CREATE_DID_WEBVH_RESULT,
+        &result,
+    )
 }
 
 #[cfg(feature = "webvh")]
@@ -517,12 +739,18 @@ pub async fn handle_get_did_webvh(
     message: Message,
     Extension(state): Extension<Arc<VtaState>>,
 ) -> HandlerResult {
-    let auth = auth_from_message(&message, &state.acl_ks).await.map_err(handler_err)?;
+    let auth = auth_from_message(&message, &state.acl_ks)
+        .await
+        .map_err(handler_err)?;
     let body: vta_sdk::protocols::did_management::get::GetDidWebvhBody =
         serde_json::from_value(message.body).map_err(handler_err)?;
     let result = operations::did_webvh::get_did_webvh(&state.webvh_ks, &auth, &body.did, "didcomm")
-        .await.map_err(handler_err)?;
-    response(vta_sdk::protocols::did_management::GET_DID_WEBVH_RESULT, &result)
+        .await
+        .map_err(handler_err)?;
+    response(
+        vta_sdk::protocols::did_management::GET_DID_WEBVH_RESULT,
+        &result,
+    )
 }
 
 #[cfg(feature = "webvh")]
@@ -531,12 +759,19 @@ pub async fn handle_get_did_webvh_log(
     message: Message,
     Extension(state): Extension<Arc<VtaState>>,
 ) -> HandlerResult {
-    let auth = auth_from_message(&message, &state.acl_ks).await.map_err(handler_err)?;
+    let auth = auth_from_message(&message, &state.acl_ks)
+        .await
+        .map_err(handler_err)?;
     let body: vta_sdk::protocols::did_management::get::GetDidWebvhBody =
         serde_json::from_value(message.body).map_err(handler_err)?;
-    let result = operations::did_webvh::get_did_webvh_log(&state.webvh_ks, &auth, &body.did, "didcomm")
-        .await.map_err(handler_err)?;
-    response(vta_sdk::protocols::did_management::GET_DID_WEBVH_LOG_RESULT, &result)
+    let result =
+        operations::did_webvh::get_did_webvh_log(&state.webvh_ks, &auth, &body.did, "didcomm")
+            .await
+            .map_err(handler_err)?;
+    response(
+        vta_sdk::protocols::did_management::GET_DID_WEBVH_LOG_RESULT,
+        &result,
+    )
 }
 
 #[cfg(feature = "webvh")]
@@ -545,13 +780,24 @@ pub async fn handle_list_dids_webvh(
     message: Message,
     Extension(state): Extension<Arc<VtaState>>,
 ) -> HandlerResult {
-    let auth = auth_from_message(&message, &state.acl_ks).await.map_err(handler_err)?;
+    let auth = auth_from_message(&message, &state.acl_ks)
+        .await
+        .map_err(handler_err)?;
     let body: vta_sdk::protocols::did_management::list::ListDidsWebvhBody =
         serde_json::from_value(message.body).map_err(handler_err)?;
     let result = operations::did_webvh::list_dids_webvh(
-        &state.webvh_ks, &auth, body.context_id.as_deref(), body.server_id.as_deref(), "didcomm",
-    ).await.map_err(handler_err)?;
-    response(vta_sdk::protocols::did_management::LIST_DIDS_WEBVH_RESULT, &result)
+        &state.webvh_ks,
+        &auth,
+        body.context_id.as_deref(),
+        body.server_id.as_deref(),
+        "didcomm",
+    )
+    .await
+    .map_err(handler_err)?;
+    response(
+        vta_sdk::protocols::did_management::LIST_DIDS_WEBVH_RESULT,
+        &result,
+    )
 }
 
 #[cfg(feature = "webvh")]
@@ -560,19 +806,35 @@ pub async fn handle_delete_did_webvh(
     message: Message,
     Extension(state): Extension<Arc<VtaState>>,
 ) -> HandlerResult {
-    let auth = auth_from_message(&message, &state.acl_ks).await.map_err(handler_err)?;
+    let auth = auth_from_message(&message, &state.acl_ks)
+        .await
+        .map_err(handler_err)?;
     let body: vta_sdk::protocols::did_management::delete::DeleteDidWebvhBody =
         serde_json::from_value(message.body).map_err(handler_err)?;
     let config = state.config.read().await;
-    let did_resolver = state.did_resolver.as_ref()
+    let did_resolver = state
+        .did_resolver
+        .as_ref()
         .ok_or_else(|| handler_err("DID resolver not available"))?;
     // NOTE: Bridge not yet wired — see handle_create_did_webvh comment
     let bridge = std::sync::Arc::new(tokio::sync::RwLock::new(None));
     let result = operations::did_webvh::delete_did_webvh(
-        &state.webvh_ks, &state.keys_ks, &*state.seed_store, &config, &auth,
-        &body.did, did_resolver, &bridge, "didcomm",
-    ).await.map_err(handler_err)?;
-    response(vta_sdk::protocols::did_management::DELETE_DID_WEBVH_RESULT, &result)
+        &state.webvh_ks,
+        &state.keys_ks,
+        &*state.seed_store,
+        &config,
+        &auth,
+        &body.did,
+        did_resolver,
+        &bridge,
+        "didcomm",
+    )
+    .await
+    .map_err(handler_err)?;
+    response(
+        vta_sdk::protocols::did_management::DELETE_DID_WEBVH_RESULT,
+        &result,
+    )
 }
 
 #[cfg(feature = "webvh")]
@@ -581,15 +843,30 @@ pub async fn handle_add_webvh_server(
     message: Message,
     Extension(state): Extension<Arc<VtaState>>,
 ) -> HandlerResult {
-    let auth = auth_from_message(&message, &state.acl_ks).await.map_err(handler_err)?;
+    let auth = auth_from_message(&message, &state.acl_ks)
+        .await
+        .map_err(handler_err)?;
     let body: vta_sdk::protocols::did_management::servers::AddWebvhServerBody =
         serde_json::from_value(message.body).map_err(handler_err)?;
-    let did_resolver = state.did_resolver.as_ref()
+    let did_resolver = state
+        .did_resolver
+        .as_ref()
         .ok_or_else(|| handler_err("DID resolver not available"))?;
     let result = operations::did_webvh::add_webvh_server(
-        &state.webvh_ks, &auth, &body.id, &body.did, body.label, did_resolver, "didcomm",
-    ).await.map_err(handler_err)?;
-    response(vta_sdk::protocols::did_management::ADD_WEBVH_SERVER_RESULT, &result)
+        &state.webvh_ks,
+        &auth,
+        &body.id,
+        &body.did,
+        body.label,
+        did_resolver,
+        "didcomm",
+    )
+    .await
+    .map_err(handler_err)?;
+    response(
+        vta_sdk::protocols::did_management::ADD_WEBVH_SERVER_RESULT,
+        &result,
+    )
 }
 
 #[cfg(feature = "webvh")]
@@ -598,10 +875,16 @@ pub async fn handle_list_webvh_servers(
     message: Message,
     Extension(state): Extension<Arc<VtaState>>,
 ) -> HandlerResult {
-    let auth = auth_from_message(&message, &state.acl_ks).await.map_err(handler_err)?;
+    let auth = auth_from_message(&message, &state.acl_ks)
+        .await
+        .map_err(handler_err)?;
     let result = operations::did_webvh::list_webvh_servers(&state.webvh_ks, &auth, "didcomm")
-        .await.map_err(handler_err)?;
-    response(vta_sdk::protocols::did_management::LIST_WEBVH_SERVERS_RESULT, &result)
+        .await
+        .map_err(handler_err)?;
+    response(
+        vta_sdk::protocols::did_management::LIST_WEBVH_SERVERS_RESULT,
+        &result,
+    )
 }
 
 #[cfg(feature = "webvh")]
@@ -610,13 +893,24 @@ pub async fn handle_update_webvh_server(
     message: Message,
     Extension(state): Extension<Arc<VtaState>>,
 ) -> HandlerResult {
-    let auth = auth_from_message(&message, &state.acl_ks).await.map_err(handler_err)?;
+    let auth = auth_from_message(&message, &state.acl_ks)
+        .await
+        .map_err(handler_err)?;
     let body: vta_sdk::protocols::did_management::servers::UpdateWebvhServerBody =
         serde_json::from_value(message.body).map_err(handler_err)?;
     let result = operations::did_webvh::update_webvh_server(
-        &state.webvh_ks, &auth, &body.id, body.label, "didcomm",
-    ).await.map_err(handler_err)?;
-    response(vta_sdk::protocols::did_management::UPDATE_WEBVH_SERVER_RESULT, &result)
+        &state.webvh_ks,
+        &auth,
+        &body.id,
+        body.label,
+        "didcomm",
+    )
+    .await
+    .map_err(handler_err)?;
+    response(
+        vta_sdk::protocols::did_management::UPDATE_WEBVH_SERVER_RESULT,
+        &result,
+    )
 }
 
 #[cfg(feature = "webvh")]
@@ -625,12 +919,19 @@ pub async fn handle_remove_webvh_server(
     message: Message,
     Extension(state): Extension<Arc<VtaState>>,
 ) -> HandlerResult {
-    let auth = auth_from_message(&message, &state.acl_ks).await.map_err(handler_err)?;
+    let auth = auth_from_message(&message, &state.acl_ks)
+        .await
+        .map_err(handler_err)?;
     let body: vta_sdk::protocols::did_management::servers::RemoveWebvhServerBody =
         serde_json::from_value(message.body).map_err(handler_err)?;
-    let result = operations::did_webvh::remove_webvh_server(&state.webvh_ks, &auth, &body.id, "didcomm")
-        .await.map_err(handler_err)?;
-    response(vta_sdk::protocols::did_management::REMOVE_WEBVH_SERVER_RESULT, &result)
+    let result =
+        operations::did_webvh::remove_webvh_server(&state.webvh_ks, &auth, &body.id, "didcomm")
+            .await
+            .map_err(handler_err)?;
+    response(
+        vta_sdk::protocols::did_management::REMOVE_WEBVH_SERVER_RESULT,
+        &result,
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -643,10 +944,15 @@ pub async fn handle_tee_status(
     _message: Message,
     Extension(state): Extension<Arc<VtaState>>,
 ) -> HandlerResult {
-    let tee_state = state.tee_state.as_ref()
+    let tee_state = state
+        .tee_state
+        .as_ref()
         .ok_or_else(|| handler_err("TEE attestation is not enabled on this VTA"))?;
     let status = operations::attestation::get_tee_status(tee_state);
-    response(vta_sdk::protocols::attestation_management::GET_TEE_STATUS_RESULT, &status)
+    response(
+        vta_sdk::protocols::attestation_management::GET_TEE_STATUS_RESULT,
+        &status,
+    )
 }
 
 #[cfg(feature = "tee")]
@@ -655,14 +961,20 @@ pub async fn handle_request_attestation(
     message: Message,
     Extension(state): Extension<Arc<VtaState>>,
 ) -> HandlerResult {
-    let tee_state = state.tee_state.as_ref()
+    let tee_state = state
+        .tee_state
+        .as_ref()
         .ok_or_else(|| handler_err("TEE attestation is not enabled on this VTA"))?;
     let body: crate::tee::types::AttestationRequest =
         serde_json::from_value(message.body).map_err(handler_err)?;
-    let result = operations::attestation::generate_attestation_report(
-        tee_state, &state.config, &body.nonce,
-    ).await.map_err(handler_err)?;
-    response(vta_sdk::protocols::attestation_management::ATTESTATION_RESULT, &result)
+    let result =
+        operations::attestation::generate_attestation_report(tee_state, &state.config, &body.nonce)
+            .await
+            .map_err(handler_err)?;
+    response(
+        vta_sdk::protocols::attestation_management::ATTESTATION_RESULT,
+        &result,
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -674,15 +986,27 @@ pub async fn handle_restart(
     message: Message,
     Extension(state): Extension<Arc<VtaState>>,
 ) -> HandlerResult {
-    let auth = auth_from_message(&message, &state.acl_ks).await.map_err(handler_err)?;
+    let auth = auth_from_message(&message, &state.acl_ks)
+        .await
+        .map_err(handler_err)?;
     auth.require_super_admin().map_err(handler_err)?;
     let _ = crate::audit::record(
-        &state.audit_ks, "vta.restart", &auth.did, None, "success", Some("didcomm"), None,
-    ).await;
+        &state.audit_ks,
+        "vta.restart",
+        &auth.did,
+        None,
+        "success",
+        Some("didcomm"),
+        None,
+    )
+    .await;
     crate::server::trigger_restart(&state.restart_tx);
-    response(vta_sdk::protocols::vta_management::RESTART_RESULT, &vta_sdk::protocols::vta_management::restart::RestartResult {
-        status: "restarting".into(),
-    })
+    response(
+        vta_sdk::protocols::vta_management::RESTART_RESULT,
+        &vta_sdk::protocols::vta_management::restart::RestartResult {
+            status: "restarting".into(),
+        },
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -694,24 +1018,42 @@ pub async fn handle_backup_export(
     message: Message,
     Extension(state): Extension<Arc<VtaState>>,
 ) -> HandlerResult {
-    let auth = auth_from_message(&message, &state.acl_ks).await.map_err(handler_err)?;
+    let auth = auth_from_message(&message, &state.acl_ks)
+        .await
+        .map_err(handler_err)?;
+    auth.require_super_admin().map_err(handler_err)?;
     let body: vta_sdk::protocols::backup_management::types::ExportRequest =
         serde_json::from_value(message.body).map_err(handler_err)?;
     let config = state.config.read().await;
+    let ks = operations::Keyspaces::from_vta_state(&state);
     let envelope = operations::backup::export_backup(
-        &state.keys_ks, &state.acl_ks, &state.contexts_ks, &state.audit_ks,
-        #[cfg(feature = "webvh")]
-        &state.webvh_ks,
-        &*state.seed_store, &config, &auth, &body.password, body.include_audit,
-    ).await.map_err(handler_err)?;
+        &ks,
+        &*state.seed_store,
+        &config,
+        &auth,
+        &body.password,
+        body.include_audit,
+    )
+    .await
+    .map_err(handler_err)?;
     let _ = crate::audit::record(
-        &state.audit_ks, "backup.export", &auth.did, None, "success", Some("didcomm"), None,
-    ).await;
+        &state.audit_ks,
+        "backup.export",
+        &auth.did,
+        None,
+        "success",
+        Some("didcomm"),
+        None,
+    )
+    .await;
     info!(
         ciphertext_bytes = envelope.ciphertext.len(),
         "backup export DIDComm response size"
     );
-    response(vta_sdk::protocols::backup_management::EXPORT_BACKUP_RESULT, &envelope)
+    response(
+        vta_sdk::protocols::backup_management::EXPORT_BACKUP_RESULT,
+        &envelope,
+    )
 }
 
 pub async fn handle_backup_import(
@@ -719,60 +1061,77 @@ pub async fn handle_backup_import(
     message: Message,
     Extension(state): Extension<Arc<VtaState>>,
 ) -> HandlerResult {
-    let auth = auth_from_message(&message, &state.acl_ks).await.map_err(handler_err)?;
+    let auth = auth_from_message(&message, &state.acl_ks)
+        .await
+        .map_err(handler_err)?;
     auth.require_super_admin().map_err(handler_err)?;
     let body: vta_sdk::protocols::backup_management::types::ImportRequest =
         serde_json::from_value(message.body).map_err(handler_err)?;
 
     if !body.confirm {
-        let (_payload, preview) =
-            operations::backup::preview_import(&body.backup, &body.password)
-                .await.map_err(handler_err)?;
-        return response(vta_sdk::protocols::backup_management::IMPORT_BACKUP_RESULT, &preview);
+        let (_payload, preview) = operations::backup::preview_import(&body.backup, &body.password)
+            .await
+            .map_err(handler_err)?;
+        return response(
+            vta_sdk::protocols::backup_management::IMPORT_BACKUP_RESULT,
+            &preview,
+        );
     }
 
     let payload =
-        operations::backup::decrypt_backup(&body.backup, &body.password)
-            .map_err(handler_err)?;
+        operations::backup::decrypt_backup(&body.backup, &body.password).map_err(handler_err)?;
 
+    let ks = operations::Keyspaces::from_vta_state(&state);
     let result = operations::backup::apply_import(
         &payload,
-        &state.keys_ks, &state.acl_ks, &state.contexts_ks, &state.audit_ks,
-        #[cfg(feature = "webvh")]
-        &state.webvh_ks,
-        &state.seed_store, &state.config,
+        &ks,
+        &state.seed_store,
+        &state.config,
         None, // Store for TEE re-encryption (handled on restart)
-    ).await.map_err(handler_err)?;
+    )
+    .await
+    .map_err(handler_err)?;
 
     let _ = crate::audit::record(
-        &state.audit_ks, "backup.import", &auth.did,
-        payload.config.vta_did.as_deref(), "success", Some("didcomm"), None,
-    ).await;
+        &state.audit_ks,
+        "backup.import",
+        &auth.did,
+        payload.config.vta_did.as_deref(),
+        "success",
+        Some("didcomm"),
+        None,
+    )
+    .await;
 
     crate::server::trigger_restart(&state.restart_tx);
-    response(vta_sdk::protocols::backup_management::IMPORT_BACKUP_RESULT, &result)
+    response(
+        vta_sdk::protocols::backup_management::IMPORT_BACKUP_RESULT,
+        &result,
+    )
 }
 
 // ---------------------------------------------------------------------------
 // Problem report & fallback
 // ---------------------------------------------------------------------------
 
-pub async fn handle_problem_report(
-    _ctx: HandlerContext,
-    message: Message,
-) -> HandlerResult {
-    let code = message.body.get("code").and_then(|v| v.as_str()).unwrap_or("unknown");
-    let comment = message.body.get("comment").and_then(|v| v.as_str()).unwrap_or("");
+pub async fn handle_problem_report(_ctx: HandlerContext, message: Message) -> HandlerResult {
+    let code = message
+        .body
+        .get("code")
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown");
+    let comment = message
+        .body
+        .get("comment")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
     let from = message.from.as_deref().unwrap_or("unknown");
     let thid = message.thid.as_deref().unwrap_or("none");
     warn!(from, code, comment, thid, "received problem-report");
     Ok(None)
 }
 
-pub async fn handle_unknown(
-    _ctx: HandlerContext,
-    message: Message,
-) -> HandlerResult {
+pub async fn handle_unknown(_ctx: HandlerContext, message: Message) -> HandlerResult {
     warn!(msg_type = %message.typ, "unknown message type — ignoring");
     Ok(Some(DIDCommResponse::problem_report(
         ProblemReport::bad_request(format!("unsupported message type: {}", message.typ)),

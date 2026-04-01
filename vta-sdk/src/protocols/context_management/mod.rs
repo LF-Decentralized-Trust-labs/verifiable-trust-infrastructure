@@ -3,6 +3,7 @@ pub mod delete;
 pub mod get;
 pub mod list;
 pub mod update;
+pub mod update_did;
 
 pub const PROTOCOL_BASE: &str = "https://firstperson.network/protocols/context-management/1.0";
 
@@ -25,6 +26,11 @@ pub const UPDATE_CONTEXT: &str =
     "https://firstperson.network/protocols/context-management/1.0/update-context";
 pub const UPDATE_CONTEXT_RESULT: &str =
     "https://firstperson.network/protocols/context-management/1.0/update-context-result";
+
+pub const UPDATE_CONTEXT_DID: &str =
+    "https://firstperson.network/protocols/context-management/1.0/update-context-did";
+pub const UPDATE_CONTEXT_DID_RESULT: &str =
+    "https://firstperson.network/protocols/context-management/1.0/update-context-did-result";
 
 pub const DELETE_CONTEXT: &str =
     "https://firstperson.network/protocols/context-management/1.0/delete-context";

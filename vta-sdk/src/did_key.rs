@@ -6,22 +6,30 @@ pub fn ed25519_multibase_pubkey(public_key_bytes: &[u8; 32]) -> String {
     multibase::encode(multibase::Base::Base58Btc, &buf)
 }
 
-/// Ed25519 private key multicodec prefix (`0x8026`).
-const ED25519_PRIV_CODEC: [u8; 2] = [0x80, 0x26];
+/// Known 2-byte multicodec varint prefixes for private keys.
+const ED25519_PRIV_CODEC: [u8; 2] = [0x80, 0x26]; // 0x1300
+const X25519_PRIV_CODEC: [u8; 2] = [0x82, 0x26]; // 0x1302
+const P256_PRIV_CODEC: [u8; 2] = [0x86, 0x26]; // 0x1306
 
-/// Decode a multibase-encoded private key seed to 32 bytes.
+/// Decode a multibase-encoded private key to raw bytes.
 ///
-/// Accepts both raw 32-byte encodings and 34-byte encodings that include
-/// the `0x8026` ed25519-priv multicodec prefix (as produced by
-/// `Secret::get_private_keymultibase()`).
+/// Accepts both:
+/// - Multicodec-prefixed: 2-byte prefix + raw key bytes (standard format)
+/// - Raw: just the key bytes (legacy/backwards-compatible)
+///
+/// Strips known private-key multicodec prefixes (Ed25519, X25519, P256)
+/// before returning the raw key bytes.
 pub fn decode_private_key_multibase(mb: &str) -> Result<[u8; 32], DidKeyError> {
     let (_, raw) = multibase::decode(mb).map_err(|e| DidKeyError::Multibase(e.to_string()))?;
-    let seed_bytes = if raw.len() == 34 && raw[..2] == ED25519_PRIV_CODEC {
-        &raw[2..]
+    let key_bytes = if raw.len() >= 2 {
+        match [raw[0], raw[1]] {
+            ED25519_PRIV_CODEC | X25519_PRIV_CODEC | P256_PRIV_CODEC => &raw[2..],
+            _ => &raw[..],
+        }
     } else {
         &raw[..]
     };
-    seed_bytes
+    key_bytes
         .try_into()
         .map_err(|_| DidKeyError::InvalidSeedLength)
 }

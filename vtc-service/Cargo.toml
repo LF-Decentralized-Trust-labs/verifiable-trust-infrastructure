@@ -2,7 +2,7 @@
 name = "vtc-service"
 description = "Service for Verifiable Trust Communities"
 readme = "README.md"
-version.workspace = true
+version = "0.3.0"
 edition.workspace = true
 publish.workspace = true
 authors.workspace = true
@@ -28,8 +28,8 @@ name = "vtc"
 path = "src/main.rs"
 
 [dependencies]
-vti-common = { path = "../vti-common", version = "0.2.0" }
-vta-sdk = { path = "../vta-sdk", version = "0.2.0", features = [
+vti-common = { path = "../vti-common", version = "0.3.0" }
+vta-sdk = { path = "../vta-sdk", version = "0.3.0", features = [
   "didcomm",
   "session",
   "config-session",
@@ -49,7 +49,7 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
-ed25519-dalek = "2"
+ed25519-dalek = { workspace = true }
 hex = "0.4"
 keyring = { version = "3", optional = true }
 aws-sdk-secretsmanager = { version = "1", optional = true }
@@ -64,11 +64,12 @@ chrono = { workspace = true }
 clap = { workspace = true }
 didwebvh-rs = { workspace = true, optional = true }
 rand = { workspace = true }
-dialoguer = { version = "0.12", optional = true }
+dialoguer = { workspace = true, optional = true }
 azure_security_keyvault_secrets = { version = "0.12", optional = true }
 azure_identity = { version = "0.33", optional = true }
 sha2 = { workspace = true }
 x25519-dalek = { workspace = true }
+zeroize = { version = "1", features = ["derive"] }
 multibase = { workspace = true }
 url = { workspace = true, optional = true }
 

@@ -1,11 +1,14 @@
 use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use vta_sdk::protocols::key_management::{
-    create::CreateKeyResultBody, list::ListKeysResultBody, rename::RenameKeyResultBody,
-    revoke::RevokeKeyResultBody, secret::GetKeySecretResultBody,
+    create::CreateKeyResultBody,
+    list::ListKeysResultBody,
+    rename::RenameKeyResultBody,
+    revoke::RevokeKeyResultBody,
+    secret::GetKeySecretResultBody,
     sign::{SignAlgorithm, SignResultBody},
 };
 use vta_sdk::protocols::seed_management::{
@@ -64,6 +67,7 @@ pub async fn get_key_secret(
 ) -> Result<Json<GetKeySecretResultBody>, AppError> {
     let result = operations::keys::get_key_secret(
         &state.keys_ks,
+        &state.imported_ks,
         &state.seed_store,
         &state.audit_ks,
         &auth.0,
@@ -90,7 +94,15 @@ pub async fn invalidate_key(
     State(state): State<AppState>,
     Path(key_id): Path<String>,
 ) -> Result<Json<RevokeKeyResultBody>, AppError> {
-    let result = operations::keys::revoke_key(&state.keys_ks, &state.audit_ks, &auth.0, &key_id, "rest").await?;
+    let result = operations::keys::revoke_key(
+        &state.keys_ks,
+        &state.imported_ks,
+        &state.audit_ks,
+        &auth.0,
+        &key_id,
+        "rest",
+    )
+    .await?;
     Ok(Json(result))
 }
 
@@ -106,8 +118,15 @@ pub async fn rename_key(
     Path(key_id): Path<String>,
     Json(req): Json<RenameKeyRequest>,
 ) -> Result<Json<RenameKeyResultBody>, AppError> {
-    let result =
-        operations::keys::rename_key(&state.keys_ks, &state.audit_ks, &auth.0, &key_id, &req.key_id, "rest").await?;
+    let result = operations::keys::rename_key(
+        &state.keys_ks,
+        &state.audit_ks,
+        &auth.0,
+        &key_id,
+        &req.key_id,
+        "rest",
+    )
+    .await?;
     Ok(Json(result))
 }
 
@@ -164,6 +183,7 @@ pub async fn rotate_seed(
 ) -> Result<Json<RotateSeedResultBody>, AppError> {
     let result = operations::seeds::rotate_seed(
         &state.keys_ks,
+        &state.imported_ks,
         &state.seed_store,
         &state.audit_ks,
         &_auth.0.did,
@@ -182,13 +202,14 @@ pub struct SignRequest {
     pub algorithm: SignAlgorithm,
 }
 
-/// POST /keys/{key_id}/sign — sign a base64url payload with the specified key. Auth: any authenticated user.
+/// POST /keys/{key_id}/sign — sign a base64url payload with the specified key. Auth: Application or higher.
 pub async fn sign_with_key(
     auth: AuthClaims,
     State(state): State<AppState>,
     Path(key_id): Path<String>,
     Json(req): Json<SignRequest>,
 ) -> Result<Json<SignResultBody>, AppError> {
+    auth.require_write()?;
     use base64::Engine;
     let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD
         .decode(&req.payload)
@@ -196,6 +217,7 @@ pub async fn sign_with_key(
 
     let result = operations::keys::sign_payload(
         &state.keys_ks,
+        &state.imported_ks,
         &state.seed_store,
         &auth,
         &key_id,
@@ -205,4 +227,76 @@ pub async fn sign_with_key(
     )
     .await?;
     Ok(Json(result))
+}
+
+// ── Import key endpoints ─────────────────────────────────────────
+
+#[derive(Debug, Serialize)]
+pub struct WrappingKeyResponse {
+    pub kid: String,
+    pub kty: String,
+    pub crv: String,
+    pub x: String,
+}
+
+/// GET /keys/import/wrapping-key — get an ephemeral X25519 public key for REST key wrapping.
+pub async fn get_wrapping_key(
+    _auth: AdminAuth,
+    State(state): State<AppState>,
+) -> Result<Json<WrappingKeyResponse>, AppError> {
+    let (kid, x) = state.wrapping_cache.generate().await;
+    Ok(Json(WrappingKeyResponse {
+        kid,
+        kty: "OKP".into(),
+        crv: "X25519".into(),
+        x,
+    }))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ImportKeyRestRequest {
+    pub key_type: KeyType,
+    /// JWE compact serialization of the private key (REST transport).
+    pub private_key_jwe: Option<String>,
+    /// Multibase-encoded private key (DIDComm transport — should not be used via REST).
+    pub private_key_multibase: Option<String>,
+    pub label: Option<String>,
+    pub context_id: Option<String>,
+}
+
+/// POST /keys/import — import an externally-created private key. Auth: Admin only.
+pub async fn import_key(
+    auth: AdminAuth,
+    State(state): State<AppState>,
+    Json(req): Json<ImportKeyRestRequest>,
+) -> Result<(StatusCode, Json<CreateKeyResultBody>), AppError> {
+    // Unwrap the private key based on transport
+    let private_key_bytes = if let Some(jwe) = req.private_key_jwe {
+        state.wrapping_cache.unwrap_jwe(&jwe).await?
+    } else if let Some(ref mb) = req.private_key_multibase {
+        let (_, bytes) = multibase::decode(mb)
+            .map_err(|e| AppError::Validation(format!("invalid multibase private key: {e}")))?;
+        bytes
+    } else {
+        return Err(AppError::Validation(
+            "either private_key_jwe or private_key_multibase is required".into(),
+        ));
+    };
+
+    let result = operations::keys::import_key(
+        &state.keys_ks,
+        &state.imported_ks,
+        &state.seed_store,
+        &state.audit_ks,
+        &auth.0,
+        operations::keys::ImportKeyParams {
+            key_type: req.key_type,
+            private_key_bytes,
+            label: req.label,
+            context_id: req.context_id,
+        },
+        "rest",
+    )
+    .await?;
+    Ok((StatusCode::CREATED, Json(result)))
 }

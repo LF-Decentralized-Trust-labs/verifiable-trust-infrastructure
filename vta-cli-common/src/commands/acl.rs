@@ -3,7 +3,7 @@ use ratatui::{
     style::{Color, Modifier, Style},
     widgets::{Block, Cell, Row, Table},
 };
-use vta_sdk::client::{CreateAclRequest, UpdateAclRequest, VtaClient};
+use vta_sdk::prelude::*;
 
 use crate::render::print_widget;
 
@@ -25,10 +25,11 @@ pub fn format_role(role: &str, contexts: &[String]) -> String {
 
 pub fn validate_role(role: &str) -> Result<(), Box<dyn std::error::Error>> {
     match role {
-        "admin" | "initiator" | "application" => Ok(()),
-        _ => {
-            Err(format!("invalid role '{role}', expected: admin, initiator, or application").into())
-        }
+        "admin" | "initiator" | "application" | "reader" => Ok(()),
+        _ => Err(format!(
+            "invalid role '{role}', expected: admin, initiator, application, or reader"
+        )
+        .into()),
     }
 }
 
@@ -121,12 +122,10 @@ pub async fn cmd_acl_create(
     contexts: Vec<String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     validate_role(&role)?;
-    let req = CreateAclRequest {
-        did,
-        role,
-        label,
-        allowed_contexts: contexts,
-    };
+    let mut req = CreateAclRequest::new(did, role).contexts(contexts);
+    if let Some(l) = label {
+        req = req.label(l);
+    }
     let entry = client.create_acl(req).await?;
     println!("ACL entry created:");
     println!("  DID:      {}", entry.did);
@@ -241,6 +240,11 @@ mod tests {
     #[test]
     fn test_validate_role_application_ok() {
         assert!(validate_role("application").is_ok());
+    }
+
+    #[test]
+    fn test_validate_role_reader_ok() {
+        assert!(validate_role("reader").is_ok());
     }
 
     #[test]

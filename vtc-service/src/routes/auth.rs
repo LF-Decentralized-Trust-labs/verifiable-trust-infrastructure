@@ -14,11 +14,11 @@ use crate::acl::{
     AclEntry, Role, check_acl, check_acl_full, store_acl_entry, validate_acl_modification,
 };
 use crate::auth::credentials::generate_did_key;
-use crate::auth::{AdminAuth, AuthClaims, ManageAuth};
 use crate::auth::session::{
     Session, SessionState, delete_session, get_session, get_session_by_refresh, list_sessions,
     now_epoch, store_refresh_index, store_session, update_session,
 };
+use crate::auth::{AdminAuth, AuthClaims, ManageAuth};
 use crate::error::AppError;
 use crate::server::AppState;
 use tracing::{info, warn};

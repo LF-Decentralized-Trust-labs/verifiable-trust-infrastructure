@@ -42,8 +42,12 @@ pub async fn run_create_did_webvh(
         .into());
     }
 
-    let ed25519_bytes: &[u8; 32] = key_material[..32].try_into().unwrap();
-    let x25519_bytes: &[u8; 32] = key_material[32..].try_into().unwrap();
+    let ed25519_bytes: &[u8; 32] = key_material[..32]
+        .try_into()
+        .map_err(|_| "key material corrupted")?;
+    let x25519_bytes: &[u8; 32] = key_material[32..]
+        .try_into()
+        .map_err(|_| "key material corrupted")?;
 
     let label = args.label.as_deref().unwrap_or("VTC");
 
@@ -172,7 +176,10 @@ pub async fn run_create_did_webvh(
     };
 
     // Create the DID
-    let url_str = webvh_url.get_http_url(None).map_err(|e| format!("{e}"))?.to_string();
+    let url_str = webvh_url
+        .get_http_url(None)
+        .map_err(|e| format!("{e}"))?
+        .to_string();
     let create_config = CreateDIDConfig::builder()
         .address(url_str)
         .authorization_key(signing_secret.clone())
@@ -181,7 +188,8 @@ pub async fn run_create_did_webvh(
         .build()
         .map_err(|e| format!("failed to build DID config: {e}"))?;
 
-    let result = create_did(create_config).await
+    let result = create_did(create_config)
+        .await
         .map_err(|e| format!("failed to create DID: {e}"))?;
 
     let final_did = result.did().to_string();
@@ -233,9 +241,20 @@ pub async fn run_create_did_webvh(
         eprintln!("║  Store it securely and do not share it publicly.         ║");
         eprintln!("╚══════════════════════════════════════════════════════════╝\x1b[0m");
         eprintln!();
-        println!("{encoded}");
+        let default_secrets_file = format!("{label}-secrets.bundle");
+        let secrets_file: String = Input::new()
+            .with_prompt("Save secrets bundle to file")
+            .default(default_secrets_file)
+            .interact_text()?;
+        std::fs::write(&secrets_file, &encoded)
+            .map_err(|e| format!("Failed to write secrets bundle: {e}"))?;
+        eprintln!("  Secrets bundle saved to: {secrets_file}");
         eprintln!();
     }
+
+    // Zeroize key material
+    drop(signing_secret);
+    drop(ka_secret);
 
     Ok(())
 }

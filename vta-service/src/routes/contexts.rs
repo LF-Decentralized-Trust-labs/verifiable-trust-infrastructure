@@ -4,12 +4,11 @@ use axum::http::StatusCode;
 use serde::Deserialize;
 
 use vta_sdk::protocols::context_management::{
-    create::CreateContextResultBody,
-    delete::DeleteContextPreviewResultBody,
+    create::CreateContextResultBody, delete::DeleteContextPreviewResultBody,
     list::ListContextsResultBody,
 };
 
-use crate::auth::{AuthClaims, SuperAdminAuth};
+use crate::auth::{AdminAuth, AuthClaims, SuperAdminAuth};
 use crate::error::AppError;
 use crate::operations;
 use crate::server::AppState;
@@ -94,6 +93,24 @@ pub async fn update_context_handler(
     Ok(Json(result))
 }
 
+#[derive(Debug, Deserialize)]
+pub struct UpdateDidRequest {
+    pub did: String,
+}
+
+/// PUT /contexts/{id}/did — update the DID for a context. Auth: Admin with context access.
+pub async fn update_context_did_handler(
+    auth: AdminAuth,
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(req): Json<UpdateDidRequest>,
+) -> Result<Json<CreateContextResultBody>, AppError> {
+    let result =
+        operations::contexts::update_context_did(&state.contexts_ks, &auth.0, &id, req.did, "rest")
+            .await?;
+    Ok(Json(result))
+}
+
 /// GET /contexts/{id}/delete-preview — preview resources affected by deleting a context. Auth: Super Admin only.
 pub async fn preview_delete_context_handler(
     auth: SuperAdminAuth,
@@ -121,17 +138,7 @@ pub async fn delete_context_handler(
     Path(id): Path<String>,
     Query(query): Query<DeleteContextQuery>,
 ) -> Result<StatusCode, AppError> {
-    operations::contexts::delete_context(
-        &state.contexts_ks,
-        &state.keys_ks,
-        &state.acl_ks,
-        #[cfg(feature = "webvh")]
-        &state.webvh_ks,
-        &auth.0,
-        &id,
-        query.force,
-        "rest",
-    )
-    .await?;
+    let ks = operations::Keyspaces::from_app_state(&state);
+    operations::contexts::delete_context(&ks, &auth.0, &id, query.force, "rest").await?;
     Ok(StatusCode::NO_CONTENT)
 }

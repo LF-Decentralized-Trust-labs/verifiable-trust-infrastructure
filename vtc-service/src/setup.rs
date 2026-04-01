@@ -358,7 +358,9 @@ pub async fn run_setup_wizard(
             public_url: None,
             server: ServerConfig::default(),
             log: LogConfig::default(),
-            store: StoreConfig { data_dir: PathBuf::from("data/vtc") },
+            store: StoreConfig {
+                data_dir: PathBuf::from("data/vtc"),
+            },
             messaging: None,
             auth: AuthConfig::default(),
             secrets: secrets_config.clone(),
@@ -855,7 +857,10 @@ async fn create_webvh_did(
     };
 
     // Create the DID
-    let url_str = webvh_url.get_http_url(None).map_err(|e| format!("{e}"))?.to_string();
+    let url_str = webvh_url
+        .get_http_url(None)
+        .map_err(|e| format!("{e}"))?
+        .to_string();
     let create_config = CreateDIDConfig::builder()
         .address(url_str)
         .authorization_key(signing_secret.clone())
@@ -864,7 +869,8 @@ async fn create_webvh_did(
         .build()
         .map_err(|e| format!("failed to build DID config: {e}"))?;
 
-    let result = create_did(create_config).await
+    let result = create_did(create_config)
+        .await
         .map_err(|e| format!("failed to create DID: {e}"))?;
 
     let final_did = result.did().to_string();

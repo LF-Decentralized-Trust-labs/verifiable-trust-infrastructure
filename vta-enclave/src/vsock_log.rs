@@ -43,32 +43,28 @@ pub async fn start() -> TeeMakeWriter {
     // so early boot logs aren't lost.
     let addr = VsockAddr::new(PARENT_CID, VSOCK_LOG_PORT);
     eprintln!("[vsock-log] connecting to parent CID {PARENT_CID} port {VSOCK_LOG_PORT}...");
-    let initial_stream = match tokio::time::timeout(
-        CONNECT_TIMEOUT,
-        VsockStream::connect(addr),
-    )
-    .await
-    {
-        Ok(Ok(stream)) => {
-            eprintln!("[vsock-log] connected to parent vsock:{VSOCK_LOG_PORT}");
-            Some(stream)
-        }
-        Ok(Err(e)) => {
-            eprintln!(
-                "[vsock-log] failed to connect to parent vsock:{VSOCK_LOG_PORT}: {e} — \
+    let initial_stream =
+        match tokio::time::timeout(CONNECT_TIMEOUT, VsockStream::connect(addr)).await {
+            Ok(Ok(stream)) => {
+                eprintln!("[vsock-log] connected to parent vsock:{VSOCK_LOG_PORT}");
+                Some(stream)
+            }
+            Ok(Err(e)) => {
+                eprintln!(
+                    "[vsock-log] failed to connect to parent vsock:{VSOCK_LOG_PORT}: {e} — \
                  will retry in background"
-            );
-            None
-        }
-        Err(_) => {
-            eprintln!(
-                "[vsock-log] connection to parent vsock:{VSOCK_LOG_PORT} timed out after {}s — \
+                );
+                None
+            }
+            Err(_) => {
+                eprintln!(
+                    "[vsock-log] connection to parent vsock:{VSOCK_LOG_PORT} timed out after {}s — \
                  will retry in background",
-                CONNECT_TIMEOUT.as_secs()
-            );
-            None
-        }
-    };
+                    CONNECT_TIMEOUT.as_secs()
+                );
+                None
+            }
+        };
 
     tokio::spawn(vsock_drain_task(rx, initial_stream));
 

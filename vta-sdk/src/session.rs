@@ -90,12 +90,18 @@ struct KeyringBackend {
 #[cfg(feature = "keyring")]
 impl SessionBackend for KeyringBackend {
     fn load(&self, key: &str) -> Option<String> {
-        let entry = keyring::Entry::new(&self.service_name, key).ok()?;
+        let entry = match keyring::Entry::new(&self.service_name, key) {
+            Ok(e) => e,
+            Err(e) => {
+                tracing::warn!("keyring entry creation failed for '{key}': {e}");
+                return None;
+            }
+        };
         match entry.get_password() {
             Ok(v) => Some(v),
             Err(keyring::Error::NoEntry) => None,
             Err(e) => {
-                eprintln!("Warning: keyring read error: {e}");
+                tracing::warn!("keyring read error for '{key}': {e}");
                 None
             }
         }
@@ -111,8 +117,15 @@ impl SessionBackend for KeyringBackend {
     }
 
     fn clear(&self, key: &str) {
-        if let Ok(entry) = keyring::Entry::new(&self.service_name, key) {
-            let _ = entry.delete_credential();
+        match keyring::Entry::new(&self.service_name, key) {
+            Ok(entry) => {
+                if let Err(e) = entry.delete_credential() {
+                    tracing::debug!("keyring clear for '{key}': {e}");
+                }
+            }
+            Err(e) => {
+                tracing::debug!("keyring entry creation failed during clear for '{key}': {e}")
+            }
         }
     }
 }
@@ -133,9 +146,21 @@ impl FileBackend {
         let path = self.sessions_path();
         let data = match std::fs::read_to_string(&path) {
             Ok(d) => d,
-            Err(_) => return std::collections::HashMap::new(),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return std::collections::HashMap::new();
+            }
+            Err(e) => {
+                tracing::warn!("failed to read sessions file {}: {e}", path.display());
+                return std::collections::HashMap::new();
+            }
         };
-        serde_json::from_str(&data).unwrap_or_default()
+        match serde_json::from_str(&data) {
+            Ok(map) => map,
+            Err(e) => {
+                tracing::warn!("failed to parse sessions file {}: {e}", path.display());
+                std::collections::HashMap::new()
+            }
+        }
     }
 
     fn save_map(
@@ -162,10 +187,14 @@ impl SessionBackend for FileBackend {
         if self.warn {
             eprintln!("WARNING: No secure session store — using plaintext file storage");
         }
-        if let Some(parent) = self.sessions_dir.parent() {
-            std::fs::create_dir_all(parent).ok();
+        if let Some(parent) = self.sessions_dir.parent()
+            && let Err(e) = std::fs::create_dir_all(parent)
+        {
+            tracing::warn!("failed to create sessions parent dir: {e}");
         }
-        std::fs::create_dir_all(&self.sessions_dir).ok();
+        if let Err(e) = std::fs::create_dir_all(&self.sessions_dir) {
+            tracing::warn!("failed to create sessions dir: {e}");
+        }
         let mut map = self.load_map();
         let parsed: serde_json::Value = serde_json::from_str(value)?;
         map.insert(key.to_string(), parsed);
@@ -199,19 +228,37 @@ impl SessionBackend for AzureBackend {
         use azure_identity::DeveloperToolsCredential;
         use azure_security_keyvault_secrets::SecretClient;
 
-        let credential = DeveloperToolsCredential::new(None).ok()?;
-        let client = SecretClient::new(&self.vault_url, credential, None).ok()?;
+        let credential = match DeveloperToolsCredential::new(None) {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::warn!("Azure credential creation failed: {e}");
+                return None;
+            }
+        };
+        let client = match SecretClient::new(&self.vault_url, credential, None) {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::warn!("Azure Key Vault client creation failed: {e}");
+                return None;
+            }
+        };
         let secret_name = self.secret_name(key);
 
         let result = tokio::runtime::Handle::current()
             .block_on(async { client.get_secret(&secret_name, None).await });
 
         match result {
-            Ok(response) => {
-                let model = response.into_model().ok()?;
-                model.value
+            Ok(response) => match response.into_model() {
+                Ok(model) => model.value,
+                Err(e) => {
+                    tracing::warn!("Azure Key Vault response parsing failed: {e}");
+                    None
+                }
+            },
+            Err(e) => {
+                tracing::debug!("Azure Key Vault secret '{secret_name}' not found: {e}");
+                None
             }
-            Err(_) => None,
         }
     }
 
@@ -342,11 +389,7 @@ impl SessionStore {
         serde_json::from_str(&json).ok()
     }
 
-    fn save_session(
-        &self,
-        key: &str,
-        session: &Session,
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn save_session(&self, key: &str, session: &Session) -> Result<(), Box<dyn std::error::Error>> {
         let json = serde_json::to_string(session)?;
         self.backend.save(key, &json)
     }
@@ -541,7 +584,7 @@ impl SessionStore {
         if let Some(url) = url_override {
             debug!(url, "using REST transport (URL override)");
             let token = self.ensure_authenticated(url, key).await?;
-            let mut client = crate::client::VtaClient::new(url);
+            let client = crate::client::VtaClient::new(url);
             client.set_token(token);
             return Ok(client);
         }
@@ -567,7 +610,7 @@ impl SessionStore {
             VtaEndpoint::Rest { url } => {
                 debug!(url = %url, "connecting via REST");
                 let token = self.ensure_authenticated(&url, key).await?;
-                let mut client = crate::client::VtaClient::new(&url);
+                let client = crate::client::VtaClient::new(&url);
                 client.set_token(token);
                 Ok(client)
             }
@@ -624,16 +667,19 @@ pub async fn challenge_response(
     // Step 2: Build DIDComm message
     debug!("initializing DID resolver and ATM for message packing");
 
-    use std::sync::Arc;
     use affinidi_tdk::common::TDKSharedState;
     use affinidi_tdk::common::config::TDKConfig;
     use affinidi_tdk::messaging::ATM;
     use affinidi_tdk::messaging::config::ATMConfig;
+    use std::sync::Arc;
 
-    let tdk = TDKSharedState::new(TDKConfig::builder().build()
-        .map_err(|e| format!("TDK config build failed: {e}"))?)
-        .await
-        .map_err(|e| format!("TDK init failed: {e}"))?;
+    let tdk = TDKSharedState::new(
+        TDKConfig::builder()
+            .build()
+            .map_err(|e| format!("TDK config build failed: {e}"))?,
+    )
+    .await
+    .map_err(|e| format!("TDK init failed: {e}"))?;
 
     // Build DIDComm secrets from the private key
     let seed = crate::did_key::decode_private_key_multibase(private_key_multibase)?;
@@ -642,10 +688,13 @@ pub async fn challenge_response(
     tdk.secrets_resolver.insert(secrets.signing).await;
     tdk.secrets_resolver.insert(secrets.key_agreement).await;
 
-    let atm = ATM::new(ATMConfig::builder().build()
-        .map_err(|e| format!("ATM config build failed: {e}"))?,
+    let atm = ATM::new(
+        ATMConfig::builder()
+            .build()
+            .map_err(|e| format!("ATM config build failed: {e}"))?,
         Arc::new(tdk),
-    ).await
+    )
+    .await
     .map_err(|e| format!("ATM init failed: {e}"))?;
 
     // Build the authenticate message
@@ -801,11 +850,12 @@ pub async fn resolve_vta_url(vta_did: &str) -> Result<String, Box<dyn std::error
     match did_resolver.resolve(vta_did).await {
         Ok(resolved) => {
             if let Some(svc) = resolved.doc.find_service("vta-rest")
-                && let Some(url) = svc.service_endpoint.get_uri() {
-                    let url = url.trim_matches('"').trim_end_matches('/').to_string();
-                    debug!(url = %url, "found VTA URL from #vta-rest service endpoint");
-                    return Ok(url);
-                }
+                && let Some(url) = svc.service_endpoint.get_uri()
+            {
+                let url = url.trim_matches('"').trim_end_matches('/').to_string();
+                debug!(url = %url, "found VTA URL from #vta-rest service endpoint");
+                return Ok(url);
+            }
             debug!("no #vta-rest service found in DID document, falling back to DID parsing");
         }
         Err(e) => {
@@ -917,9 +967,9 @@ pub async fn resolve_mediator_did_with_resolver(
                 .into_iter()
                 .map(|u| u.trim_matches('"').to_string())
                 .find(|u| u.starts_with("did:"))
-            {
-                return Ok(Some(did));
-            }
+        {
+            return Ok(Some(did));
+        }
     }
 
     Ok(None)
@@ -943,11 +993,11 @@ impl TrustPingSession {
         private_key_multibase: &str,
         mediator_did: &str,
     ) -> Result<Self, Box<dyn std::error::Error>> {
-        use std::sync::Arc;
         use affinidi_tdk::common::TDKSharedState;
         use affinidi_tdk::messaging::ATM;
         use affinidi_tdk::messaging::config::ATMConfig;
         use affinidi_tdk::messaging::profiles::ATMProfile;
+        use std::sync::Arc;
 
         let seed = crate::did_key::decode_private_key_multibase(private_key_multibase)?;
         let secrets = crate::did_key::secrets_from_did_key(client_did, &seed)?;
@@ -978,12 +1028,9 @@ impl TrustPingSession {
 
     /// Send a trust-ping to a target (or the mediator if `target_did` is None).
     /// Returns latency in milliseconds.
-    pub async fn ping(
-        &self,
-        target_did: Option<&str>,
-    ) -> Result<u128, Box<dyn std::error::Error>> {
-        use std::time::Instant;
+    pub async fn ping(&self, target_did: Option<&str>) -> Result<u128, Box<dyn std::error::Error>> {
         use affinidi_tdk::messaging::protocols::trust_ping::TrustPing;
+        use std::time::Instant;
 
         let target = target_did.unwrap_or(&self.mediator_did);
         let start = Instant::now();
@@ -1101,7 +1148,10 @@ mod tests {
                 self.data.lock().unwrap().get(key).cloned()
             }
             fn save(&self, key: &str, value: &str) -> Result<(), Box<dyn std::error::Error>> {
-                self.data.lock().unwrap().insert(key.to_string(), value.to_string());
+                self.data
+                    .lock()
+                    .unwrap()
+                    .insert(key.to_string(), value.to_string());
                 Ok(())
             }
             fn clear(&self, key: &str) {
@@ -1116,7 +1166,15 @@ mod tests {
 
         assert!(!store.has_session("test"));
 
-        store.store_direct("test", "did:key:z6Mk1", "zSeed", "did:key:zVTA", "https://vta.example.com").unwrap();
+        store
+            .store_direct(
+                "test",
+                "did:key:z6Mk1",
+                "zSeed",
+                "did:key:zVTA",
+                "https://vta.example.com",
+            )
+            .unwrap();
         assert!(store.has_session("test"));
 
         let info = store.loaded_session("test").unwrap();

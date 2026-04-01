@@ -1,7 +1,7 @@
 mod acl;
-mod audit;
 #[cfg(feature = "tee")]
 mod attestation;
+mod audit;
 mod auth;
 mod backup;
 mod cache;
@@ -15,7 +15,7 @@ mod vta;
 
 use axum::Router;
 use axum::extract::DefaultBodyLimit;
-use axum::routing::{delete, get, post};
+use axum::routing::{delete, get, post, put};
 
 use crate::server::AppState;
 
@@ -54,6 +54,8 @@ pub fn router() -> Router<AppState> {
         )
         .route("/keys/{key_id}/secret", get(keys::get_key_secret))
         .route("/keys/{key_id}/sign", post(keys::sign_with_key))
+        .route("/keys/import/wrapping-key", get(keys::get_wrapping_key))
+        .route("/keys/import", post(keys::import_key))
         .route("/keys/seeds", get(keys::list_seeds))
         .route("/keys/seeds/rotate", post(keys::rotate_seed))
         // Context routes
@@ -66,6 +68,10 @@ pub fn router() -> Router<AppState> {
             get(contexts::get_context_handler)
                 .patch(contexts::update_context_handler)
                 .delete(contexts::delete_context_handler),
+        )
+        .route(
+            "/contexts/{id}/did",
+            put(contexts::update_context_did_handler),
         )
         .route(
             "/contexts/{id}/delete-preview",
@@ -96,10 +102,7 @@ pub fn router() -> Router<AppState> {
     // TEE attestation routes (feature-gated)
     #[cfg(feature = "tee")]
     let router = router
-        .route(
-            "/attestation/status",
-            get(attestation::status),
-        )
+        .route("/attestation/status", get(attestation::status))
         .route(
             "/attestation/report",
             get(attestation::cached_report).post(attestation::generate_report),
@@ -110,10 +113,7 @@ pub fn router() -> Router<AppState> {
             get(attestation::mnemonic_status).post(attestation::mnemonic_export),
         )
         // Auto-generated DID log (unauthenticated — public data)
-        .route(
-            "/attestation/did-log",
-            get(attestation::did_log),
-        )
+        .route("/attestation/did-log", get(attestation::did_log))
         // Bootstrapped admin credential (unauthenticated — one-time retrieval)
         .route(
             "/attestation/admin-credential",
@@ -140,10 +140,7 @@ pub fn router() -> Router<AppState> {
             "/webvh/dids/{did}",
             get(did_webvh::get_did_handler).delete(did_webvh::delete_did_handler),
         )
-        .route(
-            "/webvh/dids/{did}/log",
-            get(did_webvh::get_did_log_handler),
-        );
+        .route("/webvh/dids/{did}/log", get(did_webvh::get_did_log_handler));
 
     // VTA management routes
     let router = router

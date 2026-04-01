@@ -2,7 +2,7 @@
 name = "vta-sdk"
 description = "SDK for Verifiable Trust Agents operating in Verifiable Trust Communities"
 readme = "README.md"
-version.workspace = true
+version = "0.3.0"
 edition.workspace = true
 publish.workspace = true
 authors.workspace = true
@@ -12,13 +12,26 @@ repository.workspace = true
 
 [features]
 didcomm = ["dep:affinidi-tdk", "dep:affinidi-did-resolver-cache-sdk", "dep:tracing", "dep:uuid", "dep:tokio"]
-client = ["dep:reqwest", "dep:tracing", "dep:uuid", "dep:affinidi-tdk"]
+client = [
+  "dep:reqwest",
+  "dep:tracing",
+  "dep:uuid",
+  "dep:affinidi-tdk",
+  "dep:tokio",
+  "dep:ed25519-dalek",
+  "dep:x25519-dalek",
+  "dep:curve25519-dalek",
+  "dep:aes-gcm",
+  "dep:aes",
+  "dep:sha2",
+]
 session = [
   "client",
   "didcomm",
   "dep:affinidi-did-resolver-cache-sdk",
   "dep:tokio",
 ]
+integration = ["client", "session"]
 keyring = ["dep:keyring"]
 config-session = []
 azure-secrets = [
@@ -33,6 +46,7 @@ serde_json = { workspace = true }
 chrono = { workspace = true }
 base64 = { workspace = true }
 multibase = { workspace = true }
+thiserror = { workspace = true }
 affinidi-tdk = { workspace = true, optional = true }
 reqwest = { workspace = true, optional = true }
 tracing = { workspace = true, optional = true }
@@ -42,3 +56,12 @@ keyring = { version = "3", optional = true }
 azure_security_keyvault_secrets = { version = "0.12", optional = true }
 azure_identity = { version = "0.33", optional = true }
 tokio = { workspace = true, optional = true }
+ed25519-dalek = { workspace = true, optional = true }
+x25519-dalek = { workspace = true, optional = true }
+curve25519-dalek = { version = "4", optional = true }
+aes-gcm = { version = "0.10", optional = true }
+aes = { version = "0.8", optional = true }
+sha2 = { workspace = true, optional = true }
+
+[dev-dependencies]
+tokio = { workspace = true }

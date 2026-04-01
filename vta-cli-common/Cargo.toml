@@ -2,7 +2,7 @@
 name = "vta-cli-common"
 description = "Shared CLI command handlers and rendering helpers for VTA CLIs"
 readme = "README.md"
-version.workspace = true
+version = "0.3.0"
 edition.workspace = true
 publish.workspace = true
 authors.workspace = true
@@ -11,8 +11,14 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-vta-sdk = { path = "../vta-sdk", version = "0.2.0", features = ["client"] }
-chrono = "0.4"
-ed25519-dalek = "2"
+vta-sdk = { path = "../vta-sdk", version = "0.3.0", features = ["client"] }
+chrono = { workspace = true }
+ed25519-dalek = { workspace = true }
 ratatui = { workspace = true }
 serde_json = { workspace = true }
+multibase = { workspace = true }
+x25519-dalek = { workspace = true }
+sha2 = { workspace = true }
+hkdf = "0.12"
+aes-gcm = "0.10"
+base64 = { workspace = true }

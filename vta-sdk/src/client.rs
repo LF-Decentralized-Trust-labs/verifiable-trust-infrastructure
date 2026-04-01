@@ -1,3 +1,4 @@
+use crate::error::VtaError;
 use crate::keys::{KeyRecord, KeyStatus, KeyType};
 use crate::protocols::key_management::sign::SignAlgorithm;
 use chrono::{DateTime, Utc};
@@ -6,11 +7,27 @@ use serde::{Deserialize, Serialize};
 
 // ── Internal transport ──────────────────────────────────────────────
 
+/// Stored credential for automatic token refresh.
+struct AuthCredential {
+    did: String,
+    private_key_multibase: String,
+    vta_did: String,
+}
+
+/// Mutable auth state protected by a mutex for auto-refresh.
+struct RestAuth {
+    token: Option<String>,
+    expires_at: Option<u64>,
+    refresh_token: Option<String>,
+    refresh_expires_at: Option<u64>,
+    credential: Option<AuthCredential>,
+}
+
 enum Transport {
     Rest {
         client: Client,
         base_url: String,
-        token: Option<String>,
+        auth: tokio::sync::Mutex<RestAuth>,
     },
     #[cfg(feature = "session")]
     DIDComm {
@@ -73,6 +90,75 @@ pub struct CreateKeyRequest {
     pub context_id: Option<String>,
 }
 
+impl CreateKeyRequest {
+    pub fn new(key_type: KeyType) -> Self {
+        Self {
+            key_type,
+            derivation_path: None,
+            key_id: None,
+            mnemonic: None,
+            label: None,
+            context_id: None,
+        }
+    }
+    pub fn derivation_path(mut self, path: impl Into<String>) -> Self {
+        self.derivation_path = Some(path.into());
+        self
+    }
+    pub fn key_id(mut self, id: impl Into<String>) -> Self {
+        self.key_id = Some(id.into());
+        self
+    }
+    pub fn mnemonic(mut self, m: impl Into<String>) -> Self {
+        self.mnemonic = Some(m.into());
+        self
+    }
+    pub fn label(mut self, label: impl Into<String>) -> Self {
+        self.label = Some(label.into());
+        self
+    }
+    pub fn context(mut self, ctx: impl Into<String>) -> Self {
+        self.context_id = Some(ctx.into());
+        self
+    }
+}
+
+// ── Import key types ───────────────────────────────────────────────
+
+#[derive(Debug, Serialize)]
+pub struct ImportKeyRequest {
+    pub key_type: KeyType,
+    /// JWE compact serialization of the private key (REST transport).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub private_key_jwe: Option<String>,
+    /// Multibase-encoded private key (DIDComm transport).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub private_key_multibase: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ImportKeyResponse {
+    pub key_id: String,
+    pub key_type: KeyType,
+    pub public_key: String,
+    pub status: KeyStatus,
+    pub label: Option<String>,
+    pub origin: crate::keys::KeyOrigin,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct WrappingKeyResponse {
+    pub kid: String,
+    pub kty: String,
+    pub crv: String,
+    pub x: String,
+}
+
 // ── Context types ───────────────────────────────────────────────────
 
 #[derive(Debug, Serialize)]
@@ -83,6 +169,20 @@ pub struct CreateContextRequest {
     pub description: Option<String>,
 }
 
+impl CreateContextRequest {
+    pub fn new(id: impl Into<String>, name: impl Into<String>) -> Self {
+        Self {
+            id: id.into(),
+            name: name.into(),
+            description: None,
+        }
+    }
+    pub fn description(mut self, desc: impl Into<String>) -> Self {
+        self.description = Some(desc.into());
+        self
+    }
+}
+
 #[derive(Debug, Serialize)]
 pub struct UpdateContextRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -91,6 +191,11 @@ pub struct UpdateContextRequest {
     pub did: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct UpdateContextDidRequest {
+    pub did: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -219,6 +324,25 @@ pub struct CreateAclRequest {
     pub allowed_contexts: Vec<String>,
 }
 
+impl CreateAclRequest {
+    pub fn new(did: impl Into<String>, role: impl Into<String>) -> Self {
+        Self {
+            did: did.into(),
+            role: role.into(),
+            label: None,
+            allowed_contexts: Vec::new(),
+        }
+    }
+    pub fn label(mut self, label: impl Into<String>) -> Self {
+        self.label = Some(label.into());
+        self
+    }
+    pub fn contexts(mut self, contexts: Vec<String>) -> Self {
+        self.allowed_contexts = contexts;
+        self
+    }
+}
+
 #[derive(Debug, Serialize)]
 pub struct UpdateAclRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -283,6 +407,24 @@ pub struct GenerateCredentialsRequest {
     pub allowed_contexts: Vec<String>,
 }
 
+impl GenerateCredentialsRequest {
+    pub fn new(role: impl Into<String>) -> Self {
+        Self {
+            role: role.into(),
+            label: None,
+            allowed_contexts: Vec::new(),
+        }
+    }
+    pub fn label(mut self, label: impl Into<String>) -> Self {
+        self.label = Some(label.into());
+        self
+    }
+    pub fn contexts(mut self, contexts: Vec<String>) -> Self {
+        self.allowed_contexts = contexts;
+        self
+    }
+}
+
 #[derive(Debug, Deserialize)]
 pub struct GenerateCredentialsResponse {
     pub did: String,
@@ -307,7 +449,7 @@ fn encode_path_segment(s: &str) -> String {
 
 impl VtaClient {
     /// Attach Bearer token to a request if one is set.
-    fn with_auth(req: RequestBuilder, token: &Option<String>) -> RequestBuilder {
+    fn with_auth_token(req: RequestBuilder, token: &Option<String>) -> RequestBuilder {
         match token {
             Some(token) => req.bearer_auth(token),
             None => req,
@@ -316,7 +458,7 @@ impl VtaClient {
 
     async fn handle_response<T: serde::de::DeserializeOwned>(
         resp: reqwest::Response,
-    ) -> Result<T, Box<dyn std::error::Error>> {
+    ) -> Result<T, VtaError> {
         if resp.status().is_success() {
             Ok(resp.json::<T>().await?)
         } else {
@@ -326,13 +468,11 @@ impl VtaClient {
                 .await
                 .map(|e| e.error)
                 .unwrap_or_else(|_| "unknown error".to_string());
-            Err(format!("{status}: {body}").into())
+            Err(VtaError::from_http(status, body))
         }
     }
 
-    async fn handle_delete_response(
-        resp: reqwest::Response,
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    async fn handle_delete_response(resp: reqwest::Response) -> Result<(), VtaError> {
         if resp.status().is_success() {
             Ok(())
         } else {
@@ -342,7 +482,7 @@ impl VtaClient {
                 .await
                 .map(|e| e.error)
                 .unwrap_or_else(|_| "unknown error".to_string());
-            Err(format!("{status}: {body}").into())
+            Err(VtaError::from_http(status, body))
         }
     }
 }
@@ -362,8 +502,58 @@ impl VtaClient {
             transport: Transport::Rest {
                 client: Client::new(),
                 base_url: base_url.trim_end_matches('/').to_string(),
-                token: None,
+                auth: tokio::sync::Mutex::new(RestAuth {
+                    token: None,
+                    expires_at: None,
+                    refresh_token: None,
+                    refresh_expires_at: None,
+                    credential: None,
+                }),
             },
+        }
+    }
+
+    /// Create a client from a base64-encoded credential bundle.
+    ///
+    /// Performs lightweight challenge-response auth (no ATM/TDK initialization)
+    /// and stores the credential for automatic token refresh.
+    pub async fn from_credential(
+        credential_b64: &str,
+        url_override: Option<&str>,
+    ) -> Result<Self, VtaError> {
+        let (result, cred, http) =
+            crate::auth_light::authenticate_with_credential(credential_b64, url_override).await?;
+        let base_url = url_override
+            .or(cred.vta_url.as_deref())
+            .ok_or("no VTA URL")?
+            .trim_end_matches('/')
+            .to_string();
+
+        Ok(Self {
+            transport: Transport::Rest {
+                client: http,
+                base_url,
+                auth: tokio::sync::Mutex::new(RestAuth {
+                    token: Some(result.access_token),
+                    expires_at: Some(result.access_expires_at),
+                    refresh_token: result.refresh_token,
+                    refresh_expires_at: result.refresh_expires_at,
+                    credential: Some(AuthCredential {
+                        did: cred.did,
+                        private_key_multibase: cred.private_key_multibase,
+                        vta_did: cred.vta_did,
+                    }),
+                }),
+            },
+        })
+    }
+
+    /// Returns the token expiry timestamp, if known.
+    pub async fn token_expires_at(&self) -> Option<u64> {
+        if let Transport::Rest { auth, .. } = &self.transport {
+            auth.lock().await.expires_at
+        } else {
+            None
         }
     }
 
@@ -377,7 +567,7 @@ impl VtaClient {
         vta_did: &str,
         mediator_did: &str,
         rest_url: Option<String>,
-    ) -> Result<Self, Box<dyn std::error::Error>> {
+    ) -> Result<Self, VtaError> {
         let session = crate::didcomm_session::DIDCommSession::connect(
             client_did,
             private_key_multibase,
@@ -398,9 +588,22 @@ impl VtaClient {
     }
 
     /// Set the Bearer token for authenticated requests (REST only, no-op for DIDComm).
-    pub fn set_token(&mut self, token: String) {
-        if let Transport::Rest { token: t, .. } = &mut self.transport {
-            *t = Some(token);
+    ///
+    /// Can be called from sync or async contexts. For async contexts, use
+    /// [`set_token_async`](Self::set_token_async) to avoid potential blocking.
+    pub fn set_token(&self, token: String) {
+        if let Transport::Rest { auth, .. } = &self.transport {
+            // try_lock avoids blocking the current thread if called from async
+            if let Ok(mut guard) = auth.try_lock() {
+                guard.token = Some(token);
+            }
+        }
+    }
+
+    /// Set the Bearer token (async version).
+    pub async fn set_token_async(&self, token: String) {
+        if let Transport::Rest { auth, .. } = &self.transport {
+            auth.lock().await.token = Some(token);
         }
     }
 
@@ -423,6 +626,79 @@ impl VtaClient {
 
     // ── RPC helpers ─────────────────────────────────────────────────
 
+    /// Ensure the REST auth token is valid, refreshing if needed.
+    async fn ensure_token_valid(
+        client: &Client,
+        base_url: &str,
+        auth: &tokio::sync::Mutex<RestAuth>,
+    ) -> Result<(), VtaError> {
+        let mut guard = auth.lock().await;
+
+        // Check if token is still valid (>30s remaining)
+        if let Some(expires_at) = guard.expires_at {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            if now + 30 < expires_at {
+                return Ok(()); // Token still valid
+            }
+        } else if guard.token.is_some() {
+            // Token without expiry — assume valid
+            return Ok(());
+        }
+
+        // No credential stored — can't auto-refresh
+        let Some(ref cred) = guard.credential else {
+            return Ok(());
+        };
+
+        // Try refresh token first (cheaper than full re-auth)
+        if let Some(ref refresh_tok) = guard.refresh_token
+            && let Some(refresh_exp) = guard.refresh_expires_at
+        {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            if now < refresh_exp
+                && let Ok(result) = crate::auth_light::refresh_token_light(
+                    client,
+                    base_url,
+                    &cred.did,
+                    &cred.vta_did,
+                    refresh_tok,
+                )
+                .await
+            {
+                guard.token = Some(result.access_token);
+                guard.expires_at = Some(result.access_expires_at);
+                if let Some(new_refresh) = result.refresh_token {
+                    guard.refresh_token = Some(new_refresh);
+                }
+                guard.refresh_expires_at = result.refresh_expires_at;
+                return Ok(());
+            }
+            // Refresh failed or expired — fall through to full re-auth
+        }
+
+        // Full re-authentication
+        let did = cred.did.clone();
+        let pk = cred.private_key_multibase.clone();
+        let vta = cred.vta_did.clone();
+        drop(guard); // Release lock before async call
+
+        let result =
+            crate::auth_light::challenge_response_light(client, base_url, &did, &pk, &vta).await?;
+
+        let mut guard = auth.lock().await;
+        guard.token = Some(result.access_token);
+        guard.expires_at = Some(result.access_expires_at);
+        guard.refresh_token = result.refresh_token;
+        guard.refresh_expires_at = result.refresh_expires_at;
+        Ok(())
+    }
+
     /// Dispatch an RPC call via REST (using `build_rest`) or DIDComm (using
     /// `msg_type`/`body`/`result_type`), returning a deserialized response.
     #[allow(unused_variables)]
@@ -433,23 +709,24 @@ impl VtaClient {
         result_type: &str,
         timeout: u64,
         build_rest: impl FnOnce(&Client, &str) -> RequestBuilder,
-    ) -> Result<T, Box<dyn std::error::Error>> {
+    ) -> Result<T, VtaError> {
         match &self.transport {
             Transport::Rest {
                 client,
                 base_url,
-                token,
+                auth,
             } => {
+                Self::ensure_token_valid(client, base_url, auth).await?;
+                let token = auth.lock().await.token.clone();
                 let req = build_rest(client, base_url);
-                let resp = Self::with_auth(req, token).send().await?;
+                let resp = Self::with_auth_token(req, &token).send().await?;
                 Self::handle_response(resp).await
             }
             #[cfg(feature = "session")]
-            Transport::DIDComm { session, .. } => {
-                session
-                    .send_and_wait(msg_type, body, result_type, timeout)
-                    .await
-            }
+            Transport::DIDComm { session, .. } => session
+                .send_and_wait(msg_type, body, result_type, timeout)
+                .await
+                .map_err(|e| VtaError::Protocol(e.to_string())),
         }
     }
 
@@ -462,22 +739,25 @@ impl VtaClient {
         result_type: &str,
         timeout: u64,
         build_rest: impl FnOnce(&Client, &str) -> RequestBuilder,
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    ) -> Result<(), VtaError> {
         match &self.transport {
             Transport::Rest {
                 client,
                 base_url,
-                token,
+                auth,
             } => {
+                Self::ensure_token_valid(client, base_url, auth).await?;
+                let token = auth.lock().await.token.clone();
                 let req = build_rest(client, base_url);
-                let resp = Self::with_auth(req, token).send().await?;
+                let resp = Self::with_auth_token(req, &token).send().await?;
                 Self::handle_delete_response(resp).await
             }
             #[cfg(feature = "session")]
             Transport::DIDComm { session, .. } => {
                 let _: serde_json::Value = session
                     .send_and_wait(msg_type, body, result_type, timeout)
-                    .await?;
+                    .await
+                    .map_err(|e| VtaError::Protocol(e.to_string()))?;
                 Ok(())
             }
         }
@@ -485,8 +765,8 @@ impl VtaClient {
 
     // ── Health ───────────────────────────────────────────────────────
 
-    /// GET /health (always REST)
-    pub async fn health(&self) -> Result<HealthResponse, Box<dyn std::error::Error>> {
+    /// GET /health (always REST, unauthenticated)
+    pub async fn health(&self) -> Result<HealthResponse, VtaError> {
         match &self.transport {
             Transport::Rest {
                 client, base_url, ..
@@ -515,13 +795,16 @@ impl VtaClient {
     // ── VTA Management ──────────────────────────────────────────────
 
     /// Trigger a soft restart of the VTA.
-    pub async fn restart(&self) -> Result<vta_management::restart::RestartResult, Box<dyn std::error::Error>> {
+    pub async fn restart(&self) -> Result<vta_management::restart::RestartResult, VtaError> {
         self.rpc(
             vta_management::RESTART,
             serde_json::json!({}),
             vta_management::RESTART_RESULT,
             30,
-            |c, url| c.post(format!("{url}/vta/restart")).json(&serde_json::json!({})),
+            |c, url| {
+                c.post(format!("{url}/vta/restart"))
+                    .json(&serde_json::json!({}))
+            },
         )
         .await
     }
@@ -533,15 +816,16 @@ impl VtaClient {
         &self,
         password: &str,
         include_audit: bool,
-    ) -> Result<crate::protocols::backup_management::types::BackupEnvelope, Box<dyn std::error::Error>> {
+    ) -> Result<crate::protocols::backup_management::types::BackupEnvelope, VtaError> {
         self.rpc(
             crate::protocols::backup_management::EXPORT_BACKUP,
             serde_json::json!({ "password": password, "include_audit": include_audit }),
             crate::protocols::backup_management::EXPORT_BACKUP_RESULT,
             120, // backup can take longer
             |c, url| {
-                c.post(format!("{url}/backup/export"))
-                    .json(&serde_json::json!({ "password": password, "include_audit": include_audit }))
+                c.post(format!("{url}/backup/export")).json(
+                    &serde_json::json!({ "password": password, "include_audit": include_audit }),
+                )
             },
         )
         .await
@@ -553,7 +837,7 @@ impl VtaClient {
         backup: &crate::protocols::backup_management::types::BackupEnvelope,
         password: &str,
         confirm: bool,
-    ) -> Result<crate::protocols::backup_management::types::ImportResult, Box<dyn std::error::Error>> {
+    ) -> Result<crate::protocols::backup_management::types::ImportResult, VtaError> {
         self.rpc(
             crate::protocols::backup_management::IMPORT_BACKUP,
             serde_json::json!({ "backup": backup, "password": password, "confirm": confirm }),
@@ -569,7 +853,7 @@ impl VtaClient {
 
     // ── Config ──────────────────────────────────────────────────────
 
-    pub async fn get_config(&self) -> Result<ConfigResponse, Box<dyn std::error::Error>> {
+    pub async fn get_config(&self) -> Result<ConfigResponse, VtaError> {
         self.rpc(
             vta_management::GET_CONFIG,
             serde_json::json!({}),
@@ -583,7 +867,7 @@ impl VtaClient {
     pub async fn update_config(
         &self,
         req: UpdateConfigRequest,
-    ) -> Result<ConfigResponse, Box<dyn std::error::Error>> {
+    ) -> Result<ConfigResponse, VtaError> {
         self.rpc(
             vta_management::UPDATE_CONFIG,
             serde_json::to_value(&req)?,
@@ -596,10 +880,7 @@ impl VtaClient {
 
     // ── Key methods ─────────────────────────────────────────────────
 
-    pub async fn create_key(
-        &self,
-        req: CreateKeyRequest,
-    ) -> Result<CreateKeyResponse, Box<dyn std::error::Error>> {
+    pub async fn create_key(&self, req: CreateKeyRequest) -> Result<CreateKeyResponse, VtaError> {
         self.rpc(
             key_management::CREATE_KEY,
             serde_json::json!({
@@ -622,7 +903,7 @@ impl VtaClient {
         limit: u64,
         status: Option<&str>,
         context_id: Option<&str>,
-    ) -> Result<ListKeysResponse, Box<dyn std::error::Error>> {
+    ) -> Result<ListKeysResponse, VtaError> {
         self.rpc(
             key_management::LIST_KEYS,
             serde_json::json!({
@@ -647,7 +928,7 @@ impl VtaClient {
         .await
     }
 
-    pub async fn get_key(&self, key_id: &str) -> Result<KeyRecord, Box<dyn std::error::Error>> {
+    pub async fn get_key(&self, key_id: &str) -> Result<KeyRecord, VtaError> {
         self.rpc(
             key_management::GET_KEY,
             serde_json::json!({ "key_id": key_id }),
@@ -658,10 +939,7 @@ impl VtaClient {
         .await
     }
 
-    pub async fn get_key_secret(
-        &self,
-        key_id: &str,
-    ) -> Result<GetKeySecretResponse, Box<dyn std::error::Error>> {
+    pub async fn get_key_secret(&self, key_id: &str) -> Result<GetKeySecretResponse, VtaError> {
         self.rpc(
             key_management::GET_KEY_SECRET,
             serde_json::json!({ "key_id": key_id }),
@@ -681,7 +959,7 @@ impl VtaClient {
         key_id: &str,
         payload: &[u8],
         algorithm: SignAlgorithm,
-    ) -> Result<SignResponse, Box<dyn std::error::Error>> {
+    ) -> Result<SignResponse, VtaError> {
         use base64::Engine;
         let payload_b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(payload);
         self.rpc(
@@ -704,10 +982,7 @@ impl VtaClient {
         .await
     }
 
-    pub async fn invalidate_key(
-        &self,
-        key_id: &str,
-    ) -> Result<InvalidateKeyResponse, Box<dyn std::error::Error>> {
+    pub async fn invalidate_key(&self, key_id: &str) -> Result<InvalidateKeyResponse, VtaError> {
         self.rpc(
             key_management::REVOKE_KEY,
             serde_json::json!({ "key_id": key_id }),
@@ -722,7 +997,7 @@ impl VtaClient {
         &self,
         key_id: &str,
         new_key_id: &str,
-    ) -> Result<RenameKeyResponse, Box<dyn std::error::Error>> {
+    ) -> Result<RenameKeyResponse, VtaError> {
         self.rpc(
             key_management::RENAME_KEY,
             serde_json::json!({ "key_id": key_id, "new_key_id": new_key_id }),
@@ -738,9 +1013,44 @@ impl VtaClient {
         .await
     }
 
+    // ── Import key methods ──────────────────────────────────────────
+
+    /// Fetch an ephemeral wrapping key for REST key import.
+    pub async fn get_wrapping_key(&self) -> Result<WrappingKeyResponse, VtaError> {
+        match &self.transport {
+            Transport::Rest {
+                client,
+                base_url,
+                auth,
+            } => {
+                Self::ensure_token_valid(client, base_url, auth).await?;
+                let token = auth.lock().await.token.clone();
+                let req = client.get(format!("{base_url}/keys/import/wrapping-key"));
+                let resp = Self::with_auth_token(req, &token).send().await?;
+                Self::handle_response(resp).await
+            }
+            #[cfg(feature = "session")]
+            Transport::DIDComm { .. } => Err(VtaError::Other(
+                "wrapping key not needed for DIDComm transport".into(),
+            )),
+        }
+    }
+
+    /// Import an externally-created private key into the VTA.
+    pub async fn import_key(&self, req: ImportKeyRequest) -> Result<ImportKeyResponse, VtaError> {
+        self.rpc(
+            key_management::IMPORT_KEY,
+            serde_json::to_value(&req)?,
+            key_management::IMPORT_KEY_RESULT,
+            30,
+            |c, url| c.post(format!("{url}/keys/import")).json(&req),
+        )
+        .await
+    }
+
     // ── Seed methods ────────────────────────────────────────────────
 
-    pub async fn list_seeds(&self) -> Result<ListSeedsResponse, Box<dyn std::error::Error>> {
+    pub async fn list_seeds(&self) -> Result<ListSeedsResponse, VtaError> {
         self.rpc(
             seed_management::LIST_SEEDS,
             serde_json::json!({}),
@@ -754,7 +1064,7 @@ impl VtaClient {
     pub async fn rotate_seed(
         &self,
         mnemonic: Option<String>,
-    ) -> Result<RotateSeedResponse, Box<dyn std::error::Error>> {
+    ) -> Result<RotateSeedResponse, VtaError> {
         let body = RotateSeedRequest {
             mnemonic: mnemonic.clone(),
         };
@@ -770,10 +1080,7 @@ impl VtaClient {
 
     // ── ACL methods ─────────────────────────────────────────────────
 
-    pub async fn list_acl(
-        &self,
-        context: Option<&str>,
-    ) -> Result<AclListResponse, Box<dyn std::error::Error>> {
+    pub async fn list_acl(&self, context: Option<&str>) -> Result<AclListResponse, VtaError> {
         self.rpc(
             acl_management::LIST_ACL,
             serde_json::json!({ "context": context }),
@@ -790,7 +1097,7 @@ impl VtaClient {
         .await
     }
 
-    pub async fn get_acl(&self, did: &str) -> Result<AclEntryResponse, Box<dyn std::error::Error>> {
+    pub async fn get_acl(&self, did: &str) -> Result<AclEntryResponse, VtaError> {
         self.rpc(
             acl_management::GET_ACL,
             serde_json::json!({ "did": did }),
@@ -801,10 +1108,7 @@ impl VtaClient {
         .await
     }
 
-    pub async fn create_acl(
-        &self,
-        req: CreateAclRequest,
-    ) -> Result<AclEntryResponse, Box<dyn std::error::Error>> {
+    pub async fn create_acl(&self, req: CreateAclRequest) -> Result<AclEntryResponse, VtaError> {
         self.rpc(
             acl_management::CREATE_ACL,
             serde_json::to_value(&req)?,
@@ -819,7 +1123,7 @@ impl VtaClient {
         &self,
         did: &str,
         req: UpdateAclRequest,
-    ) -> Result<AclEntryResponse, Box<dyn std::error::Error>> {
+    ) -> Result<AclEntryResponse, VtaError> {
         self.rpc(
             acl_management::UPDATE_ACL,
             serde_json::json!({
@@ -838,7 +1142,7 @@ impl VtaClient {
         .await
     }
 
-    pub async fn delete_acl(&self, did: &str) -> Result<(), Box<dyn std::error::Error>> {
+    pub async fn delete_acl(&self, did: &str) -> Result<(), VtaError> {
         self.rpc_void(
             acl_management::DELETE_ACL,
             serde_json::json!({ "did": did }),
@@ -854,7 +1158,7 @@ impl VtaClient {
     pub async fn generate_credentials(
         &self,
         req: GenerateCredentialsRequest,
-    ) -> Result<GenerateCredentialsResponse, Box<dyn std::error::Error>> {
+    ) -> Result<GenerateCredentialsResponse, VtaError> {
         self.rpc(
             credential_management::GENERATE_CREDENTIALS,
             serde_json::to_value(&req)?,
@@ -867,7 +1171,7 @@ impl VtaClient {
 
     // ── Context methods ──────────────────────────────────────────────
 
-    pub async fn list_contexts(&self) -> Result<ContextListResponse, Box<dyn std::error::Error>> {
+    pub async fn list_contexts(&self) -> Result<ContextListResponse, VtaError> {
         self.rpc(
             context_management::LIST_CONTEXTS,
             serde_json::json!({}),
@@ -878,10 +1182,7 @@ impl VtaClient {
         .await
     }
 
-    pub async fn get_context(
-        &self,
-        id: &str,
-    ) -> Result<ContextResponse, Box<dyn std::error::Error>> {
+    pub async fn get_context(&self, id: &str) -> Result<ContextResponse, VtaError> {
         self.rpc(
             context_management::GET_CONTEXT,
             serde_json::json!({ "id": id }),
@@ -895,7 +1196,7 @@ impl VtaClient {
     pub async fn create_context(
         &self,
         req: CreateContextRequest,
-    ) -> Result<ContextResponse, Box<dyn std::error::Error>> {
+    ) -> Result<ContextResponse, VtaError> {
         self.rpc(
             context_management::CREATE_CONTEXT,
             serde_json::to_value(&req)?,
@@ -910,7 +1211,7 @@ impl VtaClient {
         &self,
         id: &str,
         req: UpdateContextRequest,
-    ) -> Result<ContextResponse, Box<dyn std::error::Error>> {
+    ) -> Result<ContextResponse, VtaError> {
         self.rpc(
             context_management::UPDATE_CONTEXT,
             serde_json::json!({
@@ -929,24 +1230,46 @@ impl VtaClient {
         .await
     }
 
+    /// Update the DID for a context. Requires Admin role with access to the context.
+    pub async fn update_context_did(
+        &self,
+        id: &str,
+        did: impl Into<String>,
+    ) -> Result<ContextResponse, VtaError> {
+        let did = did.into();
+        self.rpc(
+            context_management::UPDATE_CONTEXT_DID,
+            serde_json::json!({ "id": id, "did": &did }),
+            context_management::UPDATE_CONTEXT_DID_RESULT,
+            30,
+            |c, url| {
+                c.put(format!("{url}/contexts/{}/did", encode_path_segment(id)))
+                    .json(&UpdateContextDidRequest { did: did.clone() })
+            },
+        )
+        .await
+    }
+
     pub async fn preview_delete_context(
         &self,
         id: &str,
-    ) -> Result<
-        context_management::delete::DeleteContextPreviewResultBody,
-        Box<dyn std::error::Error>,
-    > {
+    ) -> Result<context_management::delete::DeleteContextPreviewResultBody, VtaError> {
         self.rpc(
             context_management::PREVIEW_DELETE_CONTEXT,
             serde_json::json!({ "id": id }),
             context_management::PREVIEW_DELETE_CONTEXT_RESULT,
             30,
-            |c, url| c.get(format!("{url}/contexts/{}/delete-preview", encode_path_segment(id))),
+            |c, url| {
+                c.get(format!(
+                    "{url}/contexts/{}/delete-preview",
+                    encode_path_segment(id)
+                ))
+            },
         )
         .await
     }
 
-    pub async fn delete_context(&self, id: &str, force: bool) -> Result<(), Box<dyn std::error::Error>> {
+    pub async fn delete_context(&self, id: &str, force: bool) -> Result<(), VtaError> {
         self.rpc_void(
             context_management::DELETE_CONTEXT,
             serde_json::json!({ "id": id, "force": force }),
@@ -968,7 +1291,7 @@ impl VtaClient {
     pub async fn add_webvh_server(
         &self,
         req: AddWebvhServerRequest,
-    ) -> Result<crate::webvh::WebvhServerRecord, Box<dyn std::error::Error>> {
+    ) -> Result<crate::webvh::WebvhServerRecord, VtaError> {
         self.rpc(
             did_management::ADD_WEBVH_SERVER,
             serde_json::to_value(&req)?,
@@ -981,10 +1304,8 @@ impl VtaClient {
 
     pub async fn list_webvh_servers(
         &self,
-    ) -> Result<
-        crate::protocols::did_management::servers::ListWebvhServersResultBody,
-        Box<dyn std::error::Error>,
-    > {
+    ) -> Result<crate::protocols::did_management::servers::ListWebvhServersResultBody, VtaError>
+    {
         self.rpc(
             did_management::LIST_WEBVH_SERVERS,
             serde_json::json!({}),
@@ -999,7 +1320,7 @@ impl VtaClient {
         &self,
         id: &str,
         req: UpdateWebvhServerRequest,
-    ) -> Result<crate::webvh::WebvhServerRecord, Box<dyn std::error::Error>> {
+    ) -> Result<crate::webvh::WebvhServerRecord, VtaError> {
         self.rpc(
             did_management::UPDATE_WEBVH_SERVER,
             serde_json::json!({ "id": id, "label": &req.label }),
@@ -1013,7 +1334,7 @@ impl VtaClient {
         .await
     }
 
-    pub async fn remove_webvh_server(&self, id: &str) -> Result<(), Box<dyn std::error::Error>> {
+    pub async fn remove_webvh_server(&self, id: &str) -> Result<(), VtaError> {
         self.rpc_void(
             did_management::REMOVE_WEBVH_SERVER,
             serde_json::json!({ "id": id }),
@@ -1029,10 +1350,7 @@ impl VtaClient {
     pub async fn create_did_webvh(
         &self,
         req: CreateDidWebvhRequest,
-    ) -> Result<
-        crate::protocols::did_management::create::CreateDidWebvhResultBody,
-        Box<dyn std::error::Error>,
-    > {
+    ) -> Result<crate::protocols::did_management::create::CreateDidWebvhResultBody, VtaError> {
         self.rpc(
             did_management::CREATE_DID_WEBVH,
             serde_json::to_value(&req)?,
@@ -1047,10 +1365,7 @@ impl VtaClient {
         &self,
         context_id: Option<&str>,
         server_id: Option<&str>,
-    ) -> Result<
-        crate::protocols::did_management::list::ListDidsWebvhResultBody,
-        Box<dyn std::error::Error>,
-    > {
+    ) -> Result<crate::protocols::did_management::list::ListDidsWebvhResultBody, VtaError> {
         self.rpc(
             did_management::LIST_DIDS_WEBVH,
             serde_json::json!({
@@ -1075,10 +1390,7 @@ impl VtaClient {
         .await
     }
 
-    pub async fn get_did_webvh(
-        &self,
-        did: &str,
-    ) -> Result<crate::webvh::WebvhDidRecord, Box<dyn std::error::Error>> {
+    pub async fn get_did_webvh(&self, did: &str) -> Result<crate::webvh::WebvhDidRecord, VtaError> {
         self.rpc(
             did_management::GET_DID_WEBVH,
             serde_json::json!({ "did": did }),
@@ -1089,10 +1401,7 @@ impl VtaClient {
         .await
     }
 
-    pub async fn get_did_webvh_log(
-        &self,
-        did: &str,
-    ) -> Result<GetDidLogResponse, Box<dyn std::error::Error>> {
+    pub async fn get_did_webvh_log(&self, did: &str) -> Result<GetDidLogResponse, VtaError> {
         self.rpc(
             did_management::GET_DID_WEBVH_LOG,
             serde_json::json!({ "did": did }),
@@ -1103,7 +1412,7 @@ impl VtaClient {
         .await
     }
 
-    pub async fn delete_did_webvh(&self, did: &str) -> Result<(), Box<dyn std::error::Error>> {
+    pub async fn delete_did_webvh(&self, did: &str) -> Result<(), VtaError> {
         self.rpc_void(
             did_management::DELETE_DID_WEBVH,
             serde_json::json!({ "did": did }),
@@ -1120,7 +1429,7 @@ impl VtaClient {
     pub async fn list_audit_logs(
         &self,
         params: &crate::protocols::audit_management::list::ListAuditLogsBody,
-    ) -> Result<crate::protocols::audit_management::list::ListAuditLogsResultBody, Box<dyn std::error::Error>> {
+    ) -> Result<crate::protocols::audit_management::list::ListAuditLogsResultBody, VtaError> {
         use crate::protocols::audit_management;
         self.rpc(
             audit_management::LIST_LOGS,
@@ -1132,12 +1441,24 @@ impl VtaClient {
                     format!("page={}", params.page),
                     format!("page_size={}", params.page_size),
                 ];
-                if let Some(from) = params.from { qs.push(format!("from={from}")); }
-                if let Some(to) = params.to { qs.push(format!("to={to}")); }
-                if let Some(ref action) = params.action { qs.push(format!("action={action}")); }
-                if let Some(ref actor) = params.actor { qs.push(format!("actor={actor}")); }
-                if let Some(ref outcome) = params.outcome { qs.push(format!("outcome={outcome}")); }
-                if let Some(ref ctx) = params.context_id { qs.push(format!("context_id={ctx}")); }
+                if let Some(from) = params.from {
+                    qs.push(format!("from={from}"));
+                }
+                if let Some(to) = params.to {
+                    qs.push(format!("to={to}"));
+                }
+                if let Some(ref action) = params.action {
+                    qs.push(format!("action={action}"));
+                }
+                if let Some(ref actor) = params.actor {
+                    qs.push(format!("actor={actor}"));
+                }
+                if let Some(ref outcome) = params.outcome {
+                    qs.push(format!("outcome={outcome}"));
+                }
+                if let Some(ref ctx) = params.context_id {
+                    qs.push(format!("context_id={ctx}"));
+                }
                 c.get(format!("{url}/audit/logs?{}", qs.join("&")))
             },
         )
@@ -1147,7 +1468,7 @@ impl VtaClient {
     /// Get the current audit log retention period.
     pub async fn get_audit_retention(
         &self,
-    ) -> Result<crate::protocols::audit_management::retention::RetentionResultBody, Box<dyn std::error::Error>> {
+    ) -> Result<crate::protocols::audit_management::retention::RetentionResultBody, VtaError> {
         use crate::protocols::audit_management;
         self.rpc(
             audit_management::GET_RETENTION,
@@ -1163,7 +1484,7 @@ impl VtaClient {
     pub async fn update_audit_retention(
         &self,
         retention_days: u32,
-    ) -> Result<crate::protocols::audit_management::retention::RetentionResultBody, Box<dyn std::error::Error>> {
+    ) -> Result<crate::protocols::audit_management::retention::RetentionResultBody, VtaError> {
         use crate::protocols::audit_management;
         let body = audit_management::retention::UpdateRetentionBody { retention_days };
         self.rpc(
@@ -1174,6 +1495,114 @@ impl VtaClient {
             |c, url| c.patch(format!("{url}/audit/retention")).json(&body),
         )
         .await
+    }
+
+    // ── Convenience methods ────────────────────────────────────────
+
+    /// Fetch all secrets for a context, paginating through all keys.
+    ///
+    /// Returns TDK `Secret` objects ready for use with DIDComm or signing.
+    pub async fn fetch_context_secrets(
+        &self,
+        context_id: &str,
+    ) -> Result<Vec<affinidi_tdk::secrets_resolver::secrets::Secret>, VtaError> {
+        let page_size = 100u64;
+        let mut offset = 0u64;
+        let mut secrets = Vec::new();
+
+        loop {
+            let resp = self
+                .list_keys(offset, page_size, Some("active"), Some(context_id))
+                .await?;
+
+            if resp.keys.is_empty() {
+                break;
+            }
+
+            for key in &resp.keys {
+                let secret_resp = self.get_key_secret(&key.key_id).await?;
+                let secret = crate::did_key::secret_from_key_response(&secret_resp)?;
+                secrets.push(secret);
+            }
+
+            offset += resp.keys.len() as u64;
+            if offset >= resp.total {
+                break;
+            }
+        }
+
+        Ok(secrets)
+    }
+
+    /// Fetch all secrets for a context as a portable [`DidSecretsBundle`].
+    ///
+    /// Resolves the context DID, paginates through all active keys,
+    /// fetches each secret, and returns a bundle ready for encoding/transport.
+    pub async fn fetch_did_secrets_bundle(
+        &self,
+        context_id: &str,
+    ) -> Result<crate::did_secrets::DidSecretsBundle, VtaError> {
+        let ctx = self.get_context(context_id).await?;
+        let did = ctx.did.ok_or_else(|| {
+            VtaError::Validation(format!("context '{context_id}' has no DID assigned"))
+        })?;
+
+        let page_size = 100u64;
+        let mut offset = 0u64;
+        let mut secrets = Vec::new();
+
+        loop {
+            let resp = self
+                .list_keys(offset, page_size, Some("active"), Some(context_id))
+                .await?;
+            if resp.keys.is_empty() {
+                break;
+            }
+            for key in &resp.keys {
+                let secret_resp = self.get_key_secret(&key.key_id).await?;
+                let mut entry = crate::did_secrets::SecretEntry::from(secret_resp);
+                // Use the key's label as the secret ID when it looks like a DID
+                // verification method ID (e.g., "did:webvh:...#key-0"). The setup
+                // wizard and provisioning flows set labels to match the DID document,
+                // so this lets consumers use the bundle directly without remapping.
+                if let Some(label) = key.label.as_deref()
+                    && (label.contains('#') || label.starts_with("did:"))
+                {
+                    entry.key_id = label.to_string();
+                }
+                secrets.push(entry);
+            }
+            offset += resp.keys.len() as u64;
+            if offset >= resp.total {
+                break;
+            }
+        }
+
+        Ok(crate::did_secrets::DidSecretsBundle { did, secrets })
+    }
+
+    /// Check whether the current auth token is valid by calling an authenticated endpoint.
+    ///
+    /// Returns `true` if authenticated, `false` if the token is invalid/expired.
+    /// Returns an error only on network failures.
+    pub async fn check_auth(&self) -> Result<bool, VtaError> {
+        match &self.transport {
+            Transport::Rest {
+                client,
+                base_url,
+                auth,
+            } => {
+                let token = auth.lock().await.token.clone();
+                let req = client.get(format!("{base_url}/health/details"));
+                let resp = Self::with_auth_token(req, &token).send().await?;
+                Ok(resp.status().is_success())
+            }
+            #[cfg(feature = "session")]
+            Transport::DIDComm { .. } => {
+                // DIDComm sessions are always authenticated
+                Ok(true)
+            }
+        }
     }
 }
 
@@ -1244,22 +1673,24 @@ mod tests {
         assert_eq!(client.base_url(), "http://localhost:3000");
     }
 
-    #[test]
-    fn test_new_token_initially_none() {
+    #[tokio::test]
+    async fn test_new_token_initially_none() {
         let client = VtaClient::new("http://example.com");
         match &client.transport {
-            Transport::Rest { token, .. } => assert!(token.is_none()),
+            Transport::Rest { auth, .. } => assert!(auth.lock().await.token.is_none()),
             #[cfg(feature = "session")]
             _ => panic!("expected REST transport"),
         }
     }
 
-    #[test]
-    fn test_set_token() {
-        let mut client = VtaClient::new("http://example.com");
+    #[tokio::test]
+    async fn test_set_token() {
+        let client = VtaClient::new("http://example.com");
         client.set_token("my-jwt".to_string());
         match &client.transport {
-            Transport::Rest { token, .. } => assert_eq!(token.as_deref(), Some("my-jwt")),
+            Transport::Rest { auth, .. } => {
+                assert_eq!(auth.lock().await.token.as_deref(), Some("my-jwt"));
+            }
             #[cfg(feature = "session")]
             _ => panic!("expected REST transport"),
         }

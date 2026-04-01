@@ -34,9 +34,10 @@ impl KmsTeeSeedStore {
 impl SeedStore for KmsTeeSeedStore {
     fn get(&self) -> BoxFuture<'_, Result<Option<Vec<u8>>, AppError>> {
         Box::pin(async {
-            let guard = self.seed.lock().map_err(|e| {
-                AppError::SecretStore(format!("seed lock poisoned: {e}"))
-            })?;
+            let guard = self
+                .seed
+                .lock()
+                .map_err(|e| AppError::SecretStore(format!("seed lock poisoned: {e}")))?;
             Ok(guard.clone())
         })
     }
@@ -50,9 +51,10 @@ impl SeedStore for KmsTeeSeedStore {
                 "seed updated in memory — restart the enclave to re-encrypt \
                  and persist the new seed via KMS bootstrap"
             );
-            let mut guard = self.seed.lock().map_err(|e| {
-                AppError::SecretStore(format!("seed lock poisoned: {e}"))
-            })?;
+            let mut guard = self
+                .seed
+                .lock()
+                .map_err(|e| AppError::SecretStore(format!("seed lock poisoned: {e}")))?;
             *guard = Some(seed);
             Ok(())
         })

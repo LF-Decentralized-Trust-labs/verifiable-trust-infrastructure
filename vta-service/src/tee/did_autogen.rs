@@ -143,9 +143,15 @@ pub async fn maybe_generate_vta_did(
         .map_err(|e| AppError::Internal(format!("failed to serialize DID log: {e}")))?;
 
     // Save key records
-    keys::save_entity_key_records(&final_did, &derived, &keys_ks, Some("vta"), Some(active_seed_id))
-        .await
-        .map_err(|e| AppError::Internal(format!("{e}")))?;
+    keys::save_entity_key_records(
+        &final_did,
+        &derived,
+        &keys_ks,
+        Some("vta"),
+        Some(active_seed_id),
+    )
+    .await
+    .map_err(|e| AppError::Internal(format!("{e}")))?;
 
     // Update context with the new DID
     let mut ctx = ctx;
@@ -237,18 +243,19 @@ fn build_vta_did_document(
 
     // Add TeeAttestation service if configured
     if config.tee.embed_in_did
-        && let Some(ref public_url) = config.public_url {
-            let services = did_document
-                .as_object_mut()
-                .unwrap()
-                .entry("service")
-                .or_insert_with(|| json!([]));
-            services.as_array_mut().unwrap().push(json!({
-                "id": "{DID}#tee-attestation",
-                "type": "TeeAttestation",
-                "serviceEndpoint": format!("{}/attestation/report", public_url.trim_end_matches('/'))
-            }));
-        }
+        && let Some(ref public_url) = config.public_url
+    {
+        let services = did_document
+            .as_object_mut()
+            .unwrap()
+            .entry("service")
+            .or_insert_with(|| json!([]));
+        services.as_array_mut().unwrap().push(json!({
+            "id": "{DID}#tee-attestation",
+            "type": "TeeAttestation",
+            "serviceEndpoint": format!("{}/attestation/report", public_url.trim_end_matches('/'))
+        }));
+    }
 
     did_document
 }
@@ -259,13 +266,11 @@ fn build_vta_did_document(
 /// `did:webvh:{SCID}:example.com%3A8080:vta` → `https://example.com:8080/vta`
 fn template_to_url(template: &str) -> Result<String, AppError> {
     // Strip "did:webvh:{SCID}:" prefix
-    let rest = template
-        .strip_prefix("did:webvh:{SCID}:")
-        .ok_or_else(|| {
-            AppError::Config(format!(
-                "vta_did_template must start with 'did:webvh:{{SCID}}:' — got: {template}"
-            ))
-        })?;
+    let rest = template.strip_prefix("did:webvh:{SCID}:").ok_or_else(|| {
+        AppError::Config(format!(
+            "vta_did_template must start with 'did:webvh:{{SCID}}:' — got: {template}"
+        ))
+    })?;
 
     if rest.is_empty() {
         return Err(AppError::Config(
@@ -275,7 +280,10 @@ fn template_to_url(template: &str) -> Result<String, AppError> {
 
     // did:webvh encoding: ":" separates path segments, "%3A" is a literal colon (port)
     // Decode %3A back to ":" for port numbers, then replace ":" with "/" for path
-    let url_path = rest.replace("%3A", "\x00").replace(':', "/").replace('\x00', ":");
+    let url_path = rest
+        .replace("%3A", "\x00")
+        .replace(':', "/")
+        .replace('\x00', ":");
 
     Ok(format!("https://{url_path}"))
 }

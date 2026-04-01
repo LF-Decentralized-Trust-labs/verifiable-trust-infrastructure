@@ -32,12 +32,9 @@ use std::pin::Pin;
 use crate::config::AppConfig;
 use crate::error::AppError;
 
-type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
+pub use vti_common::seed_store::SeedStore;
 
-pub trait SeedStore: Send + Sync {
-    fn get(&self) -> BoxFuture<'_, Result<Option<Vec<u8>>, AppError>>;
-    fn set(&self, seed: &[u8]) -> BoxFuture<'_, Result<(), AppError>>;
-}
+pub(crate) type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
 /// Create a seed store backend based on compiled features and configuration.
 ///

@@ -64,7 +64,10 @@ impl DIDCommSession {
             match atm.list_messages(&profile, Folder::Inbox).await {
                 Ok(messages) if !messages.is_empty() => {
                     let ids: Vec<String> = messages.iter().map(|m| m.msg_id.clone()).collect();
-                    info!(count = ids.len(), "flushing stale queued messages from inbox");
+                    info!(
+                        count = ids.len(),
+                        "flushing stale queued messages from inbox"
+                    );
                     let delete_req = affinidi_tdk::messaging::messages::DeleteMessageRequest {
                         message_ids: ids,
                     };

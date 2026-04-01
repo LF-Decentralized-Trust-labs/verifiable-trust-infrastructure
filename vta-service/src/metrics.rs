@@ -41,7 +41,8 @@ pub async fn track_metrics(req: Request<Body>, next: Next) -> Response {
     let status = response.status().as_u16().to_string();
 
     let _ = counter!("http_requests_total", "method" => method.clone(), "path" => path.clone(), "status" => status);
-    histogram!("http_request_duration_seconds", "method" => method, "path" => path).record(duration);
+    histogram!("http_request_duration_seconds", "method" => method, "path" => path)
+        .record(duration);
 
     response
 }

@@ -5,7 +5,7 @@ use crate::config::{
     CommunityConfig, PERSONAL_KEYRING_KEY, PersonalVtaConfig, community_keyring_key, load_config,
     save_config,
 };
-use vta_sdk::client::{CreateContextRequest, GenerateCredentialsRequest, VtaClient};
+use vta_sdk::prelude::*;
 
 /// Derive a URL-safe slug from a community name.
 ///
@@ -132,38 +132,31 @@ pub async fn run_setup_wizard() -> Result<(), Box<dyn std::error::Error>> {
             let context_name = format!("CNM - {community_name}");
 
             // Authenticate personal VTA client
-            let mut personal_client = VtaClient::new(&personal_url);
+            let personal_client = VtaClient::new(&personal_url);
             let token = auth::ensure_authenticated(&personal_url, PERSONAL_KEYRING_KEY).await?;
             personal_client.set_token(token);
 
             // Create context in personal VTA
             eprintln!("\nCreating context '{context_name}' in personal VTA...");
-            let ctx_req = CreateContextRequest {
-                id: context_slug.clone(),
-                name: context_name,
-                description: Some(format!("Community admin identity for {}", community_name)),
-            };
+            let ctx_req = CreateContextRequest::new(&context_slug, &context_name)
+                .description(format!("Community admin identity for {}", community_name));
             match personal_client.create_context(ctx_req).await {
                 Ok(ctx) => {
                     eprintln!("  Context created: {} ({})", ctx.id, ctx.base_path);
                 }
+                Err(ref e) if matches!(e, vta_sdk::error::VtaError::Conflict(_)) => {
+                    eprintln!("  Context '{context_slug}' already exists, reusing it.");
+                }
                 Err(e) => {
-                    let msg = e.to_string();
-                    if msg.contains("409") || msg.to_lowercase().contains("already exists") {
-                        eprintln!("  Context '{context_slug}' already exists, reusing it.");
-                    } else {
-                        return Err(e);
-                    }
+                    return Err(e.into());
                 }
             }
 
             // Generate credential in personal VTA
             eprintln!("Generating community admin credential...");
-            let cred_req = GenerateCredentialsRequest {
-                role: "admin".into(),
-                label: Some(format!("CNM community admin — {community_slug}")),
-                allowed_contexts: vec![context_slug.clone()],
-            };
+            let cred_req = GenerateCredentialsRequest::new("admin")
+                .label(format!("CNM community admin — {community_slug}"))
+                .contexts(vec![context_slug.clone()]);
             let resp = personal_client.generate_credentials(cred_req).await?;
 
             // Decode credential to extract the private key
@@ -311,7 +304,7 @@ pub async fn bootstrap_community_session(
 
     // Authenticate to personal VTA
     let token = auth::ensure_authenticated(personal_url, PERSONAL_KEYRING_KEY).await?;
-    let mut personal_client = VtaClient::new(personal_url);
+    let personal_client = VtaClient::new(personal_url);
     personal_client.set_token(token);
 
     // Generate a new credential on the personal VTA

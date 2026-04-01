@@ -5,15 +5,9 @@ use ratatui::{
     style::{Color, Modifier, Style},
     widgets::{Block, Cell, Row, Table},
 };
-use vta_sdk::client::{
-    CreateContextRequest, CreateDidWebvhRequest, CreateKeyRequest, GenerateCredentialsRequest,
-    UpdateContextRequest, VtaClient,
-};
+use vta_sdk::client::{CreateDidWebvhRequest, UpdateContextRequest};
 use vta_sdk::context_provision::{ContextProvisionBundle, ProvisionedDid};
-use vta_sdk::credentials::CredentialBundle;
-use vta_sdk::did_key::{decode_private_key_multibase, ed25519_multibase_pubkey};
-use vta_sdk::did_secrets::SecretEntry;
-use vta_sdk::keys::KeyType;
+use vta_sdk::prelude::*;
 
 use crate::render::print_widget;
 
@@ -32,22 +26,20 @@ pub async fn cmd_context_bootstrap(
     description: Option<String>,
     admin_label: Option<String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let ctx_req = CreateContextRequest {
-        id: id.to_string(),
-        name: name.to_string(),
-        description,
-    };
+    let mut ctx_req = CreateContextRequest::new(id, name);
+    if let Some(desc) = description {
+        ctx_req = ctx_req.description(desc);
+    }
     let ctx = client.create_context(ctx_req).await?;
     println!("Context created:");
     println!("  ID:        {}", ctx.id);
     println!("  Name:      {}", ctx.name);
     println!("  Base Path: {}", ctx.base_path);
 
-    let cred_req = GenerateCredentialsRequest {
-        role: "admin".to_string(),
-        label: admin_label,
-        allowed_contexts: vec![id.to_string()],
-    };
+    let mut cred_req = GenerateCredentialsRequest::new("admin").contexts(vec![id.to_string()]);
+    if let Some(l) = admin_label {
+        cred_req = cred_req.label(l);
+    }
     let resp = client.generate_credentials(cred_req).await?;
     println!();
     println!("Admin credential created:");
@@ -186,6 +178,22 @@ pub async fn cmd_context_update(
     Ok(())
 }
 
+pub async fn cmd_context_update_did(
+    client: &VtaClient,
+    id: &str,
+    did: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let resp = client.update_context_did(id, did).await?;
+    println!("Context DID updated:");
+    println!("  ID:         {}", resp.id);
+    println!(
+        "  DID:        {}",
+        resp.did.as_deref().unwrap_or("(not set)")
+    );
+    println!("  Updated At: {}", resp.updated_at);
+    Ok(())
+}
+
 pub async fn cmd_context_delete(
     client: &VtaClient,
     id: &str,
@@ -200,7 +208,10 @@ pub async fn cmd_context_delete(
         || !preview.acl_entries_updated.is_empty();
 
     if has_resources {
-        println!("Deleting context '{}' will remove the following resources:\n", id);
+        println!(
+            "Deleting context '{}' will remove the following resources:\n",
+            id
+        );
 
         if !preview.keys.is_empty() {
             println!("  Keys ({}):", preview.keys.len());
@@ -217,7 +228,10 @@ pub async fn cmd_context_delete(
         }
 
         if !preview.acl_entries_removed.is_empty() {
-            println!("  ACL entries removed ({}):", preview.acl_entries_removed.len());
+            println!(
+                "  ACL entries removed ({}):",
+                preview.acl_entries_removed.len()
+            );
             for did in &preview.acl_entries_removed {
                 println!("    - {did}");
             }
@@ -265,20 +279,18 @@ pub async fn cmd_context_provision(
 ) -> Result<(), Box<dyn std::error::Error>> {
     // 1. Create the context
     eprintln!("Creating context '{id}'...");
-    let ctx_req = CreateContextRequest {
-        id: id.to_string(),
-        name: name.to_string(),
-        description,
-    };
+    let mut ctx_req = CreateContextRequest::new(id, name);
+    if let Some(desc) = description {
+        ctx_req = ctx_req.description(desc);
+    }
     client.create_context(ctx_req).await?;
 
     // 2. Generate admin credentials scoped to this context
     eprintln!("Generating admin credentials...");
-    let cred_req = GenerateCredentialsRequest {
-        role: "admin".to_string(),
-        label: admin_label,
-        allowed_contexts: vec![id.to_string()],
-    };
+    let mut cred_req = GenerateCredentialsRequest::new("admin").contexts(vec![id.to_string()]);
+    if let Some(l) = admin_label {
+        cred_req = cred_req.label(l);
+    }
     let cred_resp = client.generate_credentials(cred_req).await?;
 
     // 3. Fetch VTA config for URL/DID
@@ -302,30 +314,20 @@ pub async fn cmd_context_provision(
 
         // Collect secrets for the DID keys
         eprintln!("Fetching DID key secrets...");
-        let mut secrets = Vec::new();
+        let mut secrets: Vec<SecretEntry> = Vec::new();
         // Signing key
-        let signing = client.get_key_secret(&did_result.signing_key_id).await?;
-        secrets.push(SecretEntry {
-            key_id: signing.key_id,
-            key_type: signing.key_type,
-            private_key_multibase: signing.private_key_multibase,
-        });
+        secrets.push(
+            client
+                .get_key_secret(&did_result.signing_key_id)
+                .await?
+                .into(),
+        );
         // Key-agreement key
-        let ka = client.get_key_secret(&did_result.ka_key_id).await?;
-        secrets.push(SecretEntry {
-            key_id: ka.key_id,
-            key_type: ka.key_type,
-            private_key_multibase: ka.private_key_multibase,
-        });
+        secrets.push(client.get_key_secret(&did_result.ka_key_id).await?.into());
         // Pre-rotation keys
         for i in 0..did_result.pre_rotation_key_count {
             let pre_rot_id = format!("{}#pre-rotation-{i}", did_result.did);
-            let pre_rot = client.get_key_secret(&pre_rot_id).await?;
-            secrets.push(SecretEntry {
-                key_id: pre_rot.key_id,
-                key_type: pre_rot.key_type,
-                private_key_multibase: pre_rot.private_key_multibase,
-            });
+            secrets.push(client.get_key_secret(&pre_rot_id).await?.into());
         }
 
         Some(ProvisionedDid {
@@ -421,9 +423,7 @@ pub async fn cmd_context_reprovision(
         credential_from_key(client, kid, vta_did, config.public_url.as_deref()).await?
     } else {
         // Interactive: list existing Ed25519 keys and let user choose
-        let keys_resp = client
-            .list_keys(0, 10000, Some("active"), Some(id))
-            .await?;
+        let keys_resp = client.list_keys(0, 10000, Some("active"), Some(id)).await?;
         let ed25519_keys: Vec<_> = keys_resp
             .keys
             .iter()
@@ -499,12 +499,10 @@ pub async fn cmd_context_reprovision(
     if client.get_acl(&admin_did).await.is_err() {
         eprintln!("Creating ACL entry for {admin_did}...");
         client
-            .create_acl(vta_sdk::client::CreateAclRequest {
-                did: admin_did.clone(),
-                role: "admin".to_string(),
-                label: None,
-                allowed_contexts: vec![id.to_string()],
-            })
+            .create_acl(
+                vta_sdk::client::CreateAclRequest::new(&admin_did, "admin")
+                    .contexts(vec![id.to_string()]),
+            )
             .await?;
     }
 
@@ -524,24 +522,13 @@ pub async fn cmd_context_reprovision(
         };
 
         // Fetch all active key secrets for this context
-        let keys_resp = client
-            .list_keys(0, 10000, Some("active"), Some(id))
-            .await?;
-        let mut secrets = Vec::new();
-        for key in &keys_resp.keys {
-            let secret = client.get_key_secret(&key.key_id).await?;
-            secrets.push(SecretEntry {
-                key_id: secret.key_id,
-                key_type: secret.key_type,
-                private_key_multibase: secret.private_key_multibase,
-            });
-        }
+        let secrets_bundle = client.fetch_did_secrets_bundle(id).await?;
 
         Some(ProvisionedDid {
             id: did_id.clone(),
             did_document,
             log_entry,
-            secrets,
+            secrets: secrets_bundle.secrets,
         })
     } else {
         None

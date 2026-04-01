@@ -45,8 +45,12 @@ pub struct ListAuditLogsBody {
     pub page_size: u64,
 }
 
-fn default_page() -> u64 { 1 }
-fn default_page_size() -> u64 { 50 }
+fn default_page() -> u64 {
+    1
+}
+fn default_page_size() -> u64 {
+    50
+}
 
 /// Response body for listing audit logs.
 #[derive(Debug, Clone, Serialize, Deserialize)]

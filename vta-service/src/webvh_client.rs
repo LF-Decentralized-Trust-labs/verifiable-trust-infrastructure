@@ -33,24 +33,21 @@ impl WebvhClient {
         self.access_token = Some(token);
     }
 
-    fn auth_header(&self) -> Option<String> {
-        self.access_token.as_ref().map(|t| format!("Bearer {t}"))
+    /// Apply authorization header (if set) to a request builder.
+    fn with_auth(&self, mut req: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+        if let Some(ref token) = self.access_token {
+            req = req.header("Authorization", format!("Bearer {token}"));
+        }
+        req
     }
 
-    /// POST /api/dids — allocate URI (optional path).
-    pub async fn request_uri(&self, path: Option<&str>) -> Result<RequestUriResponse, AppError> {
-        let url = format!("{}/api/dids", self.server_url);
-        info!(method = "POST", %url, "webvh: sending via rest");
-        let mut req = self.http.post(&url);
-        if let Some(auth) = self.auth_header() {
-            req = req.header("Authorization", auth);
-        }
-        let body = match path {
-            Some(p) => serde_json::json!({ "path": p }),
-            None => serde_json::json!({}),
-        };
+    /// Send a request and check for success. Returns an error with context on failure.
+    async fn send(
+        &self,
+        req: reqwest::RequestBuilder,
+        context: &str,
+    ) -> Result<reqwest::Response, AppError> {
         let resp = req
-            .json(&body)
             .send()
             .await
             .map_err(|e| AppError::Internal(format!("webvh-server request failed: {e}")))?;
@@ -58,9 +55,22 @@ impl WebvhClient {
             let status = resp.status();
             let text = resp.text().await.unwrap_or_default();
             return Err(AppError::Internal(format!(
-                "webvh-server POST /api/dids failed ({status}): {text}"
+                "webvh-server {context} failed ({status}): {text}"
             )));
         }
+        Ok(resp)
+    }
+
+    /// POST /api/dids — allocate URI (optional path).
+    pub async fn request_uri(&self, path: Option<&str>) -> Result<RequestUriResponse, AppError> {
+        let url = format!("{}/api/dids", self.server_url);
+        info!(method = "POST", %url, "webvh: sending via rest");
+        let body = match path {
+            Some(p) => serde_json::json!({ "path": p }),
+            None => serde_json::json!({}),
+        };
+        let req = self.with_auth(self.http.post(&url)).json(&body);
+        let resp = self.send(req, "POST /api/dids").await?;
         debug!(method = "POST", status = 200, "webvh: received via rest");
         resp.json()
             .await
@@ -71,23 +81,11 @@ impl WebvhClient {
     pub async fn publish_did(&self, mnemonic: &str, log_content: &str) -> Result<(), AppError> {
         let url = format!("{}/api/dids/{mnemonic}", self.server_url);
         info!(method = "PUT", %url, "webvh: sending via rest");
-        let mut req = self.http.put(&url);
-        if let Some(auth) = self.auth_header() {
-            req = req.header("Authorization", auth);
-        }
-        let resp = req
+        let req = self
+            .with_auth(self.http.put(&url))
             .header("Content-Type", "application/jsonl")
-            .body(log_content.to_string())
-            .send()
-            .await
-            .map_err(|e| AppError::Internal(format!("webvh-server request failed: {e}")))?;
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let text = resp.text().await.unwrap_or_default();
-            return Err(AppError::Internal(format!(
-                "webvh-server PUT /api/dids/{mnemonic} failed ({status}): {text}"
-            )));
-        }
+            .body(log_content.to_string());
+        self.send(req, &format!("PUT /api/dids/{mnemonic}")).await?;
         debug!(method = "PUT", status = 200, "webvh: received via rest");
         Ok(())
     }
@@ -96,21 +94,9 @@ impl WebvhClient {
     pub async fn delete_did(&self, mnemonic: &str) -> Result<(), AppError> {
         let url = format!("{}/api/dids/{mnemonic}", self.server_url);
         info!(method = "DELETE", %url, "webvh: sending via rest");
-        let mut req = self.http.delete(&url);
-        if let Some(auth) = self.auth_header() {
-            req = req.header("Authorization", auth);
-        }
-        let resp = req
-            .send()
-            .await
-            .map_err(|e| AppError::Internal(format!("webvh-server request failed: {e}")))?;
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let text = resp.text().await.unwrap_or_default();
-            return Err(AppError::Internal(format!(
-                "webvh-server DELETE /api/dids/{mnemonic} failed ({status}): {text}"
-            )));
-        }
+        let req = self.with_auth(self.http.delete(&url));
+        self.send(req, &format!("DELETE /api/dids/{mnemonic}"))
+            .await?;
         debug!(method = "DELETE", status = 200, "webvh: received via rest");
         Ok(())
     }
@@ -118,22 +104,10 @@ impl WebvhClient {
     /// POST /api/dids/check — check if a path is available.
     pub async fn check_path(&self, path: &str) -> Result<CheckPathResponse, AppError> {
         let url = format!("{}/api/dids/check", self.server_url);
-        let mut req = self.http.post(&url);
-        if let Some(auth) = self.auth_header() {
-            req = req.header("Authorization", auth);
-        }
-        let resp = req
-            .json(&serde_json::json!({ "path": path }))
-            .send()
-            .await
-            .map_err(|e| AppError::Internal(format!("webvh-server request failed: {e}")))?;
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let text = resp.text().await.unwrap_or_default();
-            return Err(AppError::Internal(format!(
-                "webvh-server POST /api/dids/check failed ({status}): {text}"
-            )));
-        }
+        let req = self
+            .with_auth(self.http.post(&url))
+            .json(&serde_json::json!({ "path": path }));
+        let resp = self.send(req, "POST /api/dids/check").await?;
         resp.json()
             .await
             .map_err(|e| AppError::Internal(format!("webvh-server response parse error: {e}")))

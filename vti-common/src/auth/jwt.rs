@@ -40,10 +40,7 @@ impl JwtKeys {
     ///
     /// Computes the public key and wraps both in DER format as required
     /// by `jsonwebtoken`'s `from_ed_der()` methods.
-    pub fn from_ed25519_bytes(
-        private_bytes: &[u8; 32],
-        audience: &str,
-    ) -> Result<Self, AppError> {
+    pub fn from_ed25519_bytes(private_bytes: &[u8; 32], audience: &str) -> Result<Self, AppError> {
         // Compute the Ed25519 public key from the private key seed
         let signing_key = ed25519_dalek::SigningKey::from_bytes(private_bytes);
         let public_bytes = signing_key.verifying_key().to_bytes();

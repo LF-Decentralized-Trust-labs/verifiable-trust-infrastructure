@@ -28,11 +28,7 @@ impl TeeProvider for SimulatedProvider {
         })
     }
 
-    fn attest(
-        &self,
-        user_data: &[u8],
-        nonce: &[u8],
-    ) -> Result<AttestationReport, AppError> {
+    fn attest(&self, user_data: &[u8], nonce: &[u8]) -> Result<AttestationReport, AppError> {
         // Build a deterministic "evidence" blob by hashing the inputs.
         // This is NOT real attestation — it's structurally similar for testing.
         let mut hasher = Sha256::new();

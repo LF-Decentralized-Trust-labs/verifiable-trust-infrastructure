@@ -20,23 +20,25 @@ pub async fn get_cached(
     }
 }
 
-/// PUT /cache/{key} — store or update a cached value. Auth: any authenticated user.
+/// PUT /cache/{key} — store or update a cached value. Auth: Application or higher.
 pub async fn put_cached(
     auth: AuthClaims,
     State(state): State<AppState>,
     Path(key): Path<String>,
     Json(req): Json<CachePutRequest>,
 ) -> Result<(StatusCode, Json<CachePutResponse>), AppError> {
+    auth.require_write()?;
     let resp = operations::cache::put_cached(&state.cache_ks, &auth, &key, &req, "rest").await?;
     Ok((StatusCode::OK, Json(resp)))
 }
 
-/// DELETE /cache/{key} — remove a cached value. Auth: any authenticated user.
+/// DELETE /cache/{key} — remove a cached value. Auth: Application or higher.
 pub async fn delete_cached(
     auth: AuthClaims,
     State(state): State<AppState>,
     Path(key): Path<String>,
 ) -> Result<StatusCode, AppError> {
+    auth.require_write()?;
     operations::cache::delete_cached(&state.cache_ks, &auth, &key, "rest").await?;
     Ok(StatusCode::NO_CONTENT)
 }

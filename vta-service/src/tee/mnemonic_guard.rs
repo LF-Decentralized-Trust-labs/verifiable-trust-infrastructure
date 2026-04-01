@@ -114,9 +114,8 @@ impl MnemonicExportGuard {
     pub fn status(&self) -> MnemonicExportStatus {
         let guard = self.inner.lock().unwrap();
         let elapsed = guard.created_at.elapsed().as_secs();
-        let window_active = guard.entropy.is_some()
-            && !guard.exported
-            && elapsed < guard.window_secs;
+        let window_active =
+            guard.entropy.is_some() && !guard.exported && elapsed < guard.window_secs;
         let remaining = if window_active {
             guard.window_secs.saturating_sub(elapsed)
         } else {

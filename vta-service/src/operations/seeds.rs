@@ -3,14 +3,17 @@ use std::sync::Arc;
 use tracing::info;
 
 use crate::audit::{self, audit};
+use vta_sdk::keys::KeyOrigin;
 use vta_sdk::protocols::seed_management::{
     list::{ListSeedsResultBody, SeedInfo},
     rotate::RotateSeedResultBody,
 };
 
 use crate::error::AppError;
+use crate::keys::KeyRecord;
+use crate::keys::imported;
 use crate::keys::seed_store::SeedStore;
-use crate::keys::seeds::{self as seeds, get_active_seed_id};
+use crate::keys::seeds::{self as seeds, get_active_seed_id, load_seed_bytes};
 use crate::store::KeyspaceHandle;
 
 pub async fn list_seeds(
@@ -48,6 +51,7 @@ pub async fn list_seeds(
 
 pub async fn rotate_seed(
     keys_ks: &KeyspaceHandle,
+    imported_ks: &KeyspaceHandle,
     seed_store: &Arc<dyn SeedStore>,
     audit_ks: &KeyspaceHandle,
     actor: &str,
@@ -58,16 +62,212 @@ pub async fn rotate_seed(
         .await
         .map_err(|e| AppError::Internal(format!("{e}")))?;
 
+    // Load old seed for re-encryption of imported secrets
+    let old_seed = load_seed_bytes(keys_ks, &**seed_store, Some(previous_id))
+        .await
+        .map_err(|e| AppError::Internal(format!("{e}")))?;
+
     let new_id = seeds::rotate_seed(keys_ks, &**seed_store, mnemonic)
         .await
         .map_err(|e| AppError::Internal(format!("{e}")))?;
 
+    // Re-encrypt imported secrets with the new seed
+    let new_seed = load_seed_bytes(keys_ks, &**seed_store, Some(new_id))
+        .await
+        .map_err(|e| AppError::Internal(format!("{e}")))?;
+
+    // Collect imported key records for AAD
+    let raw = keys_ks.prefix_iter_raw("key:").await?;
+    let imported_keys: Vec<(String, String)> = raw
+        .into_iter()
+        .filter_map(|(_, v)| serde_json::from_slice::<KeyRecord>(&v).ok())
+        .filter(|r| r.origin == KeyOrigin::Imported && r.status == vta_sdk::keys::KeyStatus::Active)
+        .map(|r| (r.key_id, r.key_type.to_string()))
+        .collect();
+
+    if !imported_keys.is_empty() {
+        let count =
+            imported::reencrypt_all(imported_ks, keys_ks, &old_seed, &new_seed, &imported_keys)
+                .await?;
+        info!(
+            channel,
+            count, "re-encrypted imported secrets after seed rotation"
+        );
+    }
+
     info!(channel, previous_id, new_id, "seed rotated");
-    audit!("seed.rotate", actor = actor, resource = "seed", outcome = "success");
-    let _ = audit::record(audit_ks, "seed.rotate", actor, Some("seed"), "success", Some(channel), None).await;
+    audit!(
+        "seed.rotate",
+        actor = actor,
+        resource = "seed",
+        outcome = "success"
+    );
+    let _ = audit::record(
+        audit_ks,
+        "seed.rotate",
+        actor,
+        Some("seed"),
+        "success",
+        Some(channel),
+        None,
+    )
+    .await;
 
     Ok(RotateSeedResultBody {
         previous_seed_id: previous_id,
         new_seed_id: new_id,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::pin::Pin;
+    use std::sync::Arc;
+    use tokio::sync::Mutex;
+
+    use vti_common::config::StoreConfig;
+    use vti_common::store::Store;
+
+    use crate::keys::seed_store::SeedStore;
+    use crate::keys::seeds::{SeedRecord, get_seed_record, save_seed_record};
+    use crate::store::KeyspaceHandle;
+
+    /// A mock seed store backed by a Mutex so `set` persists across calls.
+    struct MockSeedStore(Mutex<Option<Vec<u8>>>);
+
+    impl SeedStore for MockSeedStore {
+        fn get(
+            &self,
+        ) -> Pin<
+            Box<
+                dyn std::future::Future<Output = Result<Option<Vec<u8>>, crate::error::AppError>>
+                    + Send
+                    + '_,
+            >,
+        > {
+            Box::pin(async { Ok(self.0.lock().await.clone()) })
+        }
+        fn set(
+            &self,
+            seed: &[u8],
+        ) -> Pin<
+            Box<dyn std::future::Future<Output = Result<(), crate::error::AppError>> + Send + '_>,
+        > {
+            let seed = seed.to_vec();
+            Box::pin(async move {
+                *self.0.lock().await = Some(seed);
+                Ok(())
+            })
+        }
+    }
+
+    struct TestHarness {
+        keys_ks: KeyspaceHandle,
+        imported_ks: KeyspaceHandle,
+        audit_ks: KeyspaceHandle,
+        seed_store: Arc<dyn SeedStore>,
+        _dir: tempfile::TempDir,
+    }
+
+    impl TestHarness {
+        async fn new() -> Self {
+            let dir = tempfile::tempdir().expect("temp dir");
+            let store_config = StoreConfig {
+                data_dir: dir.path().to_path_buf(),
+            };
+            let store = Store::open(&store_config).expect("open store");
+
+            let keys_ks = store.keyspace("keys").unwrap();
+            let imported_ks = store.keyspace("imported_secrets").unwrap();
+            let audit_ks = store.keyspace("audit").unwrap();
+
+            let initial_seed = vec![0xABu8; 32];
+            let seed_store: Arc<dyn SeedStore> =
+                Arc::new(MockSeedStore(Mutex::new(Some(initial_seed))));
+
+            // Bootstrap: create a seed record for generation 0 so rotation works
+            let now = chrono::Utc::now();
+            save_seed_record(
+                &keys_ks,
+                &SeedRecord {
+                    id: 0,
+                    seed_hex: None,
+                    created_at: now,
+                    retired_at: None,
+                },
+            )
+            .await
+            .expect("save initial seed record");
+
+            Self {
+                keys_ks,
+                imported_ks,
+                audit_ks,
+                seed_store,
+                _dir: dir,
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_rotate_seed() {
+        let h = TestHarness::new().await;
+
+        // Verify initial state: active_seed_id == 0
+        let initial_id = get_active_seed_id(&h.keys_ks)
+            .await
+            .expect("get active seed id");
+        assert_eq!(initial_id, 0);
+
+        // Rotate the seed
+        let result = rotate_seed(
+            &h.keys_ks,
+            &h.imported_ks,
+            &h.seed_store,
+            &h.audit_ks,
+            "did:key:z6MkTestAdmin",
+            None,
+            "test",
+        )
+        .await
+        .expect("rotate_seed should succeed");
+
+        assert_eq!(result.previous_seed_id, 0);
+        assert_eq!(result.new_seed_id, 1);
+
+        // The old seed (generation 0) should now be retired (archived with seed_hex)
+        let old_record = get_seed_record(&h.keys_ks, 0)
+            .await
+            .expect("get seed record")
+            .expect("old seed record should exist");
+        assert!(
+            old_record.seed_hex.is_some(),
+            "retired seed should have archived hex"
+        );
+        assert!(
+            old_record.retired_at.is_some(),
+            "retired seed should have retired_at timestamp"
+        );
+
+        // The new seed (generation 1) should be active (no seed_hex)
+        let new_record = get_seed_record(&h.keys_ks, 1)
+            .await
+            .expect("get seed record")
+            .expect("new seed record should exist");
+        assert!(
+            new_record.seed_hex.is_none(),
+            "active seed should not have archived hex"
+        );
+        assert!(
+            new_record.retired_at.is_none(),
+            "active seed should not have retired_at"
+        );
+
+        // Active seed ID should now be 1
+        let new_active_id = get_active_seed_id(&h.keys_ks)
+            .await
+            .expect("get active seed id");
+        assert_eq!(new_active_id, 1);
+    }
 }

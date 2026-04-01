@@ -18,8 +18,10 @@ use tracing::info;
 
 use crate::auth::AuthClaims;
 use crate::error::AppError;
-use crate::keys::seeds::{SeedRecord, get_active_seed_id, save_seed_record, set_active_seed_id};
+use crate::keys::KeyOrigin;
+use crate::keys::imported;
 use crate::keys::seed_store::SeedStore;
+use crate::keys::seeds::{SeedRecord, get_active_seed_id, save_seed_record, set_active_seed_id};
 use crate::seal::{SealRecord, get_seal};
 use crate::store::KeyspaceHandle;
 
@@ -37,17 +39,20 @@ const NONCE_LEN: usize = 12;
 
 /// Assemble and encrypt a backup of the entire VTA state.
 pub async fn export_backup(
-    keys_ks: &KeyspaceHandle,
-    acl_ks: &KeyspaceHandle,
-    contexts_ks: &KeyspaceHandle,
-    audit_ks: &KeyspaceHandle,
-    #[cfg(feature = "webvh")] webvh_ks: &KeyspaceHandle,
+    ks: &super::Keyspaces<'_>,
     seed_store: &dyn SeedStore,
     config: &crate::config::AppConfig,
     auth: &AuthClaims,
     password: &str,
     include_audit: bool,
 ) -> Result<BackupEnvelope, AppError> {
+    let keys_ks = ks.keys;
+    let acl_ks = ks.acl;
+    let contexts_ks = ks.contexts;
+    let audit_ks = ks.audit;
+    let imported_ks = ks.imported;
+    #[cfg(feature = "webvh")]
+    let webvh_ks = ks.webvh;
     auth.require_super_admin()?;
 
     if password.len() < 12 {
@@ -125,21 +130,22 @@ pub async fn export_backup(
                             })
                             .unwrap_or_default(),
                         created_at: val["created_at"].as_u64().unwrap_or(0),
-                        created_by: val["created_by"]
-                            .as_str()
-                            .unwrap_or_default()
-                            .to_string(),
+                        created_by: val["created_by"].as_str().unwrap_or_default().to_string(),
                     })
             })
             .collect()
     };
 
     // 6. Collect seal record
-    let seal = get_seal(acl_ks).await.ok().flatten().map(|s| SealRecordBackup {
-        sealed_by: s.sealed_by,
-        sealed_at: s.sealed_at,
-        reason: s.reason,
-    });
+    let seal = get_seal(acl_ks)
+        .await
+        .ok()
+        .flatten()
+        .map(|s| SealRecordBackup {
+            sealed_by: s.sealed_by,
+            sealed_at: s.sealed_at,
+            reason: s.reason,
+        });
 
     // 7. Collect WebVH records
     #[cfg(feature = "webvh")]
@@ -193,6 +199,33 @@ pub async fn export_backup(
     // 10. JWT signing key
     let jwt_signing_key = config.auth.jwt_signing_key.clone();
 
+    // 11. Collect imported secrets
+    let imported_kek_salt = imported::get_salt(keys_ks).await?.map(hex::encode);
+    let imported_secrets = {
+        let mut secrets = Vec::new();
+        for kr in &key_records {
+            if kr.origin == KeyOrigin::Imported
+                && kr.status == vta_sdk::keys::KeyStatus::Active
+                && let Ok(mut plaintext) = imported::load_secret(
+                    imported_ks,
+                    keys_ks,
+                    &seed_bytes,
+                    &kr.key_id,
+                    &kr.key_type.to_string(),
+                )
+                .await
+            {
+                secrets.push(ImportedSecretBackup {
+                    key_id: kr.key_id.clone(),
+                    private_key_hex: hex::encode(&plaintext),
+                });
+                use zeroize::Zeroize;
+                plaintext.zeroize();
+            }
+        }
+        secrets
+    };
+
     // Assemble payload
     let payload = BackupPayload {
         active_seed_hex,
@@ -209,6 +242,8 @@ pub async fn export_backup(
         webvh_logs,
         config: backup_config,
         audit_logs,
+        imported_secrets,
+        imported_kek_salt,
     };
 
     // Encrypt
@@ -241,6 +276,7 @@ pub async fn preview_import(
         acl_count: payload.acl_entries.len(),
         context_count: payload.context_records.len(),
         audit_count: payload.audit_logs.len(),
+        imported_secret_count: payload.imported_secrets.len(),
         message: Some("Preview only — no changes applied. Set confirm=true to import.".into()),
     };
 
@@ -255,20 +291,24 @@ pub async fn preview_import(
 /// The caller is responsible for triggering a soft restart after this returns.
 pub async fn apply_import(
     payload: &BackupPayload,
-    keys_ks: &KeyspaceHandle,
-    acl_ks: &KeyspaceHandle,
-    contexts_ks: &KeyspaceHandle,
-    audit_ks: &KeyspaceHandle,
-    #[cfg(feature = "webvh")] webvh_ks: &KeyspaceHandle,
+    ks: &super::Keyspaces<'_>,
     seed_store: &Arc<dyn SeedStore>,
     config: &tokio::sync::RwLock<crate::config::AppConfig>,
     store: Option<&crate::store::Store>,
 ) -> Result<ImportResult, AppError> {
+    let keys_ks = ks.keys;
+    let acl_ks = ks.acl;
+    let contexts_ks = ks.contexts;
+    let audit_ks = ks.audit;
+    let imported_ks = ks.imported;
+    #[cfg(feature = "webvh")]
+    let webvh_ks = ks.webvh;
     // 1. Clear all keyspaces
     clear_keyspace(keys_ks, &["key:", "seed:"]).await?;
     clear_keyspace(acl_ks, &["acl:", "vta:"]).await?;
     clear_keyspace(contexts_ks, &["ctx:"]).await?;
     clear_keyspace(audit_ks, &["log:"]).await?;
+    clear_keyspace(imported_ks, &["secret:"]).await?;
     #[cfg(feature = "webvh")]
     clear_keyspace(webvh_ks, &["server:", "did:", "log:"]).await?;
 
@@ -311,9 +351,7 @@ pub async fn apply_import(
 
     // 6. Write context records + counter
     for cr in &payload.context_records {
-        contexts_ks
-            .insert(format!("ctx:{}", cr.id), cr)
-            .await?;
+        contexts_ks.insert(format!("ctx:{}", cr.id), cr).await?;
     }
     contexts_ks
         .insert_raw("ctx_counter", &payload.context_counter.to_le_bytes())
@@ -321,9 +359,7 @@ pub async fn apply_import(
 
     // 7. Write ACL entries
     for entry in &payload.acl_entries {
-        acl_ks
-            .insert(format!("acl:{}", entry.did), entry)
-            .await?;
+        acl_ks.insert(format!("acl:{}", entry.did), entry).await?;
     }
 
     // 8. Write seal record
@@ -359,14 +395,44 @@ pub async fn apply_import(
     // 10. Write audit logs
     for entry in &payload.audit_logs {
         audit_ks
-            .insert(
-                format!("log:{:020}:{}", entry.timestamp, entry.id),
-                entry,
-            )
+            .insert(format!("log:{:020}:{}", entry.timestamp, entry.id), entry)
             .await?;
     }
 
-    // 11. Update config
+    // 11. Restore imported secrets
+    if !payload.imported_secrets.is_empty() {
+        // Restore the KEK salt (or create a new one)
+        if let Some(ref salt_hex) = payload.imported_kek_salt {
+            let salt = hex::decode(salt_hex)
+                .map_err(|e| AppError::Internal(format!("invalid imported KEK salt hex: {e}")))?;
+            imported::set_salt(keys_ks, &salt).await?;
+        }
+
+        for secret_backup in &payload.imported_secrets {
+            let private_bytes = hex::decode(&secret_backup.private_key_hex)
+                .map_err(|e| AppError::Internal(format!("invalid imported secret hex: {e}")))?;
+
+            // Find the matching key record for AAD
+            let key_type_str = payload
+                .key_records
+                .iter()
+                .find(|kr| kr.key_id == secret_backup.key_id)
+                .map(|kr| kr.key_type.to_string())
+                .unwrap_or_else(|| "ed25519".to_string());
+
+            imported::store_secret(
+                imported_ks,
+                keys_ks,
+                &seed_bytes,
+                &secret_backup.key_id,
+                &key_type_str,
+                &private_bytes,
+            )
+            .await?;
+        }
+    }
+
+    // 12. Update config
     {
         let mut cfg = config.write().await;
         if let Some(ref did) = payload.config.vta_did {
@@ -382,13 +448,13 @@ pub async fn apply_import(
             cfg.auth.jwt_signing_key = Some(jwt.clone());
         }
         if payload.config.mediator_url.is_some() || payload.config.mediator_did.is_some() {
-            let messaging = cfg.messaging.get_or_insert_with(|| {
-                vti_common::config::MessagingConfig {
-                    mediator_url: String::new(),
-                    mediator_did: String::new(),
-                    mediator_host: None,
-                }
-            });
+            let messaging =
+                cfg.messaging
+                    .get_or_insert_with(|| vti_common::config::MessagingConfig {
+                        mediator_url: String::new(),
+                        mediator_did: String::new(),
+                        mediator_host: None,
+                    });
             if let Some(ref url) = payload.config.mediator_url {
                 messaging.mediator_url = url.clone();
             }
@@ -403,19 +469,26 @@ pub async fn apply_import(
     if let Some(store) = store {
         let cfg = config.read().await;
         if let crate::config::TeeMode::Required = cfg.tee.mode
-            && let Some(ref kms_config) = cfg.tee.kms {
-                let jwt_key_bytes: Option<[u8; 32]> = payload.jwt_signing_key.as_ref().and_then(|b64| {
-                    base64::Engine::decode(&BASE64, b64).ok().and_then(|b| b.try_into().ok())
+            && let Some(ref kms_config) = cfg.tee.kms
+        {
+            let jwt_key_bytes: Option<[u8; 32]> =
+                payload.jwt_signing_key.as_ref().and_then(|b64| {
+                    base64::Engine::decode(&BASE64, b64)
+                        .ok()
+                        .and_then(|b| b.try_into().ok())
                 });
-                if let Some(jwt_key) = jwt_key_bytes {
-                    crate::tee::kms_bootstrap::re_encrypt_bootstrap_secrets(
-                        kms_config, store, &seed_bytes, &jwt_key,
-                    )
-                    .await?;
-                } else {
-                    info!("no JWT key in backup — skipping KMS re-encryption");
-                }
+            if let Some(jwt_key) = jwt_key_bytes {
+                crate::tee::kms_bootstrap::re_encrypt_bootstrap_secrets(
+                    kms_config,
+                    store,
+                    &seed_bytes,
+                    &jwt_key,
+                )
+                .await?;
+            } else {
+                info!("no JWT key in backup — skipping KMS re-encryption");
             }
+        }
     }
 
     info!(
@@ -433,6 +506,7 @@ pub async fn apply_import(
         acl_count: payload.acl_entries.len(),
         context_count: payload.context_records.len(),
         audit_count: payload.audit_logs.len(),
+        imported_secret_count: payload.imported_secrets.len(),
         message: Some("Import complete. VTA will restart with new identity.".into()),
     })
 }
@@ -468,8 +542,8 @@ fn encrypt_payload(
         .map_err(|e| AppError::Internal(format!("argon2 hash: {e}")))?;
 
     // Encrypt with AES-256-GCM
-    let cipher = Aes256Gcm::new_from_slice(&key)
-        .map_err(|e| AppError::Internal(format!("aes key: {e}")))?;
+    let cipher =
+        Aes256Gcm::new_from_slice(&key).map_err(|e| AppError::Internal(format!("aes key: {e}")))?;
     let nonce = Nonce::from_slice(&nonce_bytes);
     let ciphertext = cipher
         .encrypt(nonce, plaintext.as_ref())
@@ -540,8 +614,8 @@ pub fn decrypt_backup(
         .map_err(|e| AppError::Internal(format!("argon2 hash: {e}")))?;
 
     // Decrypt with AES-256-GCM
-    let cipher = Aes256Gcm::new_from_slice(&key)
-        .map_err(|e| AppError::Internal(format!("aes key: {e}")))?;
+    let cipher =
+        Aes256Gcm::new_from_slice(&key).map_err(|e| AppError::Internal(format!("aes key: {e}")))?;
     let nonce = Nonce::from_slice(&nonce_bytes);
     let plaintext = cipher
         .decrypt(nonce, ciphertext.as_ref())
@@ -600,6 +674,8 @@ mod tests {
                 mediator_did: None,
             },
             audit_logs: vec![],
+            imported_secrets: vec![],
+            imported_kek_salt: None,
         }
     }
 

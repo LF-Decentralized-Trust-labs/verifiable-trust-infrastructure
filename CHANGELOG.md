@@ -1,5 +1,308 @@
 # Changelog
 
+## 0.3.0 — 2026-04-01
+
+### Reader Role & Action Classification
+
+- **New `Reader` role** — Context-scoped read-only access to keys,
+  contexts, DIDs, and configuration. Sits between Application and
+  Monitor in the hierarchy. Readers can observe all business data
+  within their allowed contexts but cannot sign, write to cache,
+  create keys, or perform any mutating operation.
+- **Action classification** — Every endpoint is now classified as
+  read, write, or manage:
+  - **Read** (Reader+): list/get keys, contexts, DIDs, config, cache
+  - **Write** (Application+): sign, cache write/delete
+  - **Admin**: key create/delete/import, seeds, audit, DID management
+  - **Manage** (Initiator+): ACL operations, credential generation
+  - **Super Admin**: config update, context CRUD, backup, restart
+- **`require_read()` / `require_write()`** — New methods on
+  `AuthClaims` for action-level authorization checks.
+- **`WriteAuth` extractor** — Route-level extractor requiring at
+  least Application role. Applied to sign and cache write endpoints.
+- **Tightened auth on sign and cache** — `POST /keys/{id}/sign`,
+  `PUT /cache/{key}`, and `DELETE /cache/{key}` now require
+  Application role or higher (previously any authenticated user).
+- **Backup export route** — Changed from `AuthClaims` to
+  `SuperAdminAuth` extractor, matching the operations layer.
+- **DIDComm handler auth fixes** — 17 handlers now have explicit
+  role checks matching their REST counterparts (defense-in-depth).
+  Fixed `handle_update_retention` from `require_admin()` to
+  `require_super_admin()` to match REST.
+
+### Role Hierarchy (updated)
+
+```
+Super Admin  (Admin + unrestricted)
+  Admin      — key mgmt, DID ops, audit, seeds
+    Initiator  — ACL management, credential generation
+      Application — sign, cache write, standard API
+        Reader     — read-only business data access
+          Monitor  — metrics and health only
+```
+
+### Version Bumps
+
+All crates bumped from 0.2.1 to **0.3.0**.
+
+### Testing
+
+- **18 new tests** — Reader role parsing, `require_read`/`require_write`
+  enforcement across all roles, ACL validation (Reader cannot assign
+  roles, Initiator/Admin can create Reader), integration tests (Reader
+  can list keys, cannot sign, cannot create keys).
+- **Total: 263 tests** (up from 245).
+
+### VTA SDK Integration Module
+
+- **`vta_sdk::integration::startup()`** — Unified startup pattern for
+  any service that manages its DID and secrets through a VTA. Handles
+  authentication, secret fetching, local caching, and offline fallback
+  in a single call. Returns a `StartupResult` with the service DID,
+  secrets bundle, source indicator, and an optional `VtaClient` for
+  follow-up calls.
+- **`SecretCache` trait** — Pluggable local cache for VTA secrets.
+  Services implement `store()` and `load()` using their preferred
+  backend (keyring, AWS Secrets Manager, filesystem, etc.) to enable
+  offline resilience.
+- **`authenticate()`** — Two-tier authentication strategy: lightweight
+  REST auth first (`VtaClient::from_credential`), with session-based
+  DIDComm fallback for non-`did:key` VTAs. Network errors propagate
+  immediately without fallback.
+- **`integration` feature flag** — New opt-in feature on `vta-sdk`
+  (implies `client` + `session`) that enables the integration module.
+
+### Key Labels as Verification Method IDs
+
+- **`fetch_did_secrets_bundle()`** — When a key has a label, it is now
+  used as the verification method fragment (e.g., `did:example#my-label`)
+  instead of the raw key ID. This produces cleaner, human-readable DID
+  documents for services that use labeled keys.
+
+### Workspace Dependency Consolidation
+
+- **`ed25519-dalek`** — Moved to `workspace.dependencies`, updated 6
+  crates to use `workspace = true`.
+- **`dialoguer`** — Moved to `workspace.dependencies`, updated 4
+  crates to use `workspace = true`.
+- **`chrono` in `vta-cli-common`** — Now uses workspace definition
+  (gains `serde` feature that was previously missing).
+
+### HTTP Client Improvements
+
+- **`auth_light` client reuse** — `challenge_response_light()` and
+  `refresh_token_light()` now accept a `&reqwest::Client` parameter
+  instead of creating a new client per call, enabling connection
+  pooling across authentication flows.
+- **`authenticate_with_credential()`** — Returns the HTTP client
+  alongside the auth result, which `VtaClient::from_credential()`
+  now reuses directly (eliminating a redundant client allocation).
+- **`WebvhClient` refactor** — Extracted `send()` and `with_auth()`
+  helpers to eliminate repeated request/error-handling boilerplate
+  across 4 methods.
+
+### Code Quality
+
+- **Zero clippy warnings** — Resolved all clippy warnings across the
+  workspace: collapsible ifs, `.is_multiple_of()`, needless `Ok(?)`,
+  `Default` impl for `WrappingKeyCache`, type alias for complex KMS
+  return type.
+- **`Keyspaces` struct** — New `operations::Keyspaces` bundles keyspace
+  handles with `from_app_state()` and `from_vta_state()` constructors.
+  Reduces argument counts for `export_backup` (11→6), `apply_import`
+  (10→5), `delete_context` (8→5).
+- **`DIDCommSendParams`** — New params struct for `send_and_wait_raw`,
+  replacing 10 positional arguments.
+- **`cargo fmt`** — Full workspace formatting pass.
+
+### Security
+
+- **VTC key material zeroization** — Added `zeroize` dependency to
+  `vtc-service`. Replaced `.unwrap()` on key material slices with
+  proper error propagation. Secrets bundle now written to file
+  instead of stdout (preventing key leakage to logs).
+- **Session error visibility** — Replaced `.ok()?` chains in keyring,
+  file, and Azure session backends with explicit error logging via
+  `tracing::warn`. Users can now diagnose auth failures from logs.
+
+### Architecture
+
+- **Shared `SeedStore` trait** — Extracted seed/secret store trait
+  from `vta-service` into `vti-common/src/seed_store.rs`. Both VTA
+  (`SeedStore`) and VTC (`SecretStore`) now implement the shared
+  interface. Cloud backend implementations remain in each service crate.
+
+### Testing
+
+- **Operation-level unit tests** — New tests for `create_key` (Ed25519,
+  P256), `sign_payload` (EdDSA roundtrip), and `rotate_seed` (archive
+  + generation increment). Uses mock `SeedStore` and temp fjall stores.
+- **Total: 245 tests** (up from 241).
+
+### CI/CD
+
+- **GitHub Actions pipeline** (`.github/workflows/ci.yml`) — Four
+  parallel jobs: `cargo check`, `cargo test`, `cargo clippy -D warnings`,
+  `cargo fmt --check`. Triggers on push to main/nightly and PRs to main.
+  Cargo registry and target caching via `actions/cache`.
+
+### Documentation
+
+- **Integration Guide** (`docs/integration-guide.md`) — Comprehensive
+  guide for 3rd-party developers integrating applications and services
+  with the VTA. Covers credential provisioning, authentication patterns,
+  key management, the SDK integration module, offline resilience, and
+  security best practices.
+
+---
+
+## 0.3.0 — 2026-03-31
+
+### Imported Secrets
+
+- **Import external private keys** — New `POST /keys/import` endpoint
+  and `pnm keys import` command allow importing externally-created
+  private keys (Ed25519, X25519, P-256) into the VTA. Imported keys
+  are stored encrypted at rest and participate in signing, secret
+  export, backup/restore, and revocation alongside BIP-32-derived keys.
+- **Ephemeral wrapping keys (REST)** — REST key import uses
+  ECDH-ES + AES-256-GCM key wrapping via ephemeral X25519 keypairs
+  (`GET /keys/import/wrapping-key`). Each wrapping key is single-use
+  with a 60-second TTL. DIDComm transport sends keys directly inside
+  the end-to-end encrypted envelope.
+- **Encrypted storage layer** — Imported secrets are encrypted with
+  AES-256-GCM using a KEK derived from the BIP-32 master seed via
+  HKDF-SHA256 with a random 32-byte salt. Each ciphertext is bound
+  to its `key_id:key_type` via authenticated associated data (AAD),
+  preventing blob-swap attacks.
+- **Secure deletion on revoke** — Revoking an imported key overwrites
+  the encrypted blob with zeros and deletes it from the keyspace.
+  The `KeyRecord` is retained for audit trail.
+- **Seed rotation re-encryption** — When the BIP-32 seed is rotated,
+  all imported secrets are automatically re-encrypted with the new
+  seed-derived KEK.
+- **Backup & restore** — Imported secrets are included in the
+  encrypted backup payload (plaintext inside the Argon2id+AES-256-GCM
+  envelope) and restored on import. The KEK salt is also backed up
+  for deterministic KEK reconstruction.
+
+### Data Model
+
+- **`KeyOrigin` enum** — New `origin` field on `KeyRecord`:
+  `derived` (default, BIP-32) or `imported` (external). Backward
+  compatible via `#[serde(default)]`.
+- **`ImportedSecretBackup`** — New type in `BackupPayload` for
+  portable imported secret backup.
+- **`imported_secret_count`** — Added to `ImportResult` for
+  visibility during backup preview/import.
+
+### Security
+
+- **Zeroize** — All private key buffers are zeroized after use
+  via the `zeroize` crate (import, signing, backup export/import,
+  seed rotation re-encryption).
+- **AAD binding** — AES-GCM encryption of imported secrets includes
+  `key_id:key_type` as additional authenticated data, preventing
+  ciphertext swapping between key entries.
+- **Independent KEK salt** — A random 32-byte salt is generated
+  per VTA instance and stored alongside the keyspace, ensuring
+  two VTAs with the same seed produce different KEKs.
+- **Admin-only import** — The import endpoint requires Admin role
+  (stricter than key creation which allows Initiator).
+
+### CLI
+
+- **`pnm keys import`** — Import a private key from multibase
+  string (`--private-key`) or file (`--private-key-file`).
+  Supports `--key-type ed25519|x25519|p256`, `--label`, and
+  `--context-id`. Prints a secure-deletion warning on success.
+
+### Testing
+
+- **6 new unit tests** — Imported secret encrypt/decrypt roundtrip,
+  wrong-AAD rejection, secure deletion, seed rotation re-encryption,
+  ephemeral wrapping key generation + unwrap, single-use enforcement.
+- **Total: 234 tests** (up from 228).
+
+### Breaking Changes
+
+- **Operation signatures** — `get_key_secret()`, `sign_payload()`,
+  `revoke_key()`, `rotate_seed()`, `export_backup()`, and
+  `apply_import()` now accept an `imported_ks` parameter.
+- **`AppState`** — Added `imported_ks: KeyspaceHandle` and
+  `wrapping_cache: WrappingKeyCache` fields.
+- **`VtaState` (DIDComm)** — Added `imported_ks: KeyspaceHandle`.
+- **Workspace version bumped to 0.3.0** — All crates updated.
+
+### Dependency Updates
+
+- `hkdf` 0.12 (new — KEK derivation for imported secrets)
+
+### VTA SDK Improvements for Service Integration
+
+- **Lightweight DIDComm auth (`auth_light`)** — New
+  `challenge_response_light()` and `refresh_token_light()`
+  functions perform DIDComm challenge-response authentication
+  without requiring ATM/TDK runtime initialization. Uses a
+  hand-rolled JWE packer (`didcomm_light`) with
+  ECDH-ES+A256KW key agreement and A256GCM content
+  encryption. Available behind the `client` feature (not
+  `session`).
+- **`VtaClient::from_credential()`** — One-line constructor
+  that decodes a base64 credential bundle, authenticates via
+  lightweight auth, and returns a ready-to-use client with
+  auto-refresh enabled.
+- **Automatic token refresh** — `VtaClient` now stores
+  credential material and automatically refreshes expired
+  tokens before each API call. Tries the `/auth/refresh`
+  endpoint first (cheap), falls back to full
+  challenge-response if the refresh token is expired.
+  Token expiry is checked with a 30-second buffer.
+- **`fetch_context_secrets()`** — Convenience method that
+  paginates through all active keys in a context and returns
+  TDK `Secret` objects ready for DIDComm or signing. Pages
+  in batches of 100 to handle large key sets.
+- **`check_auth()`** — Verifies the current token is valid
+  by calling `GET /health/details`. Returns `true`/`false`
+  for readiness checks.
+- **`token_expires_at()`** — Exposes token expiry for health
+  monitoring in long-running services.
+- **`set_token()` is now `&self`** — No longer requires
+  `&mut self`, simplifying usage in shared contexts.
+
+### Lightweight DIDComm Packer (`didcomm_light`)
+
+- **DIDComm v2 anoncrypt** — Minimal JWE (General JSON)
+  packer producing messages compatible with any DIDComm v2
+  unpacker (including `affinidi-tdk`'s `ATM::unpack()`).
+- **ECDH-ES+A256KW** key agreement with ephemeral X25519.
+- **A256GCM** content encryption (simpler than A256CBC-HS512).
+- **Concat KDF** (NIST SP 800-56A) for key derivation.
+- **AES-256 Key Wrap** (RFC 3394) for CEK wrapping.
+- **`did:key` → X25519** conversion (Edwards→Montgomery).
+- **8 unit tests** — Key wrap roundtrip, KDF determinism,
+  did:key parsing, Ed25519→X25519 conversion, JWE structure
+  validation.
+
+### VTA SDK Ergonomics
+
+- **`vta_sdk::prelude`** — Re-exports the most commonly used
+  types (`VtaClient`, `VtaError`, `KeyRecord`, `KeyType`,
+  `CredentialBundle`, request/response types) for single-line
+  imports.
+- **Builder patterns** — `CreateKeyRequest::new(KeyType::Ed25519)
+.label("my-key").context("app")` replaces verbose struct
+  construction with many `None` fields. Builders added for
+  `CreateKeyRequest`, `CreateContextRequest`, `CreateAclRequest`,
+  and `GenerateCredentialsRequest`. All accept `impl Into<String>`.
+- **`fetch_did_secrets_bundle()`** — One-call replacement for the
+  4-step pattern (get context → list keys → get secrets → build
+  bundle). Returns a portable `DidSecretsBundle`.
+- **`From<GetKeySecretResponse> for SecretEntry`** — Eliminates
+  manual field-by-field mapping when building secret bundles.
+
+---
+
 ## 0.2.1 — 2026-03-30
 
 ### Bug Fixes

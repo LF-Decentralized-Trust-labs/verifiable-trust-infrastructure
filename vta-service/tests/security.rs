@@ -98,6 +98,82 @@ mod auth_enforcement {
         assert!(application_claims().require_manage().is_err());
     }
 
+    fn reader_claims() -> AuthClaims {
+        AuthClaims {
+            did: "did:key:z6MkReader".into(),
+            role: Role::Reader,
+            allowed_contexts: vec!["ctx1".into()],
+        }
+    }
+
+    fn monitor_claims() -> AuthClaims {
+        AuthClaims {
+            did: "did:key:z6MkMonitor".into(),
+            role: Role::Monitor,
+            allowed_contexts: vec![],
+        }
+    }
+
+    // ── require_read ──
+
+    #[test]
+    fn reader_passes_require_read() {
+        assert!(reader_claims().require_read().is_ok());
+    }
+
+    #[test]
+    fn application_passes_require_read() {
+        assert!(application_claims().require_read().is_ok());
+    }
+
+    #[test]
+    fn admin_passes_require_read() {
+        assert!(admin_claims().require_read().is_ok());
+    }
+
+    #[test]
+    fn monitor_fails_require_read() {
+        assert!(monitor_claims().require_read().is_err());
+    }
+
+    // ── require_write ──
+
+    #[test]
+    fn application_passes_require_write() {
+        assert!(application_claims().require_write().is_ok());
+    }
+
+    #[test]
+    fn admin_passes_require_write() {
+        assert!(admin_claims().require_write().is_ok());
+    }
+
+    #[test]
+    fn initiator_passes_require_write() {
+        assert!(initiator_claims().require_write().is_ok());
+    }
+
+    #[test]
+    fn reader_fails_require_write() {
+        assert!(reader_claims().require_write().is_err());
+    }
+
+    #[test]
+    fn monitor_fails_require_write() {
+        assert!(monitor_claims().require_write().is_err());
+    }
+
+    // ── reader cannot manage or admin ──
+
+    #[test]
+    fn reader_fails_require_manage() {
+        assert!(reader_claims().require_manage().is_err());
+    }
+
+    #[test]
+    fn reader_fails_require_admin() {
+        assert!(reader_claims().require_admin().is_err());
+    }
 
     // ── context access ──
 
@@ -160,9 +236,26 @@ mod acl_validation {
 
     #[test]
     fn application_cannot_create_admin() {
-        // Only the admin role assignment is restricted
         let app = claims(Role::Application);
         assert!(validate_role_assignment(&app, &Role::Admin).is_err());
+    }
+
+    #[test]
+    fn reader_cannot_assign_any_role() {
+        let reader = claims(Role::Reader);
+        assert!(validate_role_assignment(&reader, &Role::Application).is_err());
+        assert!(validate_role_assignment(&reader, &Role::Reader).is_err());
+        assert!(validate_role_assignment(&reader, &Role::Monitor).is_err());
+    }
+
+    #[test]
+    fn initiator_can_create_reader() {
+        assert!(validate_role_assignment(&claims(Role::Initiator), &Role::Reader).is_ok());
+    }
+
+    #[test]
+    fn admin_can_create_reader() {
+        assert!(validate_role_assignment(&claims(Role::Admin), &Role::Reader).is_ok());
     }
 }
 

@@ -95,7 +95,7 @@ enum Commands {
         /// The DID to import
         #[arg(long)]
         did: String,
-        /// Role to assign (admin, initiator, application)
+        /// Role to assign (admin, initiator, application, reader)
         #[arg(long)]
         role: Option<String>,
         /// Human-readable label for the ACL entry
@@ -232,7 +232,7 @@ enum AclCommands {
         /// Filter by context
         #[arg(long)]
         context: Option<String>,
-        /// Filter by role (admin, initiator, application)
+        /// Filter by role (admin, initiator, application, reader)
         #[arg(long)]
         role: Option<String>,
     },
@@ -245,7 +245,7 @@ enum AclCommands {
     Update {
         /// The DID to update
         did: String,
-        /// New role (admin, initiator, application)
+        /// New role (admin, initiator, application, reader)
         #[arg(long)]
         role: Option<String>,
         /// New label (empty string to clear)
@@ -511,10 +511,7 @@ async fn main() {
                 Arc::from(create_seed_store(&config).expect("failed to create seed store"));
 
             if let Err(e) = server::run(
-                config,
-                store,
-                seed_store,
-                None, // no storage encryption (non-TEE mode)
+                config, store, seed_store, None, // no storage encryption (non-TEE mode)
                 None, // no TEE context (use vta-enclave for TEE mode)
             )
             .await
@@ -593,9 +590,16 @@ async fn run_bootstrap_admin(
         .collect();
 
     if !existing_super_admins.is_empty() {
-        eprintln!("WARNING: {} existing super admin(s) found:", existing_super_admins.len());
+        eprintln!(
+            "WARNING: {} existing super admin(s) found:",
+            existing_super_admins.len()
+        );
         for admin in &existing_super_admins {
-            eprintln!("  - {} ({})", admin.did, admin.label.as_deref().unwrap_or("no label"));
+            eprintln!(
+                "  - {} ({})",
+                admin.did,
+                admin.label.as_deref().unwrap_or("no label")
+            );
         }
         eprintln!();
         eprintln!("Proceeding will add another super admin and seal the VTA.");
@@ -627,7 +631,10 @@ async fn run_bootstrap_admin(
     eprintln!("=== VTA Bootstrapped and Sealed ===");
     eprintln!();
     eprintln!("  Admin DID: {}", did);
-    eprintln!("  Sealed at: {}", seal_record.sealed_at.format("%Y-%m-%d %H:%M:%S UTC"));
+    eprintln!(
+        "  Sealed at: {}",
+        seal_record.sealed_at.format("%Y-%m-%d %H:%M:%S UTC")
+    );
     eprintln!();
     eprintln!("  The VTA is now sealed. Offline CLI commands that modify state are disabled.");
     eprintln!("  All management must go through the authenticated REST API or DIDComm.");

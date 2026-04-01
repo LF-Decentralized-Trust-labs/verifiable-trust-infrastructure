@@ -113,8 +113,8 @@ pub async fn create_did_webvh(
     let (url_str, mnemonic) = if serverless {
         let url_str = params.url.as_ref().unwrap().clone();
         // Validate the URL
-        let parsed_url = Url::parse(&url_str)
-            .map_err(|e| AppError::Validation(format!("invalid url: {e}")))?;
+        let parsed_url =
+            Url::parse(&url_str).map_err(|e| AppError::Validation(format!("invalid url: {e}")))?;
         WebVHURL::parse_url(&parsed_url)
             .map_err(|e| AppError::Validation(format!("failed to parse WebVH URL: {e}")))?;
         (url_str, None)
@@ -122,9 +122,7 @@ pub async fn create_did_webvh(
         let server_id = params.server_id.as_ref().unwrap();
         let server = webvh_store::get_server(webvh_ks, server_id)
             .await?
-            .ok_or_else(|| {
-                AppError::NotFound(format!("webvh server not found: {server_id}"))
-            })?;
+            .ok_or_else(|| AppError::NotFound(format!("webvh server not found: {server_id}")))?;
 
         let transport =
             WebvhTransport::from_server(&server, did_resolver, didcomm_bridge, config).await?;
@@ -178,7 +176,9 @@ pub async fn create_did_webvh(
         next_key_hashes: if next_key_hashes.is_empty() {
             None
         } else {
-            Some(Arc::new(next_key_hashes.into_iter().map(Into::into).collect()))
+            Some(Arc::new(
+                next_key_hashes.into_iter().map(Into::into).collect(),
+            ))
         },
         ..Default::default()
     };
@@ -192,12 +192,16 @@ pub async fn create_did_webvh(
         .build()
         .map_err(|e| AppError::Internal(format!("failed to build DID config: {e}")))?;
 
-    let result = create_did(create_config).await
+    let result = create_did(create_config)
+        .await
         .map_err(|e| AppError::Internal(format!("failed to create DID: {e}")))?;
 
     let final_did = result.did().to_string();
-    let scid = result.log_entry().get_scid()
-        .unwrap_or_default().to_string();
+    let scid = result
+        .log_entry()
+        .get_scid()
+        .unwrap_or_default()
+        .to_string();
     let log_content = serde_json::to_string(result.log_entry())
         .map_err(|e| AppError::Internal(format!("failed to serialize DID log: {e}")))?;
 
@@ -289,9 +293,7 @@ pub async fn create_did_webvh(
 
         let server = webvh_store::get_server(webvh_ks, server_id)
             .await?
-            .ok_or_else(|| {
-                AppError::NotFound(format!("webvh server not found: {server_id}"))
-            })?;
+            .ok_or_else(|| AppError::NotFound(format!("webvh server not found: {server_id}")))?;
 
         let transport =
             WebvhTransport::from_server(&server, did_resolver, didcomm_bridge, config).await?;
@@ -619,7 +621,9 @@ impl<'a> WebvhTransport<'a> {
     }
 
     /// Acquire the DIDComm bridge and return an error if the connection is down.
-    async fn acquire_bridge(&self) -> Result<tokio::sync::RwLockReadGuard<'_, Option<DIDCommBridge>>, AppError> {
+    async fn acquire_bridge(
+        &self,
+    ) -> Result<tokio::sync::RwLockReadGuard<'_, Option<DIDCommBridge>>, AppError> {
         match self {
             Self::DIDComm { bridge, .. } => {
                 let guard = bridge.read().await;
@@ -637,7 +641,11 @@ impl<'a> WebvhTransport<'a> {
     async fn request_uri(&self, path: Option<&str>) -> Result<RequestUriResponse, AppError> {
         match self {
             Self::Rest(c) => c.request_uri(path).await,
-            Self::DIDComm { vta_did, server_did, .. } => {
+            Self::DIDComm {
+                vta_did,
+                server_did,
+                ..
+            } => {
                 let guard = self.acquire_bridge().await?;
                 let b = guard.as_ref().unwrap();
                 WebvhDIDCommClient::new(b, vta_did, server_did)
@@ -650,7 +658,11 @@ impl<'a> WebvhTransport<'a> {
     async fn publish_did(&self, mnemonic: &str, log_content: &str) -> Result<(), AppError> {
         match self {
             Self::Rest(c) => c.publish_did(mnemonic, log_content).await,
-            Self::DIDComm { vta_did, server_did, .. } => {
+            Self::DIDComm {
+                vta_did,
+                server_did,
+                ..
+            } => {
                 let guard = self.acquire_bridge().await?;
                 let b = guard.as_ref().unwrap();
                 WebvhDIDCommClient::new(b, vta_did, server_did)
@@ -663,7 +675,11 @@ impl<'a> WebvhTransport<'a> {
     async fn delete_did(&self, mnemonic: &str) -> Result<(), AppError> {
         match self {
             Self::Rest(c) => c.delete_did(mnemonic).await,
-            Self::DIDComm { vta_did, server_did, .. } => {
+            Self::DIDComm {
+                vta_did,
+                server_did,
+                ..
+            } => {
                 let guard = self.acquire_bridge().await?;
                 let b = guard.as_ref().unwrap();
                 WebvhDIDCommClient::new(b, vta_did, server_did)

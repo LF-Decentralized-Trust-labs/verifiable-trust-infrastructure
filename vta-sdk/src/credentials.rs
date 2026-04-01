@@ -17,6 +17,26 @@ pub struct CredentialBundle {
 }
 
 impl CredentialBundle {
+    /// Create a new credential bundle.
+    pub fn new(
+        did: impl Into<String>,
+        private_key_multibase: impl Into<String>,
+        vta_did: impl Into<String>,
+    ) -> Self {
+        Self {
+            did: did.into(),
+            private_key_multibase: private_key_multibase.into(),
+            vta_did: vta_did.into(),
+            vta_url: None,
+        }
+    }
+
+    /// Set the VTA URL on this bundle.
+    pub fn vta_url(mut self, url: impl Into<String>) -> Self {
+        self.vta_url = Some(url.into());
+        self
+    }
+
     /// Decode a base64url-no-pad encoded credential bundle.
     pub fn decode(encoded: &str) -> Result<Self, CredentialBundleError> {
         let json_bytes = BASE64

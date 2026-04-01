@@ -79,6 +79,20 @@ pub struct BackupPayload {
     /// Audit logs (optional, may be empty).
     #[serde(default)]
     pub audit_logs: Vec<AuditLogEntry>,
+    /// Imported (non-derived) secrets. Plaintext inside the encrypted envelope.
+    #[serde(default)]
+    pub imported_secrets: Vec<ImportedSecretBackup>,
+    /// Hex-encoded KEK salt for imported secret encryption.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub imported_kek_salt: Option<String>,
+}
+
+/// An imported secret included in the backup payload.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ImportedSecretBackup {
+    pub key_id: String,
+    /// Hex-encoded raw private key bytes.
+    pub private_key_hex: String,
 }
 
 /// Seed record for backup (mirrors SeedRecord from vta-service).
@@ -166,6 +180,8 @@ pub struct ImportResult {
     pub acl_count: usize,
     pub context_count: usize,
     pub audit_count: usize,
+    #[serde(default)]
+    pub imported_secret_count: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
 }

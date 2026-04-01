@@ -3,9 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 // Re-export shared config types
-pub use vti_common::config::{
-    AuthConfig, LogConfig, LogFormat, MessagingConfig, StoreConfig,
-};
+pub use vti_common::config::{AuthConfig, LogConfig, LogFormat, MessagingConfig, StoreConfig};
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct AppConfig {

@@ -83,10 +83,9 @@ impl Bip32Extension for ExtendedSigningKey {
         let hmac_output = mac.finalize().into_bytes();
 
         // First 32 bytes → P-256 scalar. from_bytes() reduces mod n automatically.
-        let secret_key = p256::SecretKey::from_bytes(
-            p256::FieldBytes::from_slice(&hmac_output[..32]),
-        )
-        .map_err(|e| key_derivation_error(format!("P-256 key creation failed: {e}")))?;
+        let secret_key =
+            p256::SecretKey::from_bytes(p256::FieldBytes::from_slice(&hmac_output[..32]))
+                .map_err(|e| key_derivation_error(format!("P-256 key creation failed: {e}")))?;
 
         Ok(P256Secret { secret_key })
     }
@@ -289,8 +288,8 @@ mod tests {
     #[test]
     fn test_ed25519_creation_matches_recovery() {
         let seed = &[
-            7, 26, 142, 230, 65, 85, 188, 182, 29, 129, 52, 229, 217, 159, 243, 182,
-            73, 89, 196, 246, 58, 28, 100, 144, 187, 21, 157, 39, 4, 188, 154, 180,
+            7, 26, 142, 230, 65, 85, 188, 182, 29, 129, 52, 229, 217, 159, 243, 182, 73, 89, 196,
+            246, 58, 28, 100, 144, 187, 21, 157, 39, 4, 188, 154, 180,
         ];
         for path in ["m/44'/0'/0'", "m/44'/0'/1'", "m/44'/0'/99'"] {
             let created = creation_path_ed25519(seed, path);
@@ -312,8 +311,8 @@ mod tests {
     #[test]
     fn test_x25519_creation_matches_recovery() {
         let seed = &[
-            7, 26, 142, 230, 65, 85, 188, 182, 29, 129, 52, 229, 217, 159, 243, 182,
-            73, 89, 196, 246, 58, 28, 100, 144, 187, 21, 157, 39, 4, 188, 154, 180,
+            7, 26, 142, 230, 65, 85, 188, 182, 29, 129, 52, 229, 217, 159, 243, 182, 73, 89, 196,
+            246, 58, 28, 100, 144, 187, 21, 157, 39, 4, 188, 154, 180,
         ];
         for path in ["m/44'/0'/0'", "m/44'/0'/1'", "m/44'/0'/99'"] {
             let created = creation_path_x25519(seed, path);
@@ -338,8 +337,8 @@ mod tests {
     #[test]
     fn test_multiple_restarts_produce_identical_keys() {
         let seed = &[
-            7, 26, 142, 230, 65, 85, 188, 182, 29, 129, 52, 229, 217, 159, 243, 182,
-            73, 89, 196, 246, 58, 28, 100, 144, 187, 21, 157, 39, 4, 188, 154, 180,
+            7, 26, 142, 230, 65, 85, 188, 182, 29, 129, 52, 229, 217, 159, 243, 182, 73, 89, 196,
+            246, 58, 28, 100, 144, 187, 21, 157, 39, 4, 188, 154, 180,
         ];
         let sign_path = "m/44'/0'/0'";
         let ka_path = "m/44'/0'/1'";
@@ -398,8 +397,8 @@ mod tests {
     #[test]
     fn test_ka_priv_reconstructs_x25519() {
         let seed = &[
-            7, 26, 142, 230, 65, 85, 188, 182, 29, 129, 52, 229, 217, 159, 243, 182,
-            73, 89, 196, 246, 58, 28, 100, 144, 187, 21, 157, 39, 4, 188, 154, 180,
+            7, 26, 142, 230, 65, 85, 188, 182, 29, 129, 52, 229, 217, 159, 243, 182, 73, 89, 196,
+            246, 58, 28, 100, 144, 187, 21, 157, 39, 4, 188, 154, 180,
         ];
         let ka_path = "m/44'/0'/1'";
 
@@ -407,10 +406,7 @@ mod tests {
         let root = ExtendedSigningKey::from_seed(seed).unwrap();
         let dp: DerivationPath = ka_path.parse().unwrap();
         let derived = root.derive(&dp).unwrap();
-        let ka_priv = multibase::encode(
-            multibase::Base::Base58Btc,
-            derived.signing_key.as_bytes(),
-        );
+        let ka_priv = multibase::encode(multibase::Base::Base58Btc, derived.signing_key.as_bytes());
 
         // Original X25519 key (as would be in DID document)
         let original = creation_path_x25519(seed, ka_path);
@@ -434,8 +430,8 @@ mod tests {
     #[test]
     fn test_signing_pub_matches_did_document_format() {
         let seed = &[
-            7, 26, 142, 230, 65, 85, 188, 182, 29, 129, 52, 229, 217, 159, 243, 182,
-            73, 89, 196, 246, 58, 28, 100, 144, 187, 21, 157, 39, 4, 188, 154, 180,
+            7, 26, 142, 230, 65, 85, 188, 182, 29, 129, 52, 229, 217, 159, 243, 182, 73, 89, 196,
+            246, 58, 28, 100, 144, 187, 21, 157, 39, 4, 188, 154, 180,
         ];
         let path = "m/44'/0'/0'";
 
@@ -447,11 +443,9 @@ mod tests {
         let root = ExtendedSigningKey::from_seed(seed).unwrap();
         let dp: DerivationPath = path.parse().unwrap();
         let derived = root.derive(&dp).unwrap();
-        let raw_pub = ed25519_dalek::SigningKey::from_bytes(
-            derived.signing_key.as_bytes(),
-        )
-        .verifying_key()
-        .to_bytes();
+        let raw_pub = ed25519_dalek::SigningKey::from_bytes(derived.signing_key.as_bytes())
+            .verifying_key()
+            .to_bytes();
         let did_doc_pub = vta_sdk::did_key::ed25519_multibase_pubkey(&raw_pub);
 
         assert_eq!(
@@ -473,15 +467,16 @@ mod tests {
         let p256_2 = bip32.derive_p256(path).unwrap();
 
         // Same seed + path must produce the same key
-        assert_eq!(
-            p256_1.secret_key.to_bytes(),
-            p256_2.secret_key.to_bytes()
-        );
+        assert_eq!(p256_1.secret_key.to_bytes(), p256_2.secret_key.to_bytes());
 
         // Public key must be derivable
         let pk = p256_1.secret_key.public_key();
         let encoded = pk.to_encoded_point(true);
-        assert_eq!(encoded.len(), 33, "compressed P-256 pubkey should be 33 bytes");
+        assert_eq!(
+            encoded.len(),
+            33,
+            "compressed P-256 pubkey should be 33 bytes"
+        );
     }
 
     #[test]

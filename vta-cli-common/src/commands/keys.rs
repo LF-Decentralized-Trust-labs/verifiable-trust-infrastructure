@@ -4,9 +4,7 @@ use ratatui::{
     text::{Line, Span, Text},
     widgets::{Block, Cell, Row, Table},
 };
-use vta_sdk::client::{CreateKeyRequest, VtaClient};
-use vta_sdk::did_secrets::{DidSecretsBundle, SecretEntry};
-use vta_sdk::keys::KeyType;
+use vta_sdk::prelude::*;
 
 use crate::render::print_widget;
 
@@ -25,14 +23,19 @@ pub async fn cmd_key_create(
             return Err(format!("unknown key type '{other}', expected ed25519 or x25519").into());
         }
     };
-    let req = CreateKeyRequest {
-        key_type,
-        derivation_path,
-        key_id: None,
-        mnemonic,
-        label,
-        context_id,
-    };
+    let mut req = CreateKeyRequest::new(key_type);
+    if let Some(p) = derivation_path {
+        req = req.derivation_path(p);
+    }
+    if let Some(m) = mnemonic {
+        req = req.mnemonic(m);
+    }
+    if let Some(l) = label {
+        req = req.label(l);
+    }
+    if let Some(c) = context_id {
+        req = req.context(c);
+    }
     let resp = client.create_key(req).await?;
     println!("Key created:");
     println!("  Key ID:          {}", resp.key_id);
@@ -45,6 +48,139 @@ pub async fn cmd_key_create(
     }
     println!("  Created At:      {}", resp.created_at);
     Ok(())
+}
+
+pub async fn cmd_key_import(
+    client: &VtaClient,
+    key_type: &str,
+    private_key: Option<String>,
+    private_key_file: Option<std::path::PathBuf>,
+    label: Option<String>,
+    context_id: Option<String>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let key_type = match key_type {
+        "ed25519" => KeyType::Ed25519,
+        "x25519" => KeyType::X25519,
+        "p256" => KeyType::P256,
+        other => {
+            return Err(
+                format!("unknown key type '{other}', expected ed25519, x25519, or p256").into(),
+            );
+        }
+    };
+
+    // Read private key bytes
+    let private_key_multibase = if let Some(key_str) = private_key {
+        key_str
+    } else if let Some(path) = private_key_file {
+        let bytes = std::fs::read(&path)
+            .map_err(|e| format!("failed to read key file '{}': {e}", path.display()))?;
+        // If file is text (multibase), use as-is; otherwise encode as multibase
+        match String::from_utf8(bytes.clone()) {
+            Ok(s) if s.starts_with('z') || s.starts_with('f') || s.starts_with('u') => {
+                s.trim().to_string()
+            }
+            _ => multibase::encode(multibase::Base::Base58Btc, &bytes),
+        }
+    } else {
+        return Err("either --private-key or --private-key-file is required".into());
+    };
+
+    // For REST transport, fetch wrapping key and create JWE
+    // For DIDComm, send multibase directly
+    let (jwe, multibase) = match client.get_wrapping_key().await {
+        Ok(wrapping_key) => {
+            // REST path: wrap with ECDH-ES
+            let jwe = wrap_private_key(&wrapping_key.kid, &wrapping_key.x, &private_key_multibase)?;
+            (Some(jwe), None)
+        }
+        Err(_) => {
+            // DIDComm path (or wrapping key not available): send multibase
+            (None, Some(private_key_multibase))
+        }
+    };
+
+    let req = ImportKeyRequest {
+        key_type,
+        private_key_jwe: jwe,
+        private_key_multibase: multibase,
+        label,
+        context_id,
+    };
+    let resp = client.import_key(req).await?;
+
+    println!("Key imported successfully:");
+    println!("  Key ID:     {}", resp.key_id);
+    println!("  Key Type:   {}", resp.key_type);
+    println!("  Public Key: {}", resp.public_key);
+    println!("  Status:     {}", resp.status);
+    println!("  Origin:     imported");
+    if let Some(label) = &resp.label {
+        println!("  Label:      {label}");
+    }
+    println!("  Created At: {}", resp.created_at);
+    eprintln!();
+    eprintln!(
+        "\x1b[1;33mWarning: securely delete the source key material \u{2014} the VTA now holds this secret.\x1b[0m"
+    );
+
+    Ok(())
+}
+
+/// Wrap a multibase-encoded private key with ECDH-ES+AES-256-GCM for REST transport.
+fn wrap_private_key(
+    kid: &str,
+    vta_pub_b64: &str,
+    private_key_multibase: &str,
+) -> Result<String, Box<dyn std::error::Error>> {
+    use base64::Engine;
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD as BASE64;
+
+    // Decode the VTA's wrapping public key
+    let vta_pub_bytes: [u8; 32] = BASE64
+        .decode(vta_pub_b64)?
+        .try_into()
+        .map_err(|_| "wrapping public key must be 32 bytes")?;
+
+    // Decode the private key from multibase
+    let (_, key_bytes) = multibase::decode(private_key_multibase)?;
+
+    // Generate ephemeral X25519 keypair for client side
+    let client_secret = x25519_dalek::StaticSecret::random_from_rng(aes_gcm::aead::OsRng);
+    let client_pub = x25519_dalek::PublicKey::from(&client_secret);
+
+    // ECDH
+    let vta_pub = x25519_dalek::PublicKey::from(vta_pub_bytes);
+    let shared = client_secret.diffie_hellman(&vta_pub);
+
+    // HKDF to derive AES key
+    use sha2::Sha256;
+    let hkdf = hkdf::Hkdf::<Sha256>::new(None, shared.as_bytes());
+    let mut aes_key = [0u8; 32];
+    hkdf.expand(b"vta-key-import-wrapping", &mut aes_key)
+        .map_err(|e| format!("hkdf: {e}"))?;
+
+    // AES-256-GCM encrypt
+    use aes_gcm::aead::Aead;
+    use aes_gcm::aead::rand_core::RngCore;
+    use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
+
+    let cipher = Aes256Gcm::new_from_slice(&aes_key)?;
+    let mut nonce_bytes = [0u8; 12];
+    aes_gcm::aead::OsRng.fill_bytes(&mut nonce_bytes);
+    let nonce = Nonce::from_slice(&nonce_bytes);
+    let ciphertext = cipher
+        .encrypt(nonce, key_bytes.as_ref())
+        .map_err(|e| format!("encrypt: {e}"))?;
+
+    // Format: kid.ephemeral_pub.nonce.ciphertext
+    Ok(format!(
+        "{}.{}.{}.{}",
+        kid,
+        BASE64.encode(client_pub.as_bytes()),
+        BASE64.encode(nonce_bytes),
+        BASE64.encode(ciphertext),
+    ))
 }
 
 pub async fn cmd_key_get(
@@ -220,33 +356,8 @@ pub async fn cmd_key_bundle(
     client: &VtaClient,
     context: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    // 1. Get the context to find the DID
-    let ctx = client.get_context(context).await?;
-    let did = ctx
-        .did
-        .ok_or(format!("context '{context}' has no DID assigned"))?;
-
-    // 2. List all active keys in the context
-    let resp = client
-        .list_keys(0, 10000, Some("active"), Some(context))
-        .await?;
-    if resp.keys.is_empty() {
-        return Err("no active keys found in this context".into());
-    }
-
-    // 3. Get secrets for each key and build SecretEntry vec
-    let mut secrets = Vec::new();
-    for key in &resp.keys {
-        let secret = client.get_key_secret(&key.key_id).await?;
-        secrets.push(SecretEntry {
-            key_id: secret.key_id,
-            key_type: secret.key_type,
-            private_key_multibase: secret.private_key_multibase,
-        });
-    }
-
-    // 4. Build and encode the bundle
-    let bundle = DidSecretsBundle { did, secrets };
+    // Fetch all secrets for this context as a portable bundle
+    let bundle = client.fetch_did_secrets_bundle(context).await?;
     let encoded = bundle.encode().map_err(|e| format!("{e}"))?;
 
     // 5. Print with security warning

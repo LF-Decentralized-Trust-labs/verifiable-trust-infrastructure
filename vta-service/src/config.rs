@@ -307,17 +307,29 @@ impl AppConfig {
 
             // Log warnings for any env vars that would have been applied
             let blocked_vars = [
-                "VTA_DID", "VTA_SERVER_HOST", "VTA_SERVER_PORT",
-                "VTA_PUBLIC_URL", "VTA_STORE_DATA_DIR",
-                "VTA_MESSAGING_MEDIATOR_URL", "VTA_MESSAGING_MEDIATOR_DID",
-                "VTA_SECRETS_SEED", "VTA_SECRETS_AWS_SECRET_NAME",
-                "VTA_SECRETS_AWS_REGION", "VTA_SECRETS_GCP_PROJECT",
-                "VTA_SECRETS_GCP_SECRET_NAME", "VTA_SECRETS_AZURE_VAULT_URL",
-                "VTA_SECRETS_AZURE_SECRET_NAME", "VTA_SECRETS_KEYRING_SERVICE",
-                "VTA_AUTH_ACCESS_EXPIRY", "VTA_AUTH_REFRESH_EXPIRY",
-                "VTA_AUTH_CHALLENGE_TTL", "VTA_AUTH_SESSION_CLEANUP_INTERVAL",
-                "VTA_AUTH_JWT_SIGNING_KEY", "VTA_TEE_MODE",
-                "VTA_TEE_EMBED_IN_DID", "VTA_TEE_ATTESTATION_CACHE_TTL",
+                "VTA_DID",
+                "VTA_SERVER_HOST",
+                "VTA_SERVER_PORT",
+                "VTA_PUBLIC_URL",
+                "VTA_STORE_DATA_DIR",
+                "VTA_MESSAGING_MEDIATOR_URL",
+                "VTA_MESSAGING_MEDIATOR_DID",
+                "VTA_SECRETS_SEED",
+                "VTA_SECRETS_AWS_SECRET_NAME",
+                "VTA_SECRETS_AWS_REGION",
+                "VTA_SECRETS_GCP_PROJECT",
+                "VTA_SECRETS_GCP_SECRET_NAME",
+                "VTA_SECRETS_AZURE_VAULT_URL",
+                "VTA_SECRETS_AZURE_SECRET_NAME",
+                "VTA_SECRETS_KEYRING_SERVICE",
+                "VTA_AUTH_ACCESS_EXPIRY",
+                "VTA_AUTH_REFRESH_EXPIRY",
+                "VTA_AUTH_CHALLENGE_TTL",
+                "VTA_AUTH_SESSION_CLEANUP_INTERVAL",
+                "VTA_AUTH_JWT_SIGNING_KEY",
+                "VTA_TEE_MODE",
+                "VTA_TEE_EMBED_IN_DID",
+                "VTA_TEE_ATTESTATION_CACHE_TTL",
             ];
             for var in &blocked_vars {
                 if std::env::var(var).is_ok() {
@@ -455,9 +467,10 @@ impl AppConfig {
 
         // Audit
         if let Ok(val) = std::env::var("VTA_AUDIT_RETENTION_DAYS")
-            && let Ok(days) = val.parse::<u32>() {
-                config.audit.retention_days = days;
-            }
+            && let Ok(days) = val.parse::<u32>()
+        {
+            config.audit.retention_days = days;
+        }
 
         // TEE (non-KMS mode — all overrides allowed)
         #[cfg(feature = "tee")]
@@ -468,7 +481,9 @@ impl AppConfig {
                     "optional" => TeeMode::Optional,
                     "simulated" => TeeMode::Simulated,
                     "disabled" => {
-                        tracing::warn!("VTA_TEE_MODE=disabled is deprecated — use 'optional' instead");
+                        tracing::warn!(
+                            "VTA_TEE_MODE=disabled is deprecated — use 'optional' instead"
+                        );
                         TeeMode::Optional
                     }
                     other => {
@@ -479,9 +494,9 @@ impl AppConfig {
                 };
             }
             if let Ok(val) = std::env::var("VTA_TEE_EMBED_IN_DID") {
-                config.tee.embed_in_did = val.parse().map_err(|e| {
-                    AppError::Config(format!("invalid VTA_TEE_EMBED_IN_DID: {e}"))
-                })?;
+                config.tee.embed_in_did = val
+                    .parse()
+                    .map_err(|e| AppError::Config(format!("invalid VTA_TEE_EMBED_IN_DID: {e}")))?;
             }
             if let Ok(val) = std::env::var("VTA_TEE_ATTESTATION_CACHE_TTL") {
                 config.tee.attestation_cache_ttl = val.parse().map_err(|e| {

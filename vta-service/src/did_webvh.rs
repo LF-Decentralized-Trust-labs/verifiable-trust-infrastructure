@@ -139,13 +139,18 @@ pub async fn run_create_did_webvh(
         next_key_hashes: if next_key_hashes.is_empty() {
             None
         } else {
-            Some(Arc::new(next_key_hashes.into_iter().map(Into::into).collect()))
+            Some(Arc::new(
+                next_key_hashes.into_iter().map(Into::into).collect(),
+            ))
         },
         ..Default::default()
     };
 
     // Create the DID
-    let url_str = webvh_url.get_http_url(None).map_err(|e| format!("{e}"))?.to_string();
+    let url_str = webvh_url
+        .get_http_url(None)
+        .map_err(|e| format!("{e}"))?
+        .to_string();
     let create_config = CreateDIDConfig::builder()
         .address(url_str)
         .authorization_key(derived.signing_secret.clone())
@@ -154,7 +159,8 @@ pub async fn run_create_did_webvh(
         .build()
         .map_err(|e| format!("failed to build DID config: {e}"))?;
 
-    let result = create_did(create_config).await
+    let result = create_did(create_config)
+        .await
         .map_err(|e| format!("failed to create DID: {e}"))?;
 
     let final_did = result.did().to_string();

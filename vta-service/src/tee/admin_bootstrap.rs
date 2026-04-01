@@ -102,7 +102,10 @@ pub async fn maybe_bootstrap_admin(
     } else {
         // No admin_did configured — generate a random did:key and store the
         // credential bundle for retrieval via REST.
-        info!(context_id, "no admin_did configured — generating random admin credential");
+        info!(
+            context_id,
+            "no admin_did configured — generating random admin credential"
+        );
 
         let (did, private_key_multibase) = generate_did_key();
 

@@ -152,6 +152,31 @@ pub async fn update_context(
     Ok(to_result_body(&record))
 }
 
+/// Update the DID for a context. Requires Admin role with access to the context
+/// (context-scoped admins can update DIDs on their own contexts).
+pub async fn update_context_did(
+    contexts_ks: &KeyspaceHandle,
+    auth: &AuthClaims,
+    id: &str,
+    did: String,
+    channel: &str,
+) -> Result<CreateContextResultBody, AppError> {
+    auth.require_admin()?;
+    auth.require_context(id)?;
+
+    let mut record = get_context(contexts_ks, id)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("context not found: {id}")))?;
+
+    record.did = Some(did);
+    record.updated_at = Utc::now();
+
+    store_context(contexts_ks, &record).await?;
+
+    info!(channel, id = %id, did = ?record.did, "context DID updated");
+    Ok(to_result_body(&record))
+}
+
 /// Collect a preview of all resources associated with a context.
 pub async fn preview_delete_context(
     contexts_ks: &KeyspaceHandle,
@@ -182,15 +207,17 @@ pub async fn preview_delete_context(
 }
 
 pub async fn delete_context(
-    contexts_ks: &KeyspaceHandle,
-    keys_ks: &KeyspaceHandle,
-    acl_ks: &KeyspaceHandle,
-    #[cfg(feature = "webvh")] webvh_ks: &KeyspaceHandle,
+    ks: &super::Keyspaces<'_>,
     auth: &AuthClaims,
     id: &str,
     force: bool,
     channel: &str,
 ) -> Result<DeleteContextResultBody, AppError> {
+    let contexts_ks = ks.contexts;
+    let keys_ks = ks.keys;
+    let acl_ks = ks.acl;
+    #[cfg(feature = "webvh")]
+    let webvh_ks = ks.webvh;
     auth.require_super_admin()?;
 
     get_context(contexts_ks, id)
@@ -219,9 +246,7 @@ pub async fn delete_context(
 
     // Delete keys
     for key_id in &preview.keys {
-        keys_ks
-            .remove(crate::keys::store_key(key_id))
-            .await?;
+        keys_ks.remove(crate::keys::store_key(key_id)).await?;
     }
 
     // Delete WebVH DIDs and their logs

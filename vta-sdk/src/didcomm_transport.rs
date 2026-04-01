@@ -13,23 +13,38 @@ use crate::protocols::{PROBLEM_REPORT_TYPE, extract_problem_report};
 /// Map of pending request IDs to oneshot senders for response routing.
 pub type PendingMap = Arc<std::sync::Mutex<HashMap<String, oneshot::Sender<Message>>>>;
 
+/// Parameters for sending a DIDComm message and waiting for a response.
+pub struct DIDCommSendParams<'a> {
+    pub atm: &'a ATM,
+    pub profile: &'a Arc<ATMProfile>,
+    pub pending: &'a PendingMap,
+    pub from_did: &'a str,
+    pub to_did: &'a str,
+    pub msg_type: &'a str,
+    pub body: serde_json::Value,
+    pub expected_type: &'a str,
+    pub problem_report_type: &'a str,
+    pub timeout_secs: u64,
+}
+
 /// Core send-and-wait logic shared by DIDCommSession (SDK) and DIDCommBridge (service).
 ///
 /// Builds a message, registers a pending oneshot, packs/sends via ATM, and waits
 /// for a response matching the thread ID. Returns `Err(String)` on failure —
 /// callers map the error into their own type.
-pub async fn send_and_wait_raw(
-    atm: &ATM,
-    profile: &Arc<ATMProfile>,
-    pending: &PendingMap,
-    from_did: &str,
-    to_did: &str,
-    msg_type: &str,
-    body: serde_json::Value,
-    expected_type: &str,
-    problem_report_type: &str,
-    timeout_secs: u64,
-) -> Result<Message, String> {
+pub async fn send_and_wait_raw(params: DIDCommSendParams<'_>) -> Result<Message, String> {
+    let DIDCommSendParams {
+        atm,
+        profile,
+        pending,
+        from_did,
+        to_did,
+        msg_type,
+        body,
+        expected_type,
+        problem_report_type,
+        timeout_secs,
+    } = params;
     let msg_id = uuid::Uuid::new_v4().to_string();
     let msg = Message::build(msg_id.clone(), msg_type.to_string(), body)
         .from(from_did.to_string())

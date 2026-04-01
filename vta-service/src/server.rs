@@ -60,7 +60,6 @@ pub struct TeeContext {
 #[cfg(not(feature = "tee"))]
 pub struct TeeContext(());
 
-
 /// Trigger a soft restart after a short delay, allowing the current
 /// response to be sent before threads shut down.
 pub fn trigger_restart(restart_tx: &watch::Sender<bool>) {
@@ -78,9 +77,11 @@ pub struct AppState {
     pub acl_ks: KeyspaceHandle,
     pub contexts_ks: KeyspaceHandle,
     pub audit_ks: KeyspaceHandle,
+    pub imported_ks: KeyspaceHandle,
     pub cache_ks: KeyspaceHandle,
     #[cfg(feature = "webvh")]
     pub webvh_ks: KeyspaceHandle,
+    pub wrapping_cache: crate::keys::wrapping::WrappingKeyCache,
     pub config: Arc<RwLock<AppConfig>>,
     pub seed_store: Arc<dyn SeedStore>,
     pub did_resolver: Option<DIDCacheClient>,
@@ -132,6 +133,7 @@ pub async fn build_app_state(
     let acl_ks = apply_encryption(store.keyspace("acl")?);
     let contexts_ks = apply_encryption(store.keyspace("contexts")?);
     let audit_ks = apply_encryption(store.keyspace("audit")?);
+    let imported_ks = apply_encryption(store.keyspace("imported_secrets")?);
     let cache_ks = store.keyspace("cache")?;
     #[cfg(feature = "webvh")]
     let webvh_ks = apply_encryption(store.keyspace("webvh")?);
@@ -145,9 +147,11 @@ pub async fn build_app_state(
         acl_ks,
         contexts_ks,
         audit_ks,
+        imported_ks,
         cache_ks,
         #[cfg(feature = "webvh")]
         webvh_ks,
+        wrapping_cache: crate::keys::wrapping::WrappingKeyCache::new(),
         config: Arc::new(RwLock::new(config)),
         seed_store,
         did_resolver,
@@ -215,6 +219,7 @@ pub async fn run(
         let acl_ks = apply_encryption(store.keyspace("acl")?);
         let contexts_ks = apply_encryption(store.keyspace("contexts")?);
         let audit_ks = apply_encryption(store.keyspace("audit")?);
+        let imported_ks = apply_encryption(store.keyspace("imported_secrets")?);
         let cache_ks = store.keyspace("cache")?;
         #[cfg(feature = "webvh")]
         let webvh_ks = apply_encryption(store.keyspace("webvh")?);
@@ -263,7 +268,8 @@ pub async fn run(
 
         // Shared DIDComm bridge (still used by REST handlers for WebVH request-response)
         #[cfg(feature = "didcomm")]
-        let didcomm_bridge: Arc<tokio::sync::RwLock<Option<DIDCommBridge>>> = Arc::new(tokio::sync::RwLock::new(None));
+        let didcomm_bridge: Arc<tokio::sync::RwLock<Option<DIDCommBridge>>> =
+            Arc::new(tokio::sync::RwLock::new(None));
 
         // Build VtaState for the DIDComm service router
         #[cfg(feature = "didcomm")]
@@ -273,6 +279,7 @@ pub async fn run(
                 acl_ks: acl_ks.clone(),
                 contexts_ks: contexts_ks.clone(),
                 audit_ks: audit_ks.clone(),
+                imported_ks: imported_ks.clone(),
                 #[cfg(feature = "webvh")]
                 webvh_ks: webvh_ks.clone(),
                 seed_store: seed_store.clone(),
@@ -290,15 +297,20 @@ pub async fn run(
         #[cfg(feature = "rest")]
         let rest_handle = if let Some(ref listener_ref) = std_listener {
             let listener = listener_ref.try_clone().map_err(AppError::Io)?;
+            let wrapping_cache = crate::keys::wrapping::WrappingKeyCache::new();
+            wrapping_cache.clone().spawn_reaper();
+
             let state = AppState {
                 keys_ks,
                 sessions_ks,
                 acl_ks,
                 contexts_ks,
                 audit_ks,
+                imported_ks,
                 cache_ks,
                 #[cfg(feature = "webvh")]
                 webvh_ks,
+                wrapping_cache,
                 config: Arc::new(RwLock::new(config.clone())),
                 seed_store: seed_store.clone(),
                 did_resolver,
@@ -376,10 +388,14 @@ pub async fn run(
                         }],
                     };
 
-                    let router = messaging::router::build_router(Arc::clone(vta_state))
-                        .map_err(|e| AppError::Internal(format!("failed to build DIDComm router: {e}")))?;
+                    let router =
+                        messaging::router::build_router(Arc::clone(vta_state)).map_err(|e| {
+                            AppError::Internal(format!("failed to build DIDComm router: {e}"))
+                        })?;
 
-                    match DIDCommService::start(service_config, router, didcomm_shutdown.clone()).await {
+                    match DIDCommService::start(service_config, router, didcomm_shutdown.clone())
+                        .await
+                    {
                         Ok(service) => {
                             info!("DIDComm service started");
                             Some(service)
@@ -586,8 +602,7 @@ fn run_rest_thread(
                     .on_response(DefaultOnResponse::new().level(Level::INFO)),
             );
 
-        let app = traced_routes
-            .merge(routes::health_router().with_state(state));
+        let app = traced_routes.merge(routes::health_router().with_state(state));
 
         let shutdown_rx = shutdown_rx.clone();
         axum::serve(listener, app)
@@ -751,14 +766,24 @@ async fn init_auth(
             Ok(k) => k,
             Err(e) => {
                 warn!("failed to load JWT signing key: {e} — auth endpoints will not work");
-                return (Some(did_resolver), Some(Arc::new(secrets_resolver)), None, None);
+                return (
+                    Some(did_resolver),
+                    Some(Arc::new(secrets_resolver)),
+                    None,
+                    None,
+                );
             }
         },
         None => {
             warn!(
                 "auth.jwt_signing_key not configured — auth endpoints will not work (run setup first)"
             );
-            return (Some(did_resolver), Some(Arc::new(secrets_resolver)), None, None);
+            return (
+                Some(did_resolver),
+                Some(Arc::new(secrets_resolver)),
+                None,
+                None,
+            );
         }
     };
 
@@ -772,13 +797,15 @@ async fn init_auth(
             .build();
         match tdk_config {
             Ok(cfg) => match TDKSharedState::new(cfg).await {
-                Ok(tdk) => match ATM::new(ATMConfig::builder().build().unwrap(), Arc::new(tdk)).await {
-                    Ok(a) => Some(a),
-                    Err(e) => {
-                        warn!("failed to create ATM for auth unpack: {e}");
-                        None
+                Ok(tdk) => {
+                    match ATM::new(ATMConfig::builder().build().unwrap(), Arc::new(tdk)).await {
+                        Ok(a) => Some(a),
+                        Err(e) => {
+                            warn!("failed to create ATM for auth unpack: {e}");
+                            None
+                        }
                     }
-                },
+                }
                 Err(e) => {
                     warn!("failed to create TDK shared state: {e}");
                     None

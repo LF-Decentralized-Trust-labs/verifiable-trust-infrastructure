@@ -42,7 +42,10 @@ fn decode_bytes(data: &[u8], offset: usize) -> Result<(&[u8], usize), String> {
         return Err("truncated length".into());
     }
     let len = u32::from_be_bytes([
-        data[offset], data[offset + 1], data[offset + 2], data[offset + 3],
+        data[offset],
+        data[offset + 1],
+        data[offset + 2],
+        data[offset + 3],
     ]) as usize;
     let start = offset + 4;
     let end = start + len;
@@ -69,29 +72,40 @@ struct VsockConnection {
 impl VsockConnection {
     async fn connect(cid: u32, port: u32) -> Result<Self, AppError> {
         let addr = tokio_vsock::VsockAddr::new(cid, port);
-        let stream = tokio_vsock::VsockStream::connect(addr)
-            .await
-            .map_err(|e| AppError::Internal(format!("vsock connect to CID {cid}:{port} failed: {e}")))?;
+        let stream = tokio_vsock::VsockStream::connect(addr).await.map_err(|e| {
+            AppError::Internal(format!("vsock connect to CID {cid}:{port} failed: {e}"))
+        })?;
         Ok(Self { stream })
     }
 
     async fn request(&mut self, payload: &[u8]) -> Result<Vec<u8>, AppError> {
         // Write frame
-        self.stream.write_u32(payload.len() as u32).await
+        self.stream
+            .write_u32(payload.len() as u32)
+            .await
             .map_err(|e| AppError::Internal(format!("vsock write error: {e}")))?;
-        self.stream.write_all(payload).await
+        self.stream
+            .write_all(payload)
+            .await
             .map_err(|e| AppError::Internal(format!("vsock write error: {e}")))?;
-        self.stream.flush().await
+        self.stream
+            .flush()
+            .await
             .map_err(|e| AppError::Internal(format!("vsock flush error: {e}")))?;
 
         // Read frame
-        let len = self.stream.read_u32().await
+        let len = self
+            .stream
+            .read_u32()
+            .await
             .map_err(|e| AppError::Internal(format!("vsock read error: {e}")))?;
         if len > MAX_MESSAGE_SIZE {
             return Err(AppError::Internal(format!("response too large: {len}")));
         }
         let mut buf = vec![0u8; len as usize];
-        self.stream.read_exact(&mut buf).await
+        self.stream
+            .read_exact(&mut buf)
+            .await
             .map_err(|e| AppError::Internal(format!("vsock read error: {e}")))?;
         Ok(buf)
     }
@@ -199,9 +213,13 @@ impl VsockKeyspaceHandle {
 
     pub fn is_encrypted(&self) -> bool {
         #[cfg(feature = "encryption")]
-        { self.encryption_key.is_some() }
+        {
+            self.encryption_key.is_some()
+        }
         #[cfg(not(feature = "encryption"))]
-        { false }
+        {
+            false
+        }
     }
 
     pub async fn insert<V: Serialize>(
@@ -294,10 +312,7 @@ impl VsockKeyspaceHandle {
             .collect()
     }
 
-    pub async fn prefix_keys(
-        &self,
-        prefix: impl Into<Vec<u8>>,
-    ) -> Result<Vec<Vec<u8>>, AppError> {
+    pub async fn prefix_keys(&self, prefix: impl Into<Vec<u8>>) -> Result<Vec<Vec<u8>>, AppError> {
         let prefix = prefix.into();
         let mut payload = vec![OP_PREFIX_KEYS];
         encode_keyspace(&mut payload, &self.keyspace);
@@ -375,7 +390,9 @@ impl VsockKeyspaceHandle {
             }
         }
         #[cfg(not(feature = "encryption"))]
-        { Ok(plaintext) }
+        {
+            Ok(plaintext)
+        }
     }
 
     fn maybe_decrypt(&self, ciphertext: &[u8]) -> Result<Vec<u8>, AppError> {
@@ -387,7 +404,9 @@ impl VsockKeyspaceHandle {
             }
         }
         #[cfg(not(feature = "encryption"))]
-        { Ok(ciphertext.to_vec()) }
+        {
+            Ok(ciphertext.to_vec())
+        }
     }
 }
 
@@ -397,16 +416,19 @@ impl VsockKeyspaceHandle {
 
 fn decode_ok(data: &[u8]) -> Result<(), AppError> {
     if data.is_empty() {
-        return Err(AppError::Internal("empty response from storage proxy".into()));
+        return Err(AppError::Internal(
+            "empty response from storage proxy".into(),
+        ));
     }
     match data[0] {
         STATUS_OK => Ok(()),
         STATUS_ERROR => {
             let (msg, _) = decode_bytes(data, 1)
                 .map_err(|e| AppError::Internal(format!("decode error: {e}")))?;
-            Err(AppError::Internal(
-                format!("storage proxy error: {}", String::from_utf8_lossy(msg)),
-            ))
+            Err(AppError::Internal(format!(
+                "storage proxy error: {}",
+                String::from_utf8_lossy(msg)
+            )))
         }
         s => Err(AppError::Internal(format!("unexpected status: {s:#04x}"))),
     }
@@ -414,7 +436,9 @@ fn decode_ok(data: &[u8]) -> Result<(), AppError> {
 
 fn decode_value(data: &[u8]) -> Result<Option<Vec<u8>>, AppError> {
     if data.is_empty() {
-        return Err(AppError::Internal("empty response from storage proxy".into()));
+        return Err(AppError::Internal(
+            "empty response from storage proxy".into(),
+        ));
     }
     match data[0] {
         STATUS_OK => {
@@ -426,9 +450,10 @@ fn decode_value(data: &[u8]) -> Result<Option<Vec<u8>>, AppError> {
         STATUS_ERROR => {
             let (msg, _) = decode_bytes(data, 1)
                 .map_err(|e| AppError::Internal(format!("decode error: {e}")))?;
-            Err(AppError::Internal(
-                format!("storage proxy error: {}", String::from_utf8_lossy(msg)),
-            ))
+            Err(AppError::Internal(format!(
+                "storage proxy error: {}",
+                String::from_utf8_lossy(msg)
+            )))
         }
         s => Err(AppError::Internal(format!("unexpected status: {s:#04x}"))),
     }
@@ -459,7 +484,10 @@ fn decode_kv_list(data: &[u8]) -> Result<Vec<(Vec<u8>, Vec<u8>)>, AppError> {
         STATUS_ERROR => {
             let (msg, _) = decode_bytes(data, 1)
                 .map_err(|e| AppError::Internal(format!("decode error: {e}")))?;
-            Err(AppError::Internal(format!("storage proxy error: {}", String::from_utf8_lossy(msg))))
+            Err(AppError::Internal(format!(
+                "storage proxy error: {}",
+                String::from_utf8_lossy(msg)
+            )))
         }
         s => Err(AppError::Internal(format!("unexpected status: {s:#04x}"))),
     }
@@ -488,7 +516,10 @@ fn decode_key_list(data: &[u8]) -> Result<Vec<Vec<u8>>, AppError> {
         STATUS_ERROR => {
             let (msg, _) = decode_bytes(data, 1)
                 .map_err(|e| AppError::Internal(format!("decode error: {e}")))?;
-            Err(AppError::Internal(format!("storage proxy error: {}", String::from_utf8_lossy(msg))))
+            Err(AppError::Internal(format!(
+                "storage proxy error: {}",
+                String::from_utf8_lossy(msg)
+            )))
         }
         s => Err(AppError::Internal(format!("unexpected status: {s:#04x}"))),
     }

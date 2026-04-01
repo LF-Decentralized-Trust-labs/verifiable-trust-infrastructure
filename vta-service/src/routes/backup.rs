@@ -1,7 +1,7 @@
 use axum::Json;
 use axum::extract::State;
 
-use crate::auth::AuthClaims;
+use crate::auth::{AuthClaims, SuperAdminAuth};
 use crate::error::AppError;
 use crate::operations;
 use crate::server::AppState;
@@ -10,20 +10,16 @@ use vta_sdk::protocols::backup_management::types::{
     BackupEnvelope, ExportRequest, ImportRequest, ImportResult,
 };
 
-/// POST /backup/export — export VTA state to an encrypted backup.
+/// POST /backup/export — export VTA state to an encrypted backup. Auth: Super Admin.
 pub async fn export(
-    auth: AuthClaims,
+    SuperAdminAuth(auth): SuperAdminAuth,
     State(state): State<AppState>,
     Json(req): Json<ExportRequest>,
 ) -> Result<Json<BackupEnvelope>, AppError> {
     let config = state.config.read().await;
+    let ks = operations::Keyspaces::from_app_state(&state);
     let envelope = operations::backup::export_backup(
-        &state.keys_ks,
-        &state.acl_ks,
-        &state.contexts_ks,
-        &state.audit_ks,
-        #[cfg(feature = "webvh")]
-        &state.webvh_ks,
+        &ks,
         &*state.seed_store,
         &config,
         &auth,
@@ -64,14 +60,10 @@ pub async fn import(
     // Full import — decrypt once (skip building a throwaway preview)
     let payload = operations::backup::decrypt_backup(&req.backup, &req.password)?;
 
+    let ks = operations::Keyspaces::from_app_state(&state);
     let result = operations::backup::apply_import(
         &payload,
-        &state.keys_ks,
-        &state.acl_ks,
-        &state.contexts_ks,
-        &state.audit_ks,
-        #[cfg(feature = "webvh")]
-        &state.webvh_ks,
+        &ks,
         &state.seed_store,
         &state.config,
         None, // Store passed for TEE re-encryption (REST has no store access; handled on restart)

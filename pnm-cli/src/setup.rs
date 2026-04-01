@@ -3,8 +3,7 @@ use std::io::{self, BufRead, Write};
 use dialoguer::{Input, Select};
 use ed25519_dalek::SigningKey;
 use rand::Rng;
-use vta_sdk::credentials::CredentialBundle;
-use vta_sdk::did_key::ed25519_multibase_pubkey;
+use vta_sdk::prelude::*;
 
 use crate::auth;
 use crate::config::{PnmConfig, VtaConfig, save_config, slugify, vta_keyring_key};
@@ -90,9 +89,7 @@ async fn setup_with_credential(
         eprintln!("Resolving VTA DID: {}", bundle.vta_did);
         vta_sdk::session::resolve_vta_url(&bundle.vta_did).await?
     } else {
-        let url: String = Input::new()
-            .with_prompt("VTA URL")
-            .interact_text()?;
+        let url: String = Input::new().with_prompt("VTA URL").interact_text()?;
         url
     };
     let url = url.trim_end_matches('/').to_string();
@@ -182,22 +179,13 @@ async fn setup_tee(config: &mut PnmConfig) -> Result<(), Box<dyn std::error::Err
     eprintln!("The VTA's DID is shown in its boot logs. You can also retrieve");
     eprintln!("it via: GET /attestation/did-log (if REST is enabled).");
     eprintln!();
-    let vta_did: String = Input::new()
-        .with_prompt("VTA DID")
-        .interact_text()?;
+    let vta_did: String = Input::new().with_prompt("VTA DID").interact_text()?;
 
     // 6. Prompt for mediator DID
-    let mediator_did: String = Input::new()
-        .with_prompt("Mediator DID")
-        .interact_text()?;
+    let mediator_did: String = Input::new().with_prompt("Mediator DID").interact_text()?;
 
     // 7. Build credential bundle and store in keyring
-    let bundle = CredentialBundle {
-        did: did.clone(),
-        private_key_multibase: private_key_multibase.clone(),
-        vta_did: vta_did.clone(),
-        vta_url: None,
-    };
+    let bundle = CredentialBundle::new(did.clone(), private_key_multibase.clone(), vta_did.clone());
     let _credential_b64 = bundle.encode()?;
     let keyring_key = vta_keyring_key(&slug);
 

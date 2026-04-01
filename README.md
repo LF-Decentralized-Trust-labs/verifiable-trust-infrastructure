@@ -186,6 +186,8 @@ See [PNM CLI](pnm-cli/README.md) and [CNM CLI](cnm-cli/README.md) for command re
 
 ## Additional Resources
 
+- [Integration Guide](docs/integration-guide.md) -- how to integrate a 3rd-party application with the VTA
 - [First Person Project White Paper](https://www.firstperson.network/white-paper)
 - [Design Document](docs/design.md)
 - [BIP-32 Path Specification](docs/bip32_paths.md)
+- [Security Architecture](docs/security-architecture.md)
