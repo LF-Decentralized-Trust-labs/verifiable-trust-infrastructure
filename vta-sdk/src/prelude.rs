@@ -36,5 +36,12 @@ pub use crate::did_key::{decode_private_key_multibase, ed25519_multibase_pubkey}
 #[cfg(feature = "client")]
 pub use crate::did_key::secret_from_key_response;
 
+// Integration (feature-gated)
+#[cfg(feature = "integration")]
+pub use crate::integration::{
+    SecretCache, SecretSource, StartupResult, VtaIntegrationError, VtaServiceConfig,
+    authenticate, startup,
+};
+
 // Protocols — commonly used request/response bodies
 pub use crate::protocols::audit_management::list::ListAuditLogsBody;

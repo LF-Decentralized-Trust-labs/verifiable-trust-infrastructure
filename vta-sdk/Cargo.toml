@@ -31,6 +31,7 @@ session = [
   "dep:affinidi-did-resolver-cache-sdk",
   "dep:tokio",
 ]
+integration = ["client", "session"]
 keyring = ["dep:keyring"]
 config-session = []
 azure-secrets = [
