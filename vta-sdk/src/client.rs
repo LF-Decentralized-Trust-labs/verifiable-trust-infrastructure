@@ -1527,7 +1527,17 @@ impl VtaClient {
             }
             for key in &resp.keys {
                 let secret_resp = self.get_key_secret(&key.key_id).await?;
-                secrets.push(crate::did_secrets::SecretEntry::from(secret_resp));
+                let mut entry = crate::did_secrets::SecretEntry::from(secret_resp);
+                // Use the key's label as the secret ID when it looks like a DID
+                // verification method ID (e.g., "did:webvh:...#key-0"). The setup
+                // wizard and provisioning flows set labels to match the DID document,
+                // so this lets consumers use the bundle directly without remapping.
+                if let Some(label) = key.label.as_deref() {
+                    if label.contains('#') || label.starts_with("did:") {
+                        entry.key_id = label.to_string();
+                    }
+                }
+                secrets.push(entry);
             }
             offset += resp.keys.len() as u64;
             if offset >= resp.total {

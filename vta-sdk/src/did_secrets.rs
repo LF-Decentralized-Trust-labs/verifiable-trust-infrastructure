@@ -21,29 +21,19 @@ use crate::keys::KeyType;
 /// # Example — constructing secrets for DIDComm
 ///
 /// Applications using `affinidi_tdk` can reconstruct `Secret` objects from the
-/// entries in this bundle:
+/// entries in this bundle using `Secret::from_multibase()`, which handles all
+/// key types (Ed25519, X25519, P-256) via their multicodec prefix:
 ///
 /// ```ignore
 /// use affinidi_tdk::secrets_resolver::secrets::Secret;
 ///
-/// let bundle = DidSecretsBundle::decode(&base64_string)?;
+/// let bundle = client.fetch_did_secrets_bundle("my-context").await?;
 /// for entry in &bundle.secrets {
-///     let seed_bytes: [u8; 32] = /* decode entry.private_key_multibase */;
-///     match entry.key_type {
-///         KeyType::Ed25519 => {
-///             let secret = Secret::generate_ed25519(
-///                 Some(&entry.key_id), Some(&seed_bytes),
-///             );
-///             resolver.insert(secret);
-///         }
-///         KeyType::X25519 => {
-///             let secret = Secret::generate_ed25519(None, Some(&seed_bytes))
-///                 .to_x25519()?;
-///             // Set the key ID after conversion
-///             secret.id = entry.key_id.clone();
-///             resolver.insert(secret);
-///         }
-///     }
+///     let secret = Secret::from_multibase(
+///         &entry.private_key_multibase,
+///         Some(&entry.key_id),
+///     )?;
+///     resolver.insert(secret);
 /// }
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
