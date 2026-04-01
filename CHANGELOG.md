@@ -52,13 +52,13 @@
 
 ### Version Bumps
 
-| Crate | Old | New |
-|-------|-----|-----|
-| vta-sdk | 0.3.0 | 0.4.0 |
-| vta-service | 0.3.0 | 0.4.0 |
+| Crate          | Old   | New   |
+| -------------- | ----- | ----- |
+| vta-sdk        | 0.3.0 | 0.4.0 |
+| vta-service    | 0.3.0 | 0.4.0 |
 | vta-cli-common | 0.3.0 | 0.4.0 |
-| pnm-cli | 0.3.0 | 0.4.0 |
-| cnm-cli | 0.3.0 | 0.4.0 |
+| pnm-cli        | 0.3.0 | 0.4.0 |
+| cnm-cli        | 0.3.0 | 0.4.0 |
 
 ### Documentation
 
@@ -205,7 +205,7 @@
   `CredentialBundle`, request/response types) for single-line
   imports.
 - **Builder patterns** — `CreateKeyRequest::new(KeyType::Ed25519)
-  .label("my-key").context("app")` replaces verbose struct
+.label("my-key").context("app")` replaces verbose struct
   construction with many `None` fields. Builders added for
   `CreateKeyRequest`, `CreateContextRequest`, `CreateAclRequest`,
   and `GenerateCredentialsRequest`. All accept `impl Into<String>`.
