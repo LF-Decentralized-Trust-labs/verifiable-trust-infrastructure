@@ -45,7 +45,7 @@ name = "vta"
 path = "src/main.rs"
 
 [dependencies]
-vti-common = { path = "../vti-common", version = "0.2.1", features = ["encryption"] }
+vti-common = { path = "../vti-common", version = "0.3.0", features = ["encryption"] }
 vta-sdk = { path = "../vta-sdk", version = "0.4.0", features = ["didcomm"] }
 hkdf = "0.12"
 affinidi-tdk = { workspace = true }
