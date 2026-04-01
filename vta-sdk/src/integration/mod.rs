@@ -193,9 +193,7 @@ async fn load_from_cache(
     match cache.load().await {
         Ok(Some(bundle)) => {
             if bundle.secrets.is_empty() {
-                return Err(VtaIntegrationError::EmptySecretsBundle(
-                    context.to_string(),
-                ));
+                return Err(VtaIntegrationError::EmptySecretsBundle(context.to_string()));
             }
             tracing::warn!(
                 context = context,
