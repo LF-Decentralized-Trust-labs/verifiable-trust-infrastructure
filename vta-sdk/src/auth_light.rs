@@ -10,6 +10,7 @@
 use crate::credentials::CredentialBundle;
 use crate::didcomm_light;
 use crate::protocols::auth::{AuthenticateResponse, ChallengeRequest, ChallengeResponse};
+use reqwest::Client;
 
 /// Result of a successful authentication.
 #[derive(Debug, Clone)]
@@ -25,6 +26,7 @@ pub struct AuthResult {
 /// This is the lightweight equivalent of `session::challenge_response()`.
 /// It uses the `didcomm_light` packer to build the encrypted message.
 pub async fn challenge_response_light(
+    http: &Client,
     base_url: &str,
     client_did: &str,
     private_key_multibase: &str,
@@ -32,7 +34,6 @@ pub async fn challenge_response_light(
 ) -> Result<AuthResult, crate::error::VtaError> {
     let _ = private_key_multibase; // Sender identity is in the plaintext `from` field;
                                     // anoncrypt doesn't use sender's private key for encryption.
-    let http = reqwest::Client::new();
 
     // Step 1: Request challenge
     let challenge_url = format!("{base_url}/auth/challenge");
@@ -101,6 +102,7 @@ pub async fn challenge_response_light(
 /// Returns a new `AuthResult` with a fresh access token. The refresh token
 /// itself remains unchanged.
 pub async fn refresh_token_light(
+    http: &Client,
     base_url: &str,
     client_did: &str,
     vta_did: &str,
@@ -115,7 +117,6 @@ pub async fn refresh_token_light(
         vta_did,
     )?;
 
-    let http = reqwest::Client::new();
     let refresh_url = format!("{base_url}/auth/refresh");
     let resp = http
         .post(&refresh_url)
@@ -148,13 +149,15 @@ pub async fn refresh_token_light(
 pub async fn authenticate_with_credential(
     credential_b64: &str,
     url_override: Option<&str>,
-) -> Result<(AuthResult, CredentialBundle), crate::error::VtaError> {
+) -> Result<(AuthResult, CredentialBundle, Client), crate::error::VtaError> {
     let cred = CredentialBundle::decode(credential_b64)?;
     let url = url_override
         .or(cred.vta_url.as_deref())
         .ok_or("no VTA URL in credential and no override provided")?;
 
+    let http = Client::new();
     let result = challenge_response_light(
+        &http,
         url,
         &cred.did,
         &cred.private_key_multibase,
@@ -162,5 +165,5 @@ pub async fn authenticate_with_credential(
     )
     .await?;
 
-    Ok((result, cred))
+    Ok((result, cred, http))
 }

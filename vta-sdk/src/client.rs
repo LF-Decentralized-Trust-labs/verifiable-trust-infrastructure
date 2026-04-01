@@ -473,7 +473,7 @@ impl VtaClient {
         credential_b64: &str,
         url_override: Option<&str>,
     ) -> Result<Self, VtaError> {
-        let (result, cred) =
+        let (result, cred, http) =
             crate::auth_light::authenticate_with_credential(credential_b64, url_override).await?;
         let base_url = url_override
             .or(cred.vta_url.as_deref())
@@ -483,7 +483,7 @@ impl VtaClient {
 
         Ok(Self {
             transport: Transport::Rest {
-                client: Client::new(),
+                client: http,
                 base_url,
                 auth: tokio::sync::Mutex::new(RestAuth {
                     token: Some(result.access_token),
@@ -580,7 +580,7 @@ impl VtaClient {
 
     /// Ensure the REST auth token is valid, refreshing if needed.
     async fn ensure_token_valid(
-        _client: &Client,
+        client: &Client,
         base_url: &str,
         auth: &tokio::sync::Mutex<RestAuth>,
     ) -> Result<(), VtaError> {
@@ -614,7 +614,7 @@ impl VtaClient {
                     .as_secs();
                 if now < refresh_exp {
                     if let Ok(result) = crate::auth_light::refresh_token_light(
-                        base_url, &cred.did, &cred.vta_did, refresh_tok,
+                        client, base_url, &cred.did, &cred.vta_did, refresh_tok,
                     ).await {
                         guard.token = Some(result.access_token);
                         guard.expires_at = Some(result.access_expires_at);
@@ -636,7 +636,7 @@ impl VtaClient {
         drop(guard); // Release lock before async call
 
         let result = crate::auth_light::challenge_response_light(
-            base_url, &did, &pk, &vta,
+            client, base_url, &did, &pk, &vta,
         ).await?;
 
         let mut guard = auth.lock().await;

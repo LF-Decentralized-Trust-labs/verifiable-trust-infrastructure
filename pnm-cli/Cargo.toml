@@ -26,9 +26,9 @@ vta-cli-common = { path = "../vta-cli-common", version = "0.3.0" }
 affinidi-did-resolver-cache-sdk = "0.8"
 chrono = { workspace = true }
 clap = { workspace = true, features = ["env"] }
-dialoguer = "0.12"
+dialoguer = { workspace = true }
 dirs = "6"
-ed25519-dalek = "2"
+ed25519-dalek = { workspace = true }
 multibase = { workspace = true }
 rand = { workspace = true }
 serde = { workspace = true }

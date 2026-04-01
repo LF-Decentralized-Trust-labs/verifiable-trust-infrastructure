@@ -68,7 +68,7 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 bip39 = "2"
-ed25519-dalek = "2"
+ed25519-dalek = { workspace = true }
 ed25519-dalek-bip32 = { workspace = true }
 hex = "0.4"
 keyring = { version = "3", optional = true }
@@ -84,7 +84,7 @@ chrono = { workspace = true }
 clap = { workspace = true }
 didwebvh-rs = { workspace = true, optional = true }
 rand = { workspace = true }
-dialoguer = "0.12"
+dialoguer = { workspace = true }
 azure_security_keyvault_secrets = { version = "0.12", optional = true }
 azure_identity = { version = "0.33", optional = true }
 sha1 = "0.10"
