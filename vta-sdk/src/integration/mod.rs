@@ -38,6 +38,10 @@ pub use cache::SecretCache;
 
 use crate::did_secrets::DidSecretsBundle;
 use crate::error::VtaError;
+use std::time::Duration;
+
+/// Default timeout for the entire VTA startup flow (auth + secret fetch).
+const DEFAULT_STARTUP_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Configuration for connecting a service to its VTA context.
 ///
@@ -53,6 +57,9 @@ pub struct VtaServiceConfig {
     /// Optional REST URL override. When set, bypasses the URL embedded in the
     /// credential (useful for VTARest service discovery or dev/testing).
     pub url_override: Option<String>,
+    /// Timeout for the VTA startup flow (auth + secret fetch).
+    /// Defaults to 30 seconds if `None`.
+    pub timeout: Option<Duration>,
 }
 
 /// Whether secrets were loaded live from the VTA or from the local cache.
@@ -84,6 +91,9 @@ pub enum VtaIntegrationError {
     /// VTA is unreachable and no locally cached secrets exist.
     /// This typically means the service has never successfully contacted the VTA.
     NoCachedSecrets,
+    /// The VTA context returned zero secrets. This is a configuration error —
+    /// the context must have at least one key (signing or key agreement) provisioned.
+    EmptySecretsBundle(String),
     /// The local secret cache could not be read or written.
     CacheError(String),
     /// An error from the VTA SDK (authentication or secret fetch).
@@ -97,6 +107,11 @@ impl std::fmt::Display for VtaIntegrationError {
                 f,
                 "VTA is unreachable and no cached secrets exist. \
                  Run the setup wizard or ensure the VTA is accessible for the first startup."
+            ),
+            Self::EmptySecretsBundle(ctx) => write!(
+                f,
+                "VTA context '{ctx}' returned zero secrets. \
+                 Provision keys via the setup wizard or VTA admin tools."
             ),
             Self::CacheError(e) => write!(f, "secret cache error: {e}"),
             Self::Vta(e) => write!(f, "VTA error: {e}"),
@@ -123,31 +138,49 @@ pub async fn startup(
     config: &VtaServiceConfig,
     cache: &(impl SecretCache + ?Sized),
 ) -> Result<StartupResult, VtaIntegrationError> {
-    match authenticate(config).await {
-        Ok(client) => match client.fetch_did_secrets_bundle(&config.context).await {
-            Ok(bundle) => {
-                if let Err(e) = cache.store(&bundle).await {
-                    tracing::warn!("Failed to cache VTA secrets locally: {e}");
-                }
-                tracing::info!(
-                    context = config.context,
-                    secrets = bundle.secrets.len(),
-                    "Loaded fresh secrets from VTA",
-                );
-                Ok(StartupResult {
-                    did: bundle.did.clone(),
-                    bundle,
-                    source: SecretSource::Vta,
-                    client: Some(client),
-                })
+    let timeout = config.timeout.unwrap_or(DEFAULT_STARTUP_TIMEOUT);
+
+    let vta_result = tokio::time::timeout(timeout, async {
+        let client = authenticate(config).await?;
+        let bundle = client
+            .fetch_did_secrets_bundle(&config.context)
+            .await
+            .map_err(VtaIntegrationError::from)?;
+        Ok::<_, VtaIntegrationError>((client, bundle))
+    })
+    .await;
+
+    match vta_result {
+        Ok(Ok((client, bundle))) => {
+            if bundle.secrets.is_empty() {
+                return Err(VtaIntegrationError::EmptySecretsBundle(
+                    config.context.clone(),
+                ));
             }
-            Err(e) => {
-                tracing::warn!("VTA reachable but secret fetch failed: {e}");
-                load_from_cache(cache, &config.context).await
+            if let Err(e) = cache.store(&bundle).await {
+                tracing::warn!("Failed to cache VTA secrets locally: {e}");
             }
-        },
-        Err(e) => {
-            tracing::warn!("VTA unreachable ({e}), falling back to cached secrets");
+            tracing::info!(
+                context = config.context,
+                secrets = bundle.secrets.len(),
+                "Loaded fresh secrets from VTA",
+            );
+            Ok(StartupResult {
+                did: bundle.did.clone(),
+                bundle,
+                source: SecretSource::Vta,
+                client: Some(client),
+            })
+        }
+        Ok(Err(e)) => {
+            tracing::warn!("VTA startup failed: {e}");
+            load_from_cache(cache, &config.context).await
+        }
+        Err(_elapsed) => {
+            tracing::warn!(
+                "VTA startup timed out after {}s, falling back to cached secrets",
+                timeout.as_secs()
+            );
             load_from_cache(cache, &config.context).await
         }
     }
@@ -159,6 +192,11 @@ async fn load_from_cache(
 ) -> Result<StartupResult, VtaIntegrationError> {
     match cache.load().await {
         Ok(Some(bundle)) => {
+            if bundle.secrets.is_empty() {
+                return Err(VtaIntegrationError::EmptySecretsBundle(
+                    context.to_string(),
+                ));
+            }
             tracing::warn!(
                 context = context,
                 secrets = bundle.secrets.len(),

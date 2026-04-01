@@ -7838,6 +7838,7 @@ dependencies = [
  "vta-sdk",
  "vti-common",
  "x25519-dalek",
+ "zeroize",
 ]
 
 [[package]]

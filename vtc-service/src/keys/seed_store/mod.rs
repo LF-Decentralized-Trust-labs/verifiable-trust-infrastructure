@@ -22,24 +22,12 @@ pub use gcp::GcpSecretStore;
 pub use keyring::KeyringSecretStore;
 pub use plaintext::PlaintextSecretStore;
 
-use std::future::Future;
-use std::pin::Pin;
-
 use crate::config::AppConfig;
 use crate::error::AppError;
 
-type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
-
 /// Store for VTC key material (64 bytes: 32 Ed25519 + 32 X25519).
-pub trait SecretStore: Send + Sync {
-    fn get(&self) -> BoxFuture<'_, Result<Option<Vec<u8>>, AppError>>;
-    fn set(&self, secret: &[u8]) -> BoxFuture<'_, Result<(), AppError>>;
-    /// Remove the secret from the backend. Default is a no-op (backends where
-    /// `set` overwrites in-place don't need explicit deletion).
-    fn delete(&self) -> BoxFuture<'_, Result<(), AppError>> {
-        Box::pin(async { Ok(()) })
-    }
-}
+/// Re-exports the shared SeedStore trait as SecretStore for VTC naming.
+pub use vti_common::seed_store::SeedStore as SecretStore;
 
 /// Create a secret store backend based on compiled features and configuration.
 ///

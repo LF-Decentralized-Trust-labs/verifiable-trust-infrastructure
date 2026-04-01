@@ -90,12 +90,18 @@ struct KeyringBackend {
 #[cfg(feature = "keyring")]
 impl SessionBackend for KeyringBackend {
     fn load(&self, key: &str) -> Option<String> {
-        let entry = keyring::Entry::new(&self.service_name, key).ok()?;
+        let entry = match keyring::Entry::new(&self.service_name, key) {
+            Ok(e) => e,
+            Err(e) => {
+                tracing::warn!("keyring entry creation failed for '{key}': {e}");
+                return None;
+            }
+        };
         match entry.get_password() {
             Ok(v) => Some(v),
             Err(keyring::Error::NoEntry) => None,
             Err(e) => {
-                eprintln!("Warning: keyring read error: {e}");
+                tracing::warn!("keyring read error for '{key}': {e}");
                 None
             }
         }
@@ -111,8 +117,15 @@ impl SessionBackend for KeyringBackend {
     }
 
     fn clear(&self, key: &str) {
-        if let Ok(entry) = keyring::Entry::new(&self.service_name, key) {
-            let _ = entry.delete_credential();
+        match keyring::Entry::new(&self.service_name, key) {
+            Ok(entry) => {
+                if let Err(e) = entry.delete_credential() {
+                    tracing::debug!("keyring clear for '{key}': {e}");
+                }
+            }
+            Err(e) => {
+                tracing::debug!("keyring entry creation failed during clear for '{key}': {e}")
+            }
         }
     }
 }
@@ -133,9 +146,21 @@ impl FileBackend {
         let path = self.sessions_path();
         let data = match std::fs::read_to_string(&path) {
             Ok(d) => d,
-            Err(_) => return std::collections::HashMap::new(),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return std::collections::HashMap::new();
+            }
+            Err(e) => {
+                tracing::warn!("failed to read sessions file {}: {e}", path.display());
+                return std::collections::HashMap::new();
+            }
         };
-        serde_json::from_str(&data).unwrap_or_default()
+        match serde_json::from_str(&data) {
+            Ok(map) => map,
+            Err(e) => {
+                tracing::warn!("failed to parse sessions file {}: {e}", path.display());
+                std::collections::HashMap::new()
+            }
+        }
     }
 
     fn save_map(
@@ -162,10 +187,14 @@ impl SessionBackend for FileBackend {
         if self.warn {
             eprintln!("WARNING: No secure session store — using plaintext file storage");
         }
-        if let Some(parent) = self.sessions_dir.parent() {
-            std::fs::create_dir_all(parent).ok();
+        if let Some(parent) = self.sessions_dir.parent()
+            && let Err(e) = std::fs::create_dir_all(parent)
+        {
+            tracing::warn!("failed to create sessions parent dir: {e}");
         }
-        std::fs::create_dir_all(&self.sessions_dir).ok();
+        if let Err(e) = std::fs::create_dir_all(&self.sessions_dir) {
+            tracing::warn!("failed to create sessions dir: {e}");
+        }
         let mut map = self.load_map();
         let parsed: serde_json::Value = serde_json::from_str(value)?;
         map.insert(key.to_string(), parsed);
@@ -199,19 +228,37 @@ impl SessionBackend for AzureBackend {
         use azure_identity::DeveloperToolsCredential;
         use azure_security_keyvault_secrets::SecretClient;
 
-        let credential = DeveloperToolsCredential::new(None).ok()?;
-        let client = SecretClient::new(&self.vault_url, credential, None).ok()?;
+        let credential = match DeveloperToolsCredential::new(None) {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::warn!("Azure credential creation failed: {e}");
+                return None;
+            }
+        };
+        let client = match SecretClient::new(&self.vault_url, credential, None) {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::warn!("Azure Key Vault client creation failed: {e}");
+                return None;
+            }
+        };
         let secret_name = self.secret_name(key);
 
         let result = tokio::runtime::Handle::current()
             .block_on(async { client.get_secret(&secret_name, None).await });
 
         match result {
-            Ok(response) => {
-                let model = response.into_model().ok()?;
-                model.value
+            Ok(response) => match response.into_model() {
+                Ok(model) => model.value,
+                Err(e) => {
+                    tracing::warn!("Azure Key Vault response parsing failed: {e}");
+                    None
+                }
+            },
+            Err(e) => {
+                tracing::debug!("Azure Key Vault secret '{secret_name}' not found: {e}");
+                None
             }
-            Err(_) => None,
         }
     }
 

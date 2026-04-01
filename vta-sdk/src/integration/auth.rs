@@ -45,7 +45,7 @@ pub async fn authenticate(config: &VtaServiceConfig) -> Result<VtaClient, VtaErr
             .await?;
 
             let client = VtaClient::new(vta_url);
-            client.set_token(token_result.access_token);
+            client.set_token_async(token_result.access_token).await;
 
             tracing::info!("Authenticated to VTA at '{vta_url}' (REST, session auth)");
             Ok(client)

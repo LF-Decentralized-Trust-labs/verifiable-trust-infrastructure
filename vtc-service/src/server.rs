@@ -356,8 +356,14 @@ async fn init_auth(
         return (None, None, None, None);
     }
 
-    let ed25519_bytes: &[u8; 32] = key_material[..32].try_into().unwrap();
-    let x25519_bytes: &[u8; 32] = key_material[32..].try_into().unwrap();
+    let Ok(ed25519_bytes): Result<&[u8; 32], _> = key_material[..32].try_into() else {
+        warn!("key material corrupted — auth endpoints will not work");
+        return (None, None, None, None);
+    };
+    let Ok(x25519_bytes): Result<&[u8; 32], _> = key_material[32..].try_into() else {
+        warn!("key material corrupted — auth endpoints will not work");
+        return (None, None, None, None);
+    };
 
     // 1. DID resolver (local mode)
     let did_resolver = match DIDCacheClient::new(DIDCacheConfigBuilder::default().build()).await {

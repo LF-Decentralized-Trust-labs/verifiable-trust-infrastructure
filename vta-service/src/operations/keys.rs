@@ -741,3 +741,216 @@ pub async fn sign_payload(
         algorithm: algorithm.clone(),
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::pin::Pin;
+    use std::sync::Arc;
+    use tokio::sync::Mutex;
+
+    use vti_common::acl::Role;
+    use vti_common::config::StoreConfig;
+    use vti_common::store::Store;
+
+    use crate::auth::AuthClaims;
+    use crate::contexts::create_context;
+    use crate::keys::seed_store::SeedStore;
+
+    /// A mock seed store backed by a Mutex so `set` actually persists.
+    struct MockSeedStore(Mutex<Option<Vec<u8>>>);
+
+    impl SeedStore for MockSeedStore {
+        fn get(
+            &self,
+        ) -> Pin<
+            Box<
+                dyn std::future::Future<Output = Result<Option<Vec<u8>>, crate::error::AppError>>
+                    + Send
+                    + '_,
+            >,
+        > {
+            Box::pin(async { Ok(self.0.lock().await.clone()) })
+        }
+        fn set(
+            &self,
+            seed: &[u8],
+        ) -> Pin<
+            Box<dyn std::future::Future<Output = Result<(), crate::error::AppError>> + Send + '_>,
+        > {
+            let seed = seed.to_vec();
+            Box::pin(async move {
+                *self.0.lock().await = Some(seed);
+                Ok(())
+            })
+        }
+    }
+
+    /// Helper: open a temp store and return the keyspace handles needed by key operations.
+    struct TestHarness {
+        keys_ks: KeyspaceHandle,
+        contexts_ks: KeyspaceHandle,
+        audit_ks: KeyspaceHandle,
+        imported_ks: KeyspaceHandle,
+        seed_store: Arc<dyn SeedStore>,
+        _dir: tempfile::TempDir,
+    }
+
+    impl TestHarness {
+        async fn new() -> Self {
+            let dir = tempfile::tempdir().expect("temp dir");
+            let store_config = StoreConfig {
+                data_dir: dir.path().to_path_buf(),
+            };
+            let store = Store::open(&store_config).expect("open store");
+
+            let keys_ks = store.keyspace("keys").unwrap();
+            let contexts_ks = store.keyspace("contexts").unwrap();
+            let audit_ks = store.keyspace("audit").unwrap();
+            let imported_ks = store.keyspace("imported_secrets").unwrap();
+
+            // 32-byte seed; will be expanded to 64 bytes by BIP-32 internally
+            let seed_store: Arc<dyn SeedStore> =
+                Arc::new(MockSeedStore(Mutex::new(Some(vec![0xABu8; 32]))));
+
+            // Create a test context so create_key can resolve it
+            create_context(&contexts_ks, "test-ctx", "Test Context")
+                .await
+                .expect("create context");
+
+            Self {
+                keys_ks,
+                contexts_ks,
+                audit_ks,
+                imported_ks,
+                seed_store,
+                _dir: dir,
+            }
+        }
+
+        fn super_admin_auth(&self) -> AuthClaims {
+            AuthClaims {
+                did: "did:key:z6MkTestAdmin".to_string(),
+                role: Role::Admin,
+                allowed_contexts: vec![], // empty = super admin
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_create_key_ed25519() {
+        let h = TestHarness::new().await;
+        let auth = h.super_admin_auth();
+
+        let result = create_key(
+            &h.keys_ks,
+            &h.contexts_ks,
+            &h.seed_store,
+            &h.audit_ks,
+            &auth,
+            CreateKeyParams {
+                key_type: KeyType::Ed25519,
+                derivation_path: None,
+                key_id: Some("test-ed25519".into()),
+                mnemonic: None,
+                label: None,
+                context_id: Some("test-ctx".into()),
+            },
+            "test",
+        )
+        .await
+        .expect("create_key should succeed");
+
+        assert_eq!(result.key_type, KeyType::Ed25519);
+        assert_eq!(result.status, KeyStatus::Active);
+        assert!(
+            !result.public_key.is_empty(),
+            "public_key must be non-empty"
+        );
+        assert_eq!(result.key_id, "test-ed25519");
+    }
+
+    #[tokio::test]
+    async fn test_create_key_p256() {
+        let h = TestHarness::new().await;
+        let auth = h.super_admin_auth();
+
+        let result = create_key(
+            &h.keys_ks,
+            &h.contexts_ks,
+            &h.seed_store,
+            &h.audit_ks,
+            &auth,
+            CreateKeyParams {
+                key_type: KeyType::P256,
+                derivation_path: None,
+                key_id: Some("test-p256".into()),
+                mnemonic: None,
+                label: None,
+                context_id: Some("test-ctx".into()),
+            },
+            "test",
+        )
+        .await
+        .expect("create_key should succeed");
+
+        assert_eq!(result.key_type, KeyType::P256);
+        assert_eq!(result.status, KeyStatus::Active);
+        assert!(
+            !result.public_key.is_empty(),
+            "public_key must be non-empty"
+        );
+        assert_eq!(result.key_id, "test-p256");
+    }
+
+    #[tokio::test]
+    async fn test_sign_and_verify_ed25519() {
+        let h = TestHarness::new().await;
+        let auth = h.super_admin_auth();
+
+        // First create a key
+        let key = create_key(
+            &h.keys_ks,
+            &h.contexts_ks,
+            &h.seed_store,
+            &h.audit_ks,
+            &auth,
+            CreateKeyParams {
+                key_type: KeyType::Ed25519,
+                derivation_path: None,
+                key_id: Some("sign-test-key".into()),
+                mnemonic: None,
+                label: None,
+                context_id: Some("test-ctx".into()),
+            },
+            "test",
+        )
+        .await
+        .expect("create_key should succeed");
+
+        // Sign a payload
+        let payload = b"hello world";
+        let result = sign_payload(
+            &h.keys_ks,
+            &h.imported_ks,
+            &h.seed_store,
+            &auth,
+            &key.key_id,
+            payload,
+            &SignAlgorithm::EdDSA,
+            "test",
+        )
+        .await
+        .expect("sign_payload should succeed");
+
+        assert_eq!(result.key_id, "sign-test-key");
+        assert_eq!(result.algorithm, SignAlgorithm::EdDSA);
+        // Verify the signature is valid base64url
+        let decoded = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(&result.signature)
+            .expect("signature should be valid base64url");
+        assert!(!decoded.is_empty(), "decoded signature must be non-empty");
+        // Ed25519 signatures are 64 bytes
+        assert_eq!(decoded.len(), 64, "Ed25519 signature should be 64 bytes");
+    }
+}
