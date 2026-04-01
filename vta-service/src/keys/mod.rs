@@ -15,6 +15,34 @@ use crate::store::KeyspaceHandle;
 
 pub use vta_sdk::keys::{KeyOrigin, KeyRecord, KeyStatus, KeyType};
 
+/// Encode raw private key bytes as multibase (Base58BTC) with multicodec prefix.
+/// This makes private key material self-describing and compatible with
+/// `Secret::from_multibase()` in the SSI ecosystem.
+pub(crate) fn encode_private_multibase(key_type: &KeyType, raw_bytes: &[u8]) -> String {
+    let codec: &[u8] = match key_type {
+        KeyType::Ed25519 => &[0x80, 0x26], // ed25519-priv (0x1300)
+        KeyType::X25519 => &[0x82, 0x26],  // x25519-priv (0x1302)
+        KeyType::P256 => &[0x86, 0x26],    // p256-priv (0x1306)
+    };
+    let mut buf = Vec::with_capacity(codec.len() + raw_bytes.len());
+    buf.extend_from_slice(codec);
+    buf.extend_from_slice(raw_bytes);
+    multibase::encode(Base::Base58Btc, &buf)
+}
+
+/// Encode raw public key bytes as multibase (Base58BTC) with multicodec prefix.
+pub(crate) fn encode_public_multibase(key_type: &KeyType, raw_bytes: &[u8]) -> String {
+    let codec: &[u8] = match key_type {
+        KeyType::Ed25519 => &[0xed, 0x01], // ed25519-pub
+        KeyType::X25519 => &[0xec, 0x01],  // x25519-pub
+        KeyType::P256 => &[0x80, 0x24],    // p256-pub (0x1200)
+    };
+    let mut buf = Vec::with_capacity(codec.len() + raw_bytes.len());
+    buf.extend_from_slice(codec);
+    buf.extend_from_slice(raw_bytes);
+    multibase::encode(Base::Base58Btc, &buf)
+}
+
 pub fn store_key(key_id: &str) -> String {
     format!("key:{key_id}")
 }
@@ -83,7 +111,7 @@ pub async fn derive_and_store_did_key(
     let did = format!("did:key:{multibase_pubkey}");
     let key_id = format!("{did}#{multibase_pubkey}");
     let private_key_multibase =
-        multibase::encode(Base::Base58Btc, dk_derived.signing_key.as_bytes());
+        encode_private_multibase(&KeyType::Ed25519, dk_derived.signing_key.as_bytes());
 
     save_key_record(
         keys_ks,
@@ -152,7 +180,7 @@ pub async fn derive_entity_keys(
                 .map_err(|e| format!("Invalid derivation path: {e}"))?,
         )
         .map_err(|e| format!("Key derivation failed: {e}"))?;
-    let signing_priv = multibase::encode(Base::Base58Btc, signing_derived.signing_key.as_bytes());
+    let signing_priv = encode_private_multibase(&KeyType::Ed25519, signing_derived.signing_key.as_bytes());
     let signing_secret =
         Secret::generate_ed25519(None, Some(signing_derived.signing_key.as_bytes()));
     let signing_pub = signing_secret
@@ -167,7 +195,8 @@ pub async fn derive_entity_keys(
                 .map_err(|e| format!("Invalid derivation path: {e}"))?,
         )
         .map_err(|e| format!("Key derivation failed: {e}"))?;
-    let ka_priv = multibase::encode(Base::Base58Btc, ka_derived.signing_key.as_bytes());
+    // Encode as Ed25519 seed — consumers derive X25519 via Secret::to_x25519()
+    let ka_priv = encode_private_multibase(&KeyType::Ed25519, ka_derived.signing_key.as_bytes());
     let ka_secret = Secret::generate_ed25519(None, Some(ka_derived.signing_key.as_bytes()));
     let ka_secret = ka_secret
         .to_x25519()

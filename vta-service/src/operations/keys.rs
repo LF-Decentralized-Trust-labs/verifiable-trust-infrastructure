@@ -22,7 +22,7 @@ use crate::keys::imported;
 use crate::keys::paths::allocate_path;
 use crate::keys::seed_store::SeedStore;
 use crate::keys::seeds::{get_active_seed_id, load_seed_bytes};
-use crate::keys::{self, KeyOrigin, KeyRecord, KeyStatus, KeyType};
+use crate::keys::{self, KeyOrigin, KeyRecord, KeyStatus, KeyType, encode_private_multibase, encode_public_multibase};
 use crate::store::KeyspaceHandle;
 
 pub struct CreateKeyParams {
@@ -468,7 +468,7 @@ pub async fn get_key_secret(
             let mut secret_bytes = imported::load_secret(
                 imported_ks, keys_ks, &seed, key_id, &record.key_type.to_string(),
             ).await?;
-            let priv_mb = multibase::encode(Base::Base58Btc, &secret_bytes);
+            let priv_mb = encode_private_multibase(&record.key_type, &secret_bytes);
             secret_bytes.zeroize();
             (record.public_key.clone(), priv_mb)
         }
@@ -498,8 +498,8 @@ pub async fn get_key_secret(
                     let p256_secret = bip32.derive_p256(&record.derivation_path)?;
                     let public_key = p256_secret.secret_key.public_key();
                     let encoded = public_key.to_encoded_point(true);
-                    let pub_mb = multibase::encode(Base::Base58Btc, encoded.as_bytes());
-                    let priv_mb = multibase::encode(Base::Base58Btc, p256_secret.secret_key.to_bytes());
+                    let pub_mb = encode_public_multibase(&KeyType::P256, encoded.as_bytes());
+                    let priv_mb = encode_private_multibase(&KeyType::P256, &p256_secret.secret_key.to_bytes());
                     (pub_mb, priv_mb)
                 }
             }

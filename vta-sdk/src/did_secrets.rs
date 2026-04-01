@@ -61,11 +61,15 @@ pub struct SecretEntry {
     pub key_id: String,
     /// Key type — determines how to reconstruct the secret.
     pub key_type: KeyType,
-    /// Multibase-encoded (Base58BTC) private key seed bytes.
+    /// Multibase-encoded (Base58BTC) private key with multicodec prefix.
     ///
-    /// For **Ed25519** keys, these are the 32-byte Ed25519 seed.
-    /// For **X25519** keys, these are the 32-byte Ed25519 seed that was
-    /// used to derive the X25519 key via scalar conversion.
+    /// The multicodec prefix identifies the key type:
+    /// - Ed25519 private: `0x1300` — 32-byte Ed25519 seed
+    /// - X25519 private: `0x1302` — 32-byte X25519 scalar (from `get_key_secret`)
+    ///   or Ed25519 seed for conversion (from provisioning)
+    /// - P256 private: `0x1306` — 32-byte P-256 scalar
+    ///
+    /// Compatible with `Secret::from_multibase()` for direct use in DIDComm.
     pub private_key_multibase: String,
 }
 
