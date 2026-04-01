@@ -1125,3 +1125,55 @@ async fn non_admin_cannot_update_context_did() {
         .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
 }
+
+// ── Reader role tests ──────────────────────────────────────────────
+
+#[tokio::test]
+async fn reader_can_list_keys() {
+    let (app, ctx) = TestApp::new().await;
+    let reader_token = ctx
+        .auth_token("did:key:z6MkReader", "reader", vec!["test-ctx".into()])
+        .await;
+
+    let (status, _) = app
+        .request(get_auth("/keys?context_id=test-ctx", &reader_token))
+        .await;
+    assert_eq!(status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn reader_cannot_sign() {
+    let (app, ctx) = TestApp::new().await;
+    let reader_token = ctx
+        .auth_token("did:key:z6MkReader", "reader", vec!["test-ctx".into()])
+        .await;
+
+    let (status, _) = app
+        .request(post_auth(
+            "/keys/test-key/sign",
+            &reader_token,
+            json!({"payload": "aGVsbG8", "algorithm": "EdDSA"}),
+        ))
+        .await;
+    assert!(
+        status == StatusCode::FORBIDDEN || status == StatusCode::UNPROCESSABLE_ENTITY,
+        "expected 403 or 422, got {status}"
+    );
+}
+
+#[tokio::test]
+async fn reader_cannot_create_key() {
+    let (app, ctx) = TestApp::new().await;
+    let reader_token = ctx
+        .auth_token("did:key:z6MkReader", "reader", vec!["test-ctx".into()])
+        .await;
+
+    let (status, _) = app
+        .request(post_auth(
+            "/keys",
+            &reader_token,
+            json!({"key_type": "Ed25519", "context_id": "test-ctx"}),
+        ))
+        .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+}

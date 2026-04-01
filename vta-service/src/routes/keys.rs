@@ -202,13 +202,14 @@ pub struct SignRequest {
     pub algorithm: SignAlgorithm,
 }
 
-/// POST /keys/{key_id}/sign — sign a base64url payload with the specified key. Auth: any authenticated user.
+/// POST /keys/{key_id}/sign — sign a base64url payload with the specified key. Auth: Application or higher.
 pub async fn sign_with_key(
     auth: AuthClaims,
     State(state): State<AppState>,
     Path(key_id): Path<String>,
     Json(req): Json<SignRequest>,
 ) -> Result<Json<SignResultBody>, AppError> {
+    auth.require_write()?;
     use base64::Engine;
     let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD
         .decode(&req.payload)

@@ -25,10 +25,11 @@ pub fn format_role(role: &str, contexts: &[String]) -> String {
 
 pub fn validate_role(role: &str) -> Result<(), Box<dyn std::error::Error>> {
     match role {
-        "admin" | "initiator" | "application" => Ok(()),
-        _ => {
-            Err(format!("invalid role '{role}', expected: admin, initiator, or application").into())
-        }
+        "admin" | "initiator" | "application" | "reader" => Ok(()),
+        _ => Err(format!(
+            "invalid role '{role}', expected: admin, initiator, application, or reader"
+        )
+        .into()),
     }
 }
 
@@ -239,6 +240,11 @@ mod tests {
     #[test]
     fn test_validate_role_application_ok() {
         assert!(validate_role("application").is_ok());
+    }
+
+    #[test]
+    fn test_validate_role_reader_ok() {
+        assert!(validate_role("reader").is_ok());
     }
 
     #[test]

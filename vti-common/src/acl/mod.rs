@@ -11,14 +11,16 @@ use crate::store::KeyspaceHandle;
 /// Hierarchy (most to least privileged):
 /// - **Admin** — full management access, can assign any role
 /// - **Initiator** — can manage ACL entries and application contexts
-/// - **Application** — standard API access within allowed contexts
-/// - **Monitor** — read-only access to metrics and health endpoints
+/// - **Application** — standard API access (sign, cache write) within allowed contexts
+/// - **Reader** — read-only access to keys, contexts, DIDs within allowed contexts
+/// - **Monitor** — infrastructure-only: metrics and health endpoints
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub enum Role {
     Admin,
     Initiator,
     Application,
+    Reader,
     Monitor,
 }
 
@@ -28,6 +30,7 @@ impl fmt::Display for Role {
             Role::Admin => write!(f, "admin"),
             Role::Initiator => write!(f, "initiator"),
             Role::Application => write!(f, "application"),
+            Role::Reader => write!(f, "reader"),
             Role::Monitor => write!(f, "monitor"),
         }
     }
@@ -40,6 +43,7 @@ impl Role {
             "admin" => Ok(Role::Admin),
             "initiator" => Ok(Role::Initiator),
             "application" => Ok(Role::Application),
+            "reader" => Ok(Role::Reader),
             "monitor" => Ok(Role::Monitor),
             _ => Err(AppError::Internal(format!("unknown role: {s}"))),
         }
@@ -114,9 +118,12 @@ pub async fn check_acl_full(
 /// Validate that the caller is allowed to assign the given role.
 ///
 /// - Only Admins can assign the Admin role.
-/// - Monitor and Application roles cannot assign any role.
+/// - Reader, Application, and Monitor roles cannot assign any role.
 pub fn validate_role_assignment(caller: &AuthClaims, target_role: &Role) -> Result<(), AppError> {
-    if caller.role == Role::Monitor || caller.role == Role::Application {
+    if matches!(
+        caller.role,
+        Role::Monitor | Role::Reader | Role::Application
+    ) {
         return Err(AppError::Forbidden(
             "insufficient role to assign roles".into(),
         ));

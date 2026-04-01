@@ -1,7 +1,7 @@
 use axum::Json;
 use axum::extract::State;
 
-use crate::auth::AuthClaims;
+use crate::auth::{AuthClaims, SuperAdminAuth};
 use crate::error::AppError;
 use crate::operations;
 use crate::server::AppState;
@@ -10,9 +10,9 @@ use vta_sdk::protocols::backup_management::types::{
     BackupEnvelope, ExportRequest, ImportRequest, ImportResult,
 };
 
-/// POST /backup/export — export VTA state to an encrypted backup.
+/// POST /backup/export — export VTA state to an encrypted backup. Auth: Super Admin.
 pub async fn export(
-    auth: AuthClaims,
+    SuperAdminAuth(auth): SuperAdminAuth,
     State(state): State<AppState>,
     Json(req): Json<ExportRequest>,
 ) -> Result<Json<BackupEnvelope>, AppError> {

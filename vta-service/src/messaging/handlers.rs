@@ -207,6 +207,7 @@ pub async fn handle_sign_request(
     let auth = auth_from_message(&message, &state.acl_ks)
         .await
         .map_err(handler_err)?;
+    auth.require_write().map_err(handler_err)?;
     let body: vta_sdk::protocols::key_management::sign::SignRequestBody =
         serde_json::from_value(message.body).map_err(handler_err)?;
 
@@ -285,6 +286,7 @@ pub async fn handle_create_context(
     let auth = auth_from_message(&message, &state.acl_ks)
         .await
         .map_err(handler_err)?;
+    auth.require_super_admin().map_err(handler_err)?;
     let body: vta_sdk::protocols::context_management::create::CreateContextBody =
         serde_json::from_value(message.body).map_err(handler_err)?;
     let result = operations::contexts::create_context(
@@ -339,6 +341,7 @@ pub async fn handle_update_context(
     let auth = auth_from_message(&message, &state.acl_ks)
         .await
         .map_err(handler_err)?;
+    auth.require_super_admin().map_err(handler_err)?;
     let body: vta_sdk::protocols::context_management::update::UpdateContextBody =
         serde_json::from_value(message.body).map_err(handler_err)?;
     let result = operations::contexts::update_context(
@@ -365,6 +368,7 @@ pub async fn handle_update_context_did(
     let auth = auth_from_message(&message, &state.acl_ks)
         .await
         .map_err(handler_err)?;
+    auth.require_admin().map_err(handler_err)?;
     let body: vta_sdk::protocols::context_management::update_did::UpdateContextDidBody =
         serde_json::from_value(message.body).map_err(handler_err)?;
     let result = operations::contexts::update_context_did(
@@ -387,6 +391,7 @@ pub async fn handle_preview_delete_context(
     let auth = auth_from_message(&message, &state.acl_ks)
         .await
         .map_err(handler_err)?;
+    auth.require_super_admin().map_err(handler_err)?;
     let body: vta_sdk::protocols::context_management::delete::DeleteContextPreviewBody =
         serde_json::from_value(message.body).map_err(handler_err)?;
     let result = operations::contexts::preview_delete_context(
@@ -412,6 +417,7 @@ pub async fn handle_delete_context(
     let auth = auth_from_message(&message, &state.acl_ks)
         .await
         .map_err(handler_err)?;
+    auth.require_super_admin().map_err(handler_err)?;
     let body: vta_sdk::protocols::context_management::delete::DeleteContextBody =
         serde_json::from_value(message.body).map_err(handler_err)?;
     let ks = operations::Keyspaces::from_vta_state(&state);
@@ -433,6 +439,7 @@ pub async fn handle_create_acl(
     let auth = auth_from_message(&message, &state.acl_ks)
         .await
         .map_err(handler_err)?;
+    auth.require_manage().map_err(handler_err)?;
     let body: vta_sdk::protocols::acl_management::create::CreateAclBody =
         serde_json::from_value(message.body).map_err(handler_err)?;
     let role = Role::parse(&body.role).map_err(handler_err)?;
@@ -459,6 +466,7 @@ pub async fn handle_get_acl(
     let auth = auth_from_message(&message, &state.acl_ks)
         .await
         .map_err(handler_err)?;
+    auth.require_manage().map_err(handler_err)?;
     let body: vta_sdk::protocols::acl_management::get::GetAclBody =
         serde_json::from_value(message.body).map_err(handler_err)?;
     let result = operations::acl::get_acl(&state.acl_ks, &auth, &body.did, "didcomm")
@@ -475,6 +483,7 @@ pub async fn handle_list_acl(
     let auth = auth_from_message(&message, &state.acl_ks)
         .await
         .map_err(handler_err)?;
+    auth.require_manage().map_err(handler_err)?;
     let body: vta_sdk::protocols::acl_management::list::ListAclBody =
         serde_json::from_value(message.body).map_err(handler_err)?;
     let result =
@@ -492,6 +501,7 @@ pub async fn handle_update_acl(
     let auth = auth_from_message(&message, &state.acl_ks)
         .await
         .map_err(handler_err)?;
+    auth.require_manage().map_err(handler_err)?;
     let body: vta_sdk::protocols::acl_management::update::UpdateAclBody =
         serde_json::from_value(message.body).map_err(handler_err)?;
     let role = match body.role {
@@ -523,6 +533,7 @@ pub async fn handle_delete_acl(
     let auth = auth_from_message(&message, &state.acl_ks)
         .await
         .map_err(handler_err)?;
+    auth.require_manage().map_err(handler_err)?;
     let body: vta_sdk::protocols::acl_management::delete::DeleteAclBody =
         serde_json::from_value(message.body).map_err(handler_err)?;
     let result =
@@ -544,6 +555,7 @@ pub async fn handle_list_logs(
     let auth = auth_from_message(&message, &state.acl_ks)
         .await
         .map_err(handler_err)?;
+    auth.require_admin().map_err(handler_err)?;
     let body: vta_sdk::protocols::audit_management::list::ListAuditLogsBody =
         serde_json::from_value(message.body).map_err(handler_err)?;
     let result = operations::audit::list_audit_logs(&state.audit_ks, &auth, &body, "didcomm")
@@ -560,6 +572,7 @@ pub async fn handle_get_retention(
     let auth = auth_from_message(&message, &state.acl_ks)
         .await
         .map_err(handler_err)?;
+    auth.require_admin().map_err(handler_err)?;
     let result = operations::audit::get_retention(&state.config, &auth, "didcomm")
         .await
         .map_err(handler_err)?;
@@ -574,7 +587,7 @@ pub async fn handle_update_retention(
     let auth = auth_from_message(&message, &state.acl_ks)
         .await
         .map_err(handler_err)?;
-    auth.require_admin().map_err(handler_err)?;
+    auth.require_super_admin().map_err(handler_err)?;
     let body: vta_sdk::protocols::audit_management::retention::UpdateRetentionBody =
         serde_json::from_value(message.body).map_err(handler_err)?;
     let result = operations::audit::update_retention(
@@ -615,6 +628,7 @@ pub async fn handle_update_config(
     let auth = auth_from_message(&message, &state.acl_ks)
         .await
         .map_err(handler_err)?;
+    auth.require_super_admin().map_err(handler_err)?;
     let body: vta_sdk::protocols::vta_management::update_config::UpdateConfigBody =
         serde_json::from_value(message.body).map_err(handler_err)?;
     let result = operations::config::update_config(
@@ -644,6 +658,7 @@ pub async fn handle_generate_credentials(
     let auth = auth_from_message(&message, &state.acl_ks)
         .await
         .map_err(handler_err)?;
+    auth.require_manage().map_err(handler_err)?;
     let body: vta_sdk::protocols::credential_management::generate::GenerateCredentialsBody =
         serde_json::from_value(message.body).map_err(handler_err)?;
     let role = Role::parse(&body.role).map_err(handler_err)?;
@@ -1006,6 +1021,7 @@ pub async fn handle_backup_export(
     let auth = auth_from_message(&message, &state.acl_ks)
         .await
         .map_err(handler_err)?;
+    auth.require_super_admin().map_err(handler_err)?;
     let body: vta_sdk::protocols::backup_management::types::ExportRequest =
         serde_json::from_value(message.body).map_err(handler_err)?;
     let config = state.config.read().await;

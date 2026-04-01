@@ -112,6 +112,30 @@ impl AuthClaims {
         }
     }
 
+    /// Require at least Reader role (all roles except Monitor).
+    ///
+    /// Use for read-only endpoints that access business data (keys, contexts, DIDs).
+    /// Monitor can only see metrics and health.
+    pub fn require_read(&self) -> Result<(), AppError> {
+        if self.role == Role::Monitor {
+            return Err(AppError::Forbidden("reader role or higher required".into()));
+        }
+        Ok(())
+    }
+
+    /// Require at least Application role (Admin, Initiator, or Application).
+    ///
+    /// Use for write operations: signing, cache writes, and other actions that
+    /// produce artifacts or modify state.
+    pub fn require_write(&self) -> Result<(), AppError> {
+        if matches!(self.role, Role::Admin | Role::Initiator | Role::Application) {
+            return Ok(());
+        }
+        Err(AppError::Forbidden(
+            "application role or higher required".into(),
+        ))
+    }
+
     /// Require the caller to have Admin role.
     pub fn require_admin(&self) -> Result<(), AppError> {
         if self.role == Role::Admin {
@@ -214,5 +238,34 @@ impl<S: AuthState> FromRequestParts<S> for SuperAdminAuth {
         }
 
         Ok(SuperAdminAuth(claims))
+    }
+}
+
+/// Extractor that requires the caller to have at least Application role
+/// (Admin, Initiator, or Application).
+///
+/// Use on endpoints that perform write operations — signing, cache writes,
+/// and other actions that produce artifacts or modify state:
+/// ```ignore
+/// async fn handler(auth: WriteAuth, ...) { }
+/// ```
+#[derive(Debug, Clone)]
+pub struct WriteAuth(pub AuthClaims);
+
+impl<S: AuthState> FromRequestParts<S> for WriteAuth {
+    type Rejection = AppError;
+
+    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
+        let claims = AuthClaims::from_request_parts(parts, state).await?;
+
+        match claims.role {
+            Role::Admin | Role::Initiator | Role::Application => Ok(WriteAuth(claims)),
+            _ => {
+                warn!(did = %claims.did, role = %claims.role, "auth rejected: application role or higher required");
+                Err(AppError::Forbidden(
+                    "application role or higher required".into(),
+                ))
+            }
+        }
     }
 }
