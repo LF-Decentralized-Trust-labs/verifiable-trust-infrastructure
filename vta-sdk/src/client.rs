@@ -387,6 +387,15 @@ pub struct CreateDidWebvhRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub additional_services: Option<Vec<serde_json::Value>>,
     pub pre_rotation_count: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub did_document: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub did_log: Option<String>,
+    pub set_primary: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub signing_key_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ka_key_id: Option<String>,
 }
 
 // ── WebVH DID log types ──────────────────────────────────────────────
@@ -792,6 +801,26 @@ impl VtaClient {
 
 #[cfg(feature = "client")]
 impl VtaClient {
+    // ── Discovery ──────────────────────────────────────────────────
+
+    /// Discover VTA capabilities: enabled features, services, WebVH servers,
+    /// and supported DID creation modes.
+    ///
+    /// Requires authentication — any role (including Reader) can access.
+    pub async fn capabilities(
+        &self,
+    ) -> Result<crate::protocols::discovery::CapabilitiesResponse, VtaError> {
+        use crate::protocols::discovery;
+        self.rpc(
+            discovery::DISCOVER_CAPABILITIES,
+            serde_json::json!({}),
+            discovery::DISCOVER_CAPABILITIES_RESULT,
+            30,
+            |c, url| c.get(format!("{url}/capabilities")),
+        )
+        .await
+    }
+
     // ── VTA Management ──────────────────────────────────────────────
 
     /// Trigger a soft restart of the VTA.

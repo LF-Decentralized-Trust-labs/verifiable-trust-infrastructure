@@ -1,16 +1,13 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use affinidi_tdk::secrets_resolver::secrets::Secret;
+use affinidi_did_resolver_cache_sdk::{DIDCacheClient, config::DIDCacheConfigBuilder};
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD as BASE64;
 use bip39::Mnemonic;
 use chrono::Utc;
 use dialoguer::{Confirm, Input, MultiSelect, Select};
-use didwebvh_rs::create::{CreateDIDConfig, create_did};
-use didwebvh_rs::parameters::Parameters as WebVHParameters;
 use didwebvh_rs::url::WebVHURL;
-use ed25519_dalek_bip32::{DerivationPath, ExtendedSigningKey};
 use rand::Rng;
 use serde_json::json;
 use url::Url;
@@ -23,11 +20,13 @@ use crate::config::{
     ServicesConfig, StoreConfig,
 };
 use crate::contexts::{self, ContextRecord, store_context};
-use crate::keys::paths::allocate_path;
 use crate::keys::seed_store::create_seed_store;
 use crate::keys::seeds::{SeedRecord, save_seed_record, set_active_seed_id};
-use crate::keys::{self, DerivedEntityKeys, KeyType as SdkKeyType, PreRotationKeyData};
+use crate::keys::{self, KeyType as SdkKeyType};
+use crate::operations;
+use crate::operations::did_webvh::CreateDidWebvhParams;
 use crate::store::{KeyspaceHandle, Store};
+use crate::webvh_cli::cli_super_admin;
 
 /// Create a seed application context and store it.
 async fn create_seed_context(
@@ -39,7 +38,7 @@ async fn create_seed_context(
 }
 
 /// Derive an admin did:key Ed25519 key from the BIP-32 seed using a
-/// counter-allocated path under `base`, store it as a [`KeyRecord`],
+/// counter-allocated path under `base`, store it as a `KeyRecord`,
 /// and return `(did, private_key_multibase)`.
 ///
 /// The key_id uses the standard did:key fragment format: `{did}#{multibase_pubkey}`.
@@ -477,7 +476,9 @@ pub async fn run_setup_wizard(
         data_dir: PathBuf::from(&data_dir),
     })?;
     let keys_ks = store.keyspace("keys")?;
+    let imported_ks = store.keyspace("imported_secrets")?;
     let contexts_ks = store.keyspace("contexts")?;
+    let webvh_ks = store.keyspace("webvh")?;
 
     // Create seed application contexts
     let mut vta_ctx = create_seed_context(&contexts_ks, "vta", "Verifiable Trust Agent").await?;
@@ -580,20 +581,57 @@ pub async fn run_setup_wizard(
     rand::rng().fill_bytes(&mut jwt_key_bytes);
     let jwt_signing_key = BASE64.encode(jwt_key_bytes);
 
+    // Create a temporary AppConfig for the seed store (config hasn't been saved yet)
+    let wizard_config = AppConfig {
+        vta_did: None,
+        vta_name: None,
+        public_url: public_url.clone(),
+        server: ServerConfig {
+            host: host.clone(),
+            port,
+        },
+        log: LogConfig::default(),
+        store: StoreConfig {
+            data_dir: PathBuf::from(&data_dir),
+        },
+        services: ServicesConfig::default(),
+        messaging: None,
+        auth: AuthConfig::default(),
+        audit: Default::default(),
+        secrets: secrets_config.clone(),
+        #[cfg(feature = "tee")]
+        tee: Default::default(),
+        resolver_url: None,
+        config_path: config_path.clone(),
+    };
+    let wizard_seed_store: Arc<dyn crate::keys::seed_store::SeedStore> =
+        Arc::from(create_seed_store(&wizard_config).map_err(|e| format!("{e}"))?);
+
     // 12. DIDComm messaging
     let messaging = if enable_didcomm {
-        configure_messaging(&seed, &keys_ks, &contexts_ks).await?
+        configure_messaging(
+            &keys_ks,
+            &imported_ks,
+            &contexts_ks,
+            &webvh_ks,
+            &*wizard_seed_store,
+            &wizard_config,
+        )
+        .await?
     } else {
         None
     };
 
     // 13. VTA DID (after mediator so we can embed it as a service endpoint)
     let vta_did = create_vta_did(
-        &seed,
         messaging.as_ref(),
         &public_url,
-        &vta_ctx.base_path,
         &keys_ks,
+        &imported_ks,
+        &contexts_ks,
+        &webvh_ks,
+        &*wizard_seed_store,
+        &wizard_config,
     )
     .await?;
 
@@ -607,8 +645,19 @@ pub async fn run_setup_wizard(
     }
 
     // 14. Bootstrap admin DID in ACL (optional)
-    let admin_did = if let Some((admin_did, _credential)) =
-        create_admin_did(&seed, &vta_did, &public_url, &vta_ctx.base_path, &keys_ks).await?
+    let admin_did = if let Some((admin_did, _credential)) = create_admin_did(
+        &seed,
+        &vta_did,
+        &public_url,
+        &vta_ctx.base_path,
+        &keys_ks,
+        &imported_ks,
+        &contexts_ks,
+        &webvh_ks,
+        &*wizard_seed_store,
+        &wizard_config,
+    )
+    .await?
     {
         let acl_ks = store.keyspace("acl")?;
         let admin_entry = AclEntry {
@@ -743,17 +792,266 @@ pub async fn run_setup_wizard(
     Ok(())
 }
 
+// ---------------------------------------------------------------------------
+// Shared DID creation helper
+// ---------------------------------------------------------------------------
+
+/// Interactive did:webvh creation using the operations layer.
+///
+/// Prompts for URL, offers simple/advanced mode, builds params, calls
+/// `operations::create_did_webvh()`, saves did.jsonl, optionally exports secrets.
+///
+/// `additional_services` lets callers inject custom services (e.g. mediator endpoints).
+#[allow(clippy::too_many_arguments)]
+async fn build_wizard_did(
+    label: &str,
+    context_id: &str,
+    additional_services: Option<Vec<serde_json::Value>>,
+    add_mediator_service: bool,
+    keys_ks: &KeyspaceHandle,
+    imported_ks: &KeyspaceHandle,
+    contexts_ks: &KeyspaceHandle,
+    webvh_ks: &KeyspaceHandle,
+    seed_store: &dyn crate::keys::seed_store::SeedStore,
+    config: &AppConfig,
+) -> Result<String, Box<dyn std::error::Error>> {
+    // Prompt for URL
+    let webvh_url = prompt_webvh_url(label)?;
+    let url_str = webvh_url
+        .get_http_url(None)
+        .map_err(|e| format!("{e}"))?
+        .to_string();
+
+    // Simple vs advanced toggle
+    let mode_options = &[
+        "Simple — VTA creates keys and document (recommended)",
+        "Advanced — provide your own document, keys, or pre-signed log",
+    ];
+    let mode_choice = Select::new()
+        .with_prompt("DID creation mode")
+        .items(mode_options)
+        .default(0)
+        .interact()?;
+
+    let (did_document, did_log, signing_key_id, ka_key_id) = if mode_choice == 1 {
+        // Advanced mode
+        let adv_options = &[
+            "Provide a DID Document template (VTA signs it)",
+            "Import a pre-signed did.jsonl",
+            "Use existing imported keys",
+        ];
+        let adv_choice = Select::new()
+            .with_prompt("Advanced option")
+            .items(adv_options)
+            .default(0)
+            .interact()?;
+
+        match adv_choice {
+            0 => {
+                // Template mode
+                let path: String = Input::new()
+                    .with_prompt("Path to DID Document JSON file")
+                    .interact_text()?;
+                let content = std::fs::read_to_string(&path)
+                    .map_err(|e| format!("failed to read {path}: {e}"))?;
+                let doc: serde_json::Value = serde_json::from_str(&content)
+                    .map_err(|e| format!("invalid JSON in {path}: {e}"))?;
+                (Some(doc), None, None, None)
+            }
+            1 => {
+                // Final mode
+                let path: String = Input::new()
+                    .with_prompt("Path to did.jsonl file")
+                    .interact_text()?;
+                let log = std::fs::read_to_string(&path)
+                    .map_err(|e| format!("failed to read {path}: {e}"))?;
+                (None, Some(log), None, None)
+            }
+            _ => {
+                // User-specified keys
+                let signing: String = Input::new()
+                    .with_prompt("Signing key ID (Ed25519)")
+                    .interact_text()?;
+                let ka: String = Input::new()
+                    .with_prompt("Key-agreement key ID (X25519, leave empty to skip)")
+                    .allow_empty(true)
+                    .interact_text()?;
+                let ka_id = if ka.is_empty() { None } else { Some(ka) };
+                (None, None, Some(signing), ka_id)
+            }
+        }
+    } else {
+        (None, None, None, None)
+    };
+
+    // Portability (skip for final mode — document is already signed)
+    let portable = if did_log.is_none() {
+        Confirm::new()
+            .with_prompt("Make this DID portable (can move to a different domain later)?")
+            .default(true)
+            .interact()?
+    } else {
+        true
+    };
+
+    // Pre-rotation count (skip for final mode)
+    let pre_rotation_count = if did_log.is_none() {
+        eprintln!();
+        eprintln!("  \x1b[2mPre-rotation protects against key compromise by publishing hashes");
+        eprintln!("  of future keys now. Recommended: 1-3 keys.\x1b[0m");
+        Input::new()
+            .with_prompt("Number of pre-rotation keys")
+            .default(1u32)
+            .interact_text()?
+    } else {
+        0
+    };
+
+    let auth = cli_super_admin();
+    let did_resolver = DIDCacheClient::new(DIDCacheConfigBuilder::default().build()).await?;
+    let no_bridge: Arc<tokio::sync::RwLock<Option<crate::didcomm_bridge::DIDCommBridge>>> =
+        Arc::new(tokio::sync::RwLock::new(None));
+
+    let params = CreateDidWebvhParams {
+        context_id: context_id.to_string(),
+        server_id: None,
+        url: Some(url_str.clone()),
+        path: None,
+        label: Some(label.to_string()),
+        portable,
+        add_mediator_service,
+        additional_services,
+        pre_rotation_count,
+        did_document,
+        did_log,
+        set_primary: true,
+        signing_key_id,
+        ka_key_id,
+    };
+
+    let result = operations::did_webvh::create_did_webvh(
+        keys_ks,
+        imported_ks,
+        contexts_ks,
+        webvh_ks,
+        seed_store,
+        config,
+        &auth,
+        params,
+        &did_resolver,
+        &no_bridge,
+        "setup",
+    )
+    .await
+    .map_err(|e| format!("{e}"))?;
+
+    let final_did = result.did.clone();
+    eprintln!("\x1b[1;32mCreated DID:\x1b[0m {final_did}");
+
+    // Save did.jsonl (serverless mode returns it in the response)
+    if let Some(ref log_entry) = result.log_entry {
+        let default_file = format!("{label}-did.jsonl");
+        let did_file: String = Input::new()
+            .with_prompt("Save DID log to file")
+            .default(default_file)
+            .interact_text()?;
+
+        std::fs::write(&did_file, log_entry)?;
+        eprintln!("  DID log saved to: {did_file}");
+        eprintln!();
+        eprintln!("  \x1b[2mTo self-host this DID, upload {did_file} to:");
+        eprintln!("  {url_str}\x1b[0m");
+    }
+
+    // Optionally export secrets bundle
+    if !result.signing_key_id.is_empty()
+        && Confirm::new()
+            .with_prompt("Export DID secrets bundle?")
+            .default(false)
+            .interact()?
+    {
+        // Use a temporary config to create a seed store for secret fetching
+        let temp_seed_store: Arc<dyn crate::keys::seed_store::SeedStore> = Arc::from(
+            crate::keys::seed_store::create_seed_store(config).map_err(|e| format!("{e}"))?,
+        );
+        let audit_ks = keys_ks; // Reuse keys_ks as dummy audit (no audit during setup)
+
+        let signing_secret = operations::keys::get_key_secret(
+            keys_ks,
+            imported_ks,
+            &temp_seed_store,
+            audit_ks,
+            &auth,
+            &result.signing_key_id,
+            "setup",
+        )
+        .await
+        .map_err(|e| format!("failed to fetch signing key: {e}"))?;
+
+        let mut secrets = vec![SecretEntry {
+            key_id: result.signing_key_id.clone(),
+            key_type: SdkKeyType::Ed25519,
+            private_key_multibase: signing_secret.private_key_multibase,
+        }];
+
+        if !result.ka_key_id.is_empty() {
+            let ka_secret = operations::keys::get_key_secret(
+                keys_ks,
+                imported_ks,
+                &temp_seed_store,
+                audit_ks,
+                &auth,
+                &result.ka_key_id,
+                "setup",
+            )
+            .await
+            .map_err(|e| format!("failed to fetch KA key: {e}"))?;
+
+            secrets.push(SecretEntry {
+                key_id: result.ka_key_id.clone(),
+                key_type: SdkKeyType::X25519,
+                private_key_multibase: ka_secret.private_key_multibase,
+            });
+        }
+
+        let bundle = DidSecretsBundle {
+            did: final_did.clone(),
+            secrets,
+        };
+        let encoded = bundle.encode().map_err(|e| format!("{e}"))?;
+        eprintln!();
+        eprintln!("\x1b[1;33m╔══════════════════════════════════════════════════════════╗");
+        eprintln!("║  WARNING: The secrets bundle contains private keys.      ║");
+        eprintln!("║  Store it securely and do not share it publicly.         ║");
+        eprintln!("╚══════════════════════════════════════════════════════════╝\x1b[0m");
+        eprintln!();
+        println!("{encoded}");
+        eprintln!();
+    }
+
+    Ok(final_did)
+}
+
+// ---------------------------------------------------------------------------
+// DID creation steps
+// ---------------------------------------------------------------------------
+
 /// Guide the user through creating or entering an admin DID.
 ///
 /// Returns `Some((did, Option<credential_string>))` or `None` if skipped.
-/// The credential string is only produced for the `did:key` option
-/// (base64-encoded JSON bundle).
+/// The credential string is only produced for the `did:key` option.
+#[allow(clippy::too_many_arguments)]
 async fn create_admin_did(
     seed: &[u8],
     vta_did: &Option<String>,
     public_url: &Option<String>,
     vta_base_path: &str,
     keys_ks: &KeyspaceHandle,
+    imported_ks: &KeyspaceHandle,
+    contexts_ks: &KeyspaceHandle,
+    webvh_ks: &KeyspaceHandle,
+    seed_store: &dyn crate::keys::seed_store::SeedStore,
+    config: &AppConfig,
 ) -> Result<Option<(String, Option<String>)>, Box<dyn std::error::Error>> {
     let admin_options = &[
         "Generate a new did:key (Ed25519)",
@@ -809,47 +1107,24 @@ async fn create_admin_did(
             Ok(Some((did, Some(credential))))
         }
         1 => {
-            let mut derived = keys::derive_entity_keys(
-                seed,
-                vta_base_path,
-                "Admin signing key",
-                "Admin key-agreement key",
-                keys_ks,
-            )
-            .await?;
-
-            let did = create_webvh_did(
-                &mut derived,
+            let did = build_wizard_did(
                 "admin",
-                None,
-                None,
-                None,
-                seed,
-                vta_base_path,
                 "vta",
+                None,
+                false,
                 keys_ks,
+                imported_ks,
+                contexts_ks,
+                webvh_ks,
+                seed_store,
+                config,
             )
             .await?;
             Ok(Some((did, None)))
         }
         2 => {
-            // Enter existing DID
+            // Enter existing DID — just record it, no local key derivation
             let did: String = Input::new().with_prompt("Admin DID").interact_text()?;
-
-            // Store admin entity keys with the imported DID
-            let derived = keys::derive_entity_keys(
-                seed,
-                vta_base_path,
-                "Admin signing key",
-                "Admin key-agreement key",
-                keys_ks,
-            )
-            .await?;
-            keys::save_entity_key_records(&did, &derived, keys_ks, Some("vta"), Some(0)).await?;
-
-            // Also derive and store the did:key
-            let _ = derive_and_store_did_key(seed, vta_base_path, "vta", keys_ks, Some(0)).await?;
-
             Ok(Some((did, None)))
         }
         _ => Ok(None),
@@ -858,16 +1133,19 @@ async fn create_admin_did(
 
 /// Guide the user through creating (or entering) a did:webvh DID for the VTA.
 ///
-/// The mediator is added as a DIDCommMessaging service endpoint in the VTA's
-/// DID document.
+/// Uses the operations layer via `build_wizard_did()` with simple/advanced toggle.
 ///
 /// Returns `Some(did_string)` or `None` if skipped.
+#[allow(clippy::too_many_arguments)]
 async fn create_vta_did(
-    seed: &[u8],
     messaging: Option<&MessagingConfig>,
     public_url: &Option<String>,
-    vta_base_path: &str,
     keys_ks: &KeyspaceHandle,
+    imported_ks: &KeyspaceHandle,
+    contexts_ks: &KeyspaceHandle,
+    webvh_ks: &KeyspaceHandle,
+    seed_store: &dyn crate::keys::seed_store::SeedStore,
+    config: &AppConfig,
 ) -> Result<Option<String>, Box<dyn std::error::Error>> {
     let did_options = &[
         "Create a new did:webvh DID",
@@ -882,41 +1160,42 @@ async fn create_vta_did(
 
     match choice {
         0 => {
-            let mut derived = keys::derive_entity_keys(
-                seed,
-                vta_base_path,
-                "VTA signing key",
-                "VTA key-agreement key",
-                keys_ks,
-            )
-            .await?;
+            // Build additional services based on config
+            let mut additional_services = Vec::new();
+            let add_mediator = messaging.is_some();
 
-            let did = create_webvh_did(
-                &mut derived,
+            // Add VTA REST service endpoint if public URL is configured
+            if let Some(url) = public_url {
+                additional_services.push(json!({
+                    "id": "{DID}#vta-rest",
+                    "type": "VTARest",
+                    "serviceEndpoint": url
+                }));
+            }
+
+            let services = if additional_services.is_empty() {
+                None
+            } else {
+                Some(additional_services)
+            };
+
+            let did = build_wizard_did(
                 "VTA",
-                None,
-                messaging,
-                public_url.as_deref(),
-                seed,
-                vta_base_path,
                 "vta",
+                services,
+                add_mediator,
                 keys_ks,
+                imported_ks,
+                contexts_ks,
+                webvh_ks,
+                seed_store,
+                config,
             )
             .await?;
             Ok(Some(did))
         }
         1 => {
             let did: String = Input::new().with_prompt("VTA DID").interact_text()?;
-
-            let derived = keys::derive_entity_keys(
-                seed,
-                vta_base_path,
-                "VTA signing key",
-                "VTA key-agreement key",
-                keys_ks,
-            )
-            .await?;
-            keys::save_entity_key_records(&did, &derived, keys_ks, Some("vta"), Some(0)).await?;
 
             Ok(Some(did))
         }
@@ -932,10 +1211,14 @@ async fn create_vta_did(
 /// 3. Skip DIDComm messaging entirely
 ///
 /// Returns `None` when the user chooses to skip.
+#[allow(clippy::too_many_arguments)]
 async fn configure_messaging(
-    seed: &[u8],
     keys_ks: &KeyspaceHandle,
+    imported_ks: &KeyspaceHandle,
     contexts_ks: &KeyspaceHandle,
+    webvh_ks: &KeyspaceHandle,
+    seed_store: &dyn crate::keys::seed_store::SeedStore,
+    config: &AppConfig,
 ) -> Result<Option<MessagingConfig>, Box<dyn std::error::Error>> {
     let options = &[
         "Use an existing mediator DID",
@@ -951,7 +1234,16 @@ async fn configure_messaging(
     match choice {
         // Existing DID — no local keys or context needed
         0 => {
-            let did: String = Input::new().with_prompt("Mediator DID").interact_text()?;
+            let did: String = Input::new()
+                .with_prompt("Mediator DID")
+                .validate_with(|input: &String| -> Result<(), String> {
+                    if input.starts_with("did:") {
+                        Ok(())
+                    } else {
+                        Err("DID must start with 'did:' (e.g. did:webvh:... or did:key:...)".into())
+                    }
+                })
+                .interact_text()?;
 
             Ok(Some(MessagingConfig {
                 mediator_url: String::new(),
@@ -963,37 +1255,43 @@ async fn configure_messaging(
         1 => {
             let mediator_url: String = Input::new().with_prompt("Mediator URL").interact_text()?;
 
-            let mut med_ctx =
+            // Create mediator context
+            let _med_ctx =
                 create_seed_context(contexts_ks, "mediator", "DIDComm Messaging Mediator").await?;
 
-            let mut derived = keys::derive_entity_keys(
-                seed,
-                &med_ctx.base_path,
-                "Mediator signing key",
-                "Mediator key-agreement key",
+            // Build mediator-specific services (DIDComm + Auth endpoints)
+            let wss_url = mediator_url
+                .replace("https://", "wss://")
+                .replace("http://", "ws://");
+            let mediator_services = vec![
+                json!({
+                    "id": "{DID}#didcomm",
+                    "type": "DIDCommMessaging",
+                    "serviceEndpoint": [
+                        { "accept": ["didcomm/v2"], "uri": &mediator_url },
+                        { "accept": ["didcomm/v2"], "uri": format!("{wss_url}/ws") }
+                    ]
+                }),
+                json!({
+                    "id": "{DID}#auth",
+                    "type": "Authentication",
+                    "serviceEndpoint": format!("{mediator_url}/authenticate")
+                }),
+            ];
+
+            let mediator_did = build_wizard_did(
+                "mediator",
+                "mediator",
+                Some(mediator_services),
+                false,
                 keys_ks,
+                imported_ks,
+                contexts_ks,
+                webvh_ks,
+                seed_store,
+                config,
             )
             .await?;
-
-            let mediator_did = create_webvh_did(
-                &mut derived,
-                "mediator",
-                Some(&mediator_url),
-                None,
-                None,
-                seed,
-                &med_ctx.base_path,
-                "mediator",
-                keys_ks,
-            )
-            .await?;
-
-            // Update the mediator context with the created DID
-            med_ctx.did = Some(mediator_did.clone());
-            med_ctx.updated_at = Utc::now();
-            store_context(contexts_ks, &med_ctx)
-                .await
-                .map_err(|e| format!("{e}"))?;
 
             Ok(Some(MessagingConfig {
                 mediator_url,
@@ -1054,321 +1352,4 @@ pub(crate) fn prompt_webvh_url(label: &str) -> Result<WebVHURL, Box<dyn std::err
             }
         }
     }
-}
-
-/// Prompt the user to optionally generate pre-rotation keys.
-///
-/// Keys are derived from the BIP-32 seed using counter-allocated paths under
-/// `base`.  Key records are **not** stored here — the caller saves them after
-/// the DID is created so the key_id can use the DID verification method format.
-///
-/// Returns `(hashes, key_data)`.  Both vecs are empty when the user declines.
-pub(crate) async fn prompt_pre_rotation_keys(
-    seed: &[u8],
-    base: &str,
-    label: &str,
-    keys_ks: &KeyspaceHandle,
-) -> Result<(Vec<String>, Vec<PreRotationKeyData>), Box<dyn std::error::Error>> {
-    eprintln!();
-    eprintln!("  Pre-rotation protects against an attacker changing your authorization keys.");
-    eprintln!("  You generate future keys now and only publish their hashes.  When you later");
-    eprintln!("  need to rotate keys, you reveal the actual key that matches the hash.");
-
-    if !Confirm::new()
-        .with_prompt("Enable key pre-rotation?")
-        .default(true)
-        .interact()?
-    {
-        return Ok((vec![], vec![]));
-    }
-
-    let root = ExtendedSigningKey::from_seed(seed)
-        .map_err(|e| format!("Failed to create BIP-32 root key: {e}"))?;
-
-    let mut hashes: Vec<String> = Vec::new();
-    let mut key_data: Vec<PreRotationKeyData> = Vec::new();
-
-    loop {
-        let path = allocate_path(keys_ks, base)
-            .await
-            .map_err(|e| format!("{e}"))?;
-        let derivation_path: DerivationPath = path
-            .parse()
-            .map_err(|e| format!("Invalid derivation path: {e}"))?;
-        let derived = root
-            .derive(&derivation_path)
-            .map_err(|e| format!("Key derivation failed: {e}"))?;
-
-        let secret = Secret::generate_ed25519(None, Some(derived.signing_key.as_bytes()));
-
-        let pub_mb = secret
-            .get_public_keymultibase()
-            .map_err(|e| format!("{e}"))?;
-        let hash = secret
-            .get_public_keymultibase_hash()
-            .map_err(|e| format!("{e}"))?;
-
-        let idx = hashes.len();
-        key_data.push(PreRotationKeyData {
-            path,
-            public_key: pub_mb.clone(),
-            label: format!("{label} pre-rotation key {idx}"),
-        });
-
-        eprintln!();
-        eprintln!("  publicKeyMultibase: {pub_mb}");
-
-        hashes.push(hash);
-
-        if !Confirm::new()
-            .with_prompt(format!(
-                "Generated {} pre-rotation key(s). Generate another?",
-                hashes.len()
-            ))
-            .default(false)
-            .interact()?
-        {
-            break;
-        }
-    }
-
-    Ok((hashes, key_data))
-}
-
-/// Interactive did:webvh creation flow shared by VTA and mediator DID setup.
-///
-/// Prompts for a URL, builds a DID document, creates the log entry,
-/// saves the `did.jsonl` file, and stores key records with DID-based key_ids.
-///
-/// `label` is used in prompts (e.g. "VTA" or "mediator").
-///
-/// Service endpoints are added based on the optional parameters:
-/// - `mediator_url`: when set, adds `#didcomm` (HTTPS + WSS) and `#auth`
-///   service endpoints for a mediator DID document.
-/// - `messaging`: when set, adds a `#vta-didcomm` service referencing the
-///   mediator DID for routing (used for the VTA DID document).
-#[allow(clippy::too_many_arguments)]
-async fn create_webvh_did(
-    derived: &mut DerivedEntityKeys,
-    label: &str,
-    mediator_url: Option<&str>,
-    messaging: Option<&MessagingConfig>,
-    vta_public_url: Option<&str>,
-    seed: &[u8],
-    base: &str,
-    context_id: &str,
-    keys_ks: &KeyspaceHandle,
-) -> Result<String, Box<dyn std::error::Error>> {
-    // Prompt for URL and convert to WebVHURL
-    let webvh_url = prompt_webvh_url(label)?;
-
-    // Convert the Signing Key ID to be correct
-    derived.signing_secret.id = [
-        "did:key:",
-        &derived.signing_secret.get_public_keymultibase().unwrap(),
-        "#",
-        &derived.signing_secret.get_public_keymultibase().unwrap(),
-    ]
-    .concat();
-
-    // Build DID document
-    let mut did_document = json!({
-        "@context": [
-            "https://www.w3.org/ns/did/v1",
-            "https://www.w3.org/ns/cid/v1"
-        ],
-        "id": "{DID}",
-        "verificationMethod": [
-            {
-                "id": "{DID}#key-0",
-                "type": "Multikey",
-                "controller": "{DID}",
-                "publicKeyMultibase": &derived.signing_pub
-            }
-        ],
-        "authentication": ["{DID}#key-0"],
-        "assertionMethod": ["{DID}#key-0"]
-    });
-
-    // Add X25519 key agreement method
-    did_document["verificationMethod"]
-        .as_array_mut()
-        .unwrap()
-        .push(json!({
-            "id": "{DID}#key-1",
-            "type": "Multikey",
-            "controller": "{DID}",
-            "publicKeyMultibase": &derived.ka_pub
-        }));
-    did_document["keyAgreement"] = json!(["{DID}#key-1"]);
-
-    // Add service endpoints
-    let mut services = Vec::new();
-
-    if let Some(url) = mediator_url {
-        // Mediator DID: add #didcomm with HTTPS + WSS endpoints, and #auth
-        let wss_url = url
-            .replace("https://", "wss://")
-            .replace("http://", "ws://");
-        services.push(json!({
-            "id": "{DID}#didcomm",
-            "type": "DIDCommMessaging",
-            "serviceEndpoint": [
-                {
-                    "accept": ["didcomm/v2"],
-                    "uri": url
-                },
-                {
-                    "accept": ["didcomm/v2"],
-                    "uri": format!("{wss_url}/ws")
-                }
-            ]
-        }));
-        services.push(json!({
-            "id": "{DID}#auth",
-            "type": "Authentication",
-            "serviceEndpoint": format!("{url}/authenticate")
-        }));
-    } else if let Some(msg) = messaging {
-        // VTA DID: add #vta-didcomm referencing the mediator DID
-        services.push(json!({
-            "id": "{DID}#vta-didcomm",
-            "type": "DIDCommMessaging",
-            "serviceEndpoint": [{
-                "accept": ["didcomm/v2"],
-                "uri": msg.mediator_did
-            }]
-        }));
-    }
-
-    // Add #vta-rest service endpoint if a public URL is configured
-    if let Some(url) = vta_public_url {
-        services.push(json!({
-            "id": "{DID}#vta-rest",
-            "type": "VTARest",
-            "serviceEndpoint": url
-        }));
-    }
-
-    if !services.is_empty() {
-        did_document["service"] = serde_json::Value::Array(services);
-    }
-
-    eprintln!();
-    eprintln!(
-        "\x1b[2mDID Document:\n{}\x1b[0m",
-        serde_json::to_string_pretty(&did_document)?
-    );
-    eprintln!();
-
-    // Portability
-    let portable = Confirm::new()
-        .with_prompt("Make this DID portable (can move to a different domain later)?")
-        .default(true)
-        .interact()?;
-
-    // Pre-rotation keys (share the same counter/base as entity keys)
-    let (next_key_hashes, pre_rotation_keys) =
-        prompt_pre_rotation_keys(seed, base, label, keys_ks).await?;
-
-    // Build parameters
-    let parameters = WebVHParameters {
-        update_keys: Some(Arc::new(vec![derived.signing_pub.clone().into()])),
-        portable: Some(portable),
-        next_key_hashes: if next_key_hashes.is_empty() {
-            None
-        } else {
-            Some(Arc::new(
-                next_key_hashes.into_iter().map(Into::into).collect(),
-            ))
-        },
-        ..Default::default()
-    };
-
-    // Create the DID
-    let url_str = webvh_url
-        .get_http_url(None)
-        .map_err(|e| format!("{e}"))?
-        .to_string();
-    let create_config = CreateDIDConfig::builder()
-        .address(url_str)
-        .authorization_key(derived.signing_secret.clone())
-        .did_document(did_document)
-        .parameters(parameters)
-        .build()
-        .map_err(|e| format!("failed to build DID config: {e}"))?;
-
-    let result = create_did(create_config)
-        .await
-        .map_err(|e| format!("failed to create DID: {e}"))?;
-
-    let final_did = result.did().to_string();
-
-    eprintln!("\x1b[1;32mCreated DID:\x1b[0m {final_did}");
-
-    // Save key records now that we have the final DID
-    keys::save_entity_key_records(&final_did, derived, keys_ks, Some(context_id), Some(0)).await?;
-
-    // Save pre-rotation key records
-    for (i, pk) in pre_rotation_keys.iter().enumerate() {
-        keys::save_key_record(
-            keys_ks,
-            &format!("{final_did}#pre-rotation-{i}"),
-            &pk.path,
-            SdkKeyType::Ed25519,
-            &pk.public_key,
-            &pk.label,
-            Some(context_id),
-            Some(0),
-        )
-        .await?;
-    }
-
-    // Save did.jsonl
-    let default_file = format!("{label}-did.jsonl");
-    let did_file: String = Input::new()
-        .with_prompt("Save DID log to file")
-        .default(default_file)
-        .interact_text()?;
-
-    result
-        .log_entry()
-        .save_to_file(&did_file)
-        .map_err(|e| format!("Failed to save DID log file: {e}"))?;
-
-    eprintln!("  DID log saved to: {did_file}");
-
-    // Optionally export secrets bundle
-    if Confirm::new()
-        .with_prompt("Export DID secrets bundle?")
-        .default(false)
-        .interact()?
-    {
-        let bundle = DidSecretsBundle {
-            did: final_did.clone(),
-            secrets: vec![
-                SecretEntry {
-                    key_id: format!("{final_did}#key-0"),
-                    key_type: SdkKeyType::Ed25519,
-                    private_key_multibase: derived.signing_priv.clone(),
-                },
-                SecretEntry {
-                    key_id: format!("{final_did}#key-1"),
-                    key_type: SdkKeyType::X25519,
-                    private_key_multibase: derived.ka_priv.clone(),
-                },
-            ],
-        };
-        let encoded = bundle.encode().map_err(|e| format!("{e}"))?;
-        eprintln!();
-        eprintln!("\x1b[1;33m╔══════════════════════════════════════════════════════════╗");
-        eprintln!("║  WARNING: The secrets bundle contains private keys.      ║");
-        eprintln!("║  Store it securely and do not share it publicly.         ║");
-        eprintln!("╚══════════════════════════════════════════════════════════╝\x1b[0m");
-        eprintln!();
-        println!("{encoded}");
-        eprintln!();
-    }
-
-    Ok(final_did)
 }

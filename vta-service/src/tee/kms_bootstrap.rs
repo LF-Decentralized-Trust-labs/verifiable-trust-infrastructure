@@ -1127,7 +1127,6 @@ mod tests {
     fn test_cms_envelope_roundtrip() {
         use aes_gcm::aead::generic_array::GenericArray;
         use aes_gcm::{Aes256Gcm, KeyInit, aead::Aead};
-        use rsa::pkcs8::EncodePublicKey;
         use rsa::{Oaep, RsaPrivateKey};
 
         // Generate RSA keypair (the "ephemeral" key the enclave would create)

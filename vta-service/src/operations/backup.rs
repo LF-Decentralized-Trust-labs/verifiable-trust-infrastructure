@@ -800,7 +800,7 @@ mod tests {
 
         assert_eq!(deserialized.version, envelope.version);
         assert_eq!(deserialized.format, envelope.format);
-        assert_eq!(deserialized.includes_audit, true);
+        assert!(deserialized.includes_audit);
         assert_eq!(deserialized.ciphertext, envelope.ciphertext);
 
         // Should still decrypt correctly

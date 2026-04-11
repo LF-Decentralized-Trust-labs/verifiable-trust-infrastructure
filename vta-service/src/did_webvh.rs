@@ -1,22 +1,20 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use chrono::Utc;
 use dialoguer::{Confirm, Input, Select};
-use didwebvh_rs::create::{CreateDIDConfig, create_did};
-use didwebvh_rs::parameters::Parameters as WebVHParameters;
 use serde_json::json;
+
+use affinidi_did_resolver_cache_sdk::{DIDCacheClient, config::DIDCacheConfigBuilder};
 
 use vta_sdk::did_secrets::{DidSecretsBundle, SecretEntry};
 
 use crate::config::AppConfig;
-use crate::contexts::{self, get_context, store_context};
 use crate::keys::seed_store::create_seed_store;
-use crate::keys::seeds::{get_active_seed_id, load_seed_bytes};
-use crate::keys::{self, KeyType as SdkKeyType};
-use crate::operations::did_webvh as ops;
+use crate::operations;
+use crate::operations::did_webvh::CreateDidWebvhParams;
 use crate::setup;
 use crate::store::Store;
+use crate::webvh_cli::cli_super_admin;
 
 pub struct CreateDidWebvhArgs {
     pub config_path: Option<PathBuf>,
@@ -30,15 +28,12 @@ pub async fn run_create_did_webvh(
     let config = AppConfig::load(args.config_path)?;
     let store = Store::open(&config.store)?;
     let keys_ks = store.keyspace("keys")?;
+    let imported_ks = store.keyspace("imported_secrets")?;
     let contexts_ks = store.keyspace("contexts")?;
-
-    // Load seed from configured backend using the active generation
-    let seed_store = create_seed_store(&config)?;
-    let active_seed_id = get_active_seed_id(&keys_ks).await?;
-    let seed = load_seed_bytes(&keys_ks, &*seed_store, Some(active_seed_id)).await?;
+    let webvh_ks = store.keyspace("webvh")?;
 
     // Resolve context
-    let mut ctx = match get_context(&contexts_ks, &args.context).await? {
+    let ctx = match crate::contexts::get_context(&contexts_ks, &args.context).await? {
         Some(ctx) => ctx,
         None => {
             eprintln!("Context '{}' does not exist.", args.context);
@@ -46,7 +41,7 @@ pub async fn run_create_did_webvh(
                 .with_prompt("Create it with name")
                 .default(args.context.clone())
                 .interact_text()?;
-            let ctx = contexts::create_context(&contexts_ks, &args.context, &name).await?;
+            let ctx = crate::contexts::create_context(&contexts_ks, &args.context, &name).await?;
             eprintln!("Created context: {} ({})", ctx.id, ctx.base_path);
             ctx
         }
@@ -54,8 +49,29 @@ pub async fn run_create_did_webvh(
 
     let label = args.label.as_deref().unwrap_or(&args.context);
 
-    // Derive entity keys
-    let mut derived = keys::derive_entity_keys(
+    // Prompt for URL
+    let webvh_url = setup::prompt_webvh_url(label)?;
+    let url_str = webvh_url
+        .get_http_url(None)
+        .map_err(|e| format!("{e}"))?
+        .to_string();
+
+    // Build base DID document using shared helper (without services)
+    let seed_store = create_seed_store(&config)?;
+    let seed = crate::keys::seeds::load_seed_bytes(
+        &keys_ks,
+        &*seed_store,
+        Some(
+            crate::keys::seeds::get_active_seed_id(&keys_ks)
+                .await
+                .map_err(|e| format!("{e}"))?,
+        ),
+    )
+    .await
+    .map_err(|e| format!("{e}"))?;
+
+    // Derive keys temporarily just to build a preview document
+    let derived = crate::keys::derive_entity_keys(
         &seed,
         &ctx.base_path,
         &format!("{label} signing key"),
@@ -64,20 +80,8 @@ pub async fn run_create_did_webvh(
     )
     .await?;
 
-    // Prompt for URL and convert to WebVHURL
-    let webvh_url = setup::prompt_webvh_url(label)?;
-
-    // Convert the Signing Key ID to did:key format (required by didwebvh-rs)
-    derived.signing_secret.id = [
-        "did:key:",
-        &derived.signing_secret.get_public_keymultibase().unwrap(),
-        "#",
-        &derived.signing_secret.get_public_keymultibase().unwrap(),
-    ]
-    .concat();
-
-    // Build base DID document using shared helper (without services)
-    let mut did_document = ops::build_did_document(&derived, &config, false, &None);
+    let mut did_document =
+        operations::did_webvh::build_did_document(&derived, &config, false, &None);
 
     // Interactive service endpoint selection
     if let Some(ref msg) = config.messaging {
@@ -92,7 +96,6 @@ pub async fn run_create_did_webvh(
             .interact()?;
 
         if service_choice == 0 {
-            // Reference the mediator DID for routing
             did_document["service"] = json!([
                 {
                     "id": "{DID}#vta-didcomm",
@@ -128,94 +131,71 @@ pub async fn run_create_did_webvh(
         .default(true)
         .interact()?;
 
-    // Pre-rotation keys
-    let (next_key_hashes, pre_rotation_keys) =
-        setup::prompt_pre_rotation_keys(&seed, &ctx.base_path, label, &keys_ks).await?;
+    // Pre-rotation count
+    let pre_rotation_count: u32 = Input::new()
+        .with_prompt("Number of pre-rotation keys (0 = none, recommended: 1-3)")
+        .default(1u32)
+        .interact_text()?;
 
-    // Build parameters
-    let parameters = WebVHParameters {
-        update_keys: Some(Arc::new(vec![derived.signing_pub.clone().into()])),
-        portable: Some(portable),
-        next_key_hashes: if next_key_hashes.is_empty() {
-            None
-        } else {
-            Some(Arc::new(
-                next_key_hashes.into_iter().map(Into::into).collect(),
-            ))
-        },
-        ..Default::default()
+    // Build params and call the operations layer
+    let auth = cli_super_admin();
+    let did_resolver = DIDCacheClient::new(DIDCacheConfigBuilder::default().build()).await?;
+    let no_bridge: Arc<tokio::sync::RwLock<Option<crate::didcomm_bridge::DIDCommBridge>>> =
+        Arc::new(tokio::sync::RwLock::new(None));
+
+    let params = CreateDidWebvhParams {
+        context_id: args.context.clone(),
+        server_id: None,
+        url: Some(url_str.clone()),
+        path: None,
+        label: Some(label.to_string()),
+        portable,
+        add_mediator_service: false, // handled via did_document template
+        additional_services: None,
+        pre_rotation_count,
+        did_document: Some(did_document),
+        did_log: None,
+        set_primary: true,
+        signing_key_id: None,
+        ka_key_id: None,
     };
 
-    // Create the DID
-    let url_str = webvh_url
-        .get_http_url(None)
-        .map_err(|e| format!("{e}"))?
-        .to_string();
-    let create_config = CreateDIDConfig::builder()
-        .address(url_str)
-        .authorization_key(derived.signing_secret.clone())
-        .did_document(did_document)
-        .parameters(parameters)
-        .build()
-        .map_err(|e| format!("failed to build DID config: {e}"))?;
-
-    let result = create_did(create_config)
-        .await
-        .map_err(|e| format!("failed to create DID: {e}"))?;
-
-    let final_did = result.did().to_string();
-
-    eprintln!("\x1b[1;32mCreated DID:\x1b[0m {final_did}");
-
-    // Save key records now that we have the final DID
-    keys::save_entity_key_records(
-        &final_did,
-        &derived,
+    let result = operations::did_webvh::create_did_webvh(
         &keys_ks,
-        Some(&ctx.id),
-        Some(active_seed_id),
+        &imported_ks,
+        &contexts_ks,
+        &webvh_ks,
+        &*seed_store,
+        &config,
+        &auth,
+        params,
+        &did_resolver,
+        &no_bridge,
+        "cli",
     )
     .await?;
 
-    // Save pre-rotation key records
-    for (i, pk) in pre_rotation_keys.iter().enumerate() {
-        keys::save_key_record(
-            &keys_ks,
-            &format!("{final_did}#pre-rotation-{i}"),
-            &pk.path,
-            SdkKeyType::Ed25519,
-            &pk.public_key,
-            &pk.label,
-            Some(&ctx.id),
-            Some(active_seed_id),
-        )
-        .await?;
-    }
-
-    // Update context with the new DID
-    ctx.did = Some(final_did.clone());
-    ctx.updated_at = Utc::now();
-    store_context(&contexts_ks, &ctx)
-        .await
-        .map_err(|e| format!("{e}"))?;
+    let final_did = &result.did;
+    eprintln!("\x1b[1;32mCreated DID:\x1b[0m {final_did}");
 
     // Persist all writes
     store.persist().await?;
 
     // Save did.jsonl
-    let default_file = format!("{label}-did.jsonl");
-    let did_file: String = Input::new()
-        .with_prompt("Save DID log to file")
-        .default(default_file)
-        .interact_text()?;
+    if let Some(ref log_entry) = result.log_entry {
+        let default_file = format!("{label}-did.jsonl");
+        let did_file: String = Input::new()
+            .with_prompt("Save DID log to file")
+            .default(default_file)
+            .interact_text()?;
 
-    result
-        .log_entry()
-        .save_to_file(&did_file)
-        .map_err(|e| format!("Failed to save DID log file: {e}"))?;
-
-    eprintln!("  DID log saved to: {did_file}");
-    eprintln!("  Context '{}' updated with DID: {final_did}", ctx.id);
+        std::fs::write(&did_file, log_entry)?;
+        eprintln!("  DID log saved to: {did_file}");
+        eprintln!("  Context '{}' updated with DID: {final_did}", args.context);
+        eprintln!();
+        eprintln!("  \x1b[2mTo self-host this DID, upload {did_file} to:");
+        eprintln!("  {url_str}\x1b[0m");
+    }
 
     // Optionally export secrets bundle
     if Confirm::new()
@@ -223,20 +203,48 @@ pub async fn run_create_did_webvh(
         .default(false)
         .interact()?
     {
+        // Fetch key secrets via the operations layer
+        let signing_secret = crate::operations::keys::get_key_secret(
+            &keys_ks,
+            &imported_ks,
+            &Arc::from(seed_store),
+            &store.keyspace("audit")?,
+            &auth,
+            &result.signing_key_id,
+            "cli",
+        )
+        .await
+        .map_err(|e| format!("failed to fetch signing key secret: {e}"))?;
+
+        let mut secrets = vec![SecretEntry {
+            key_id: result.signing_key_id.clone(),
+            key_type: vta_sdk::keys::KeyType::Ed25519,
+            private_key_multibase: signing_secret.private_key_multibase,
+        }];
+
+        if !result.ka_key_id.is_empty() {
+            let ka_secret = crate::operations::keys::get_key_secret(
+                &keys_ks,
+                &imported_ks,
+                &Arc::from(create_seed_store(&config)?),
+                &store.keyspace("audit")?,
+                &auth,
+                &result.ka_key_id,
+                "cli",
+            )
+            .await
+            .map_err(|e| format!("failed to fetch KA key secret: {e}"))?;
+
+            secrets.push(SecretEntry {
+                key_id: result.ka_key_id.clone(),
+                key_type: vta_sdk::keys::KeyType::X25519,
+                private_key_multibase: ka_secret.private_key_multibase,
+            });
+        }
+
         let bundle = DidSecretsBundle {
             did: final_did.clone(),
-            secrets: vec![
-                SecretEntry {
-                    key_id: format!("{final_did}#key-0"),
-                    key_type: SdkKeyType::Ed25519,
-                    private_key_multibase: derived.signing_priv.clone(),
-                },
-                SecretEntry {
-                    key_id: format!("{final_did}#key-1"),
-                    key_type: SdkKeyType::X25519,
-                    private_key_multibase: derived.ka_priv.clone(),
-                },
-            ],
+            secrets,
         };
         let encoded = bundle.encode().map_err(|e| format!("{e}"))?;
         eprintln!();

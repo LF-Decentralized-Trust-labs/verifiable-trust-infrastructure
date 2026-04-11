@@ -223,7 +223,7 @@ fn aes_key_unwrap(
     use aes::Aes256;
     use aes::cipher::{BlockDecrypt, KeyInit as AesKeyInit};
 
-    if ciphertext.len() % 8 != 0 || ciphertext.len() < 24 {
+    if !ciphertext.len().is_multiple_of(8) || ciphertext.len() < 24 {
         return Err("key unwrap input must be at least 24 bytes and a multiple of 8".into());
     }
 

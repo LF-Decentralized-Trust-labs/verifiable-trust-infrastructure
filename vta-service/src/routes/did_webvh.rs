@@ -4,7 +4,7 @@ use axum::http::StatusCode;
 use serde::Deserialize;
 
 use vta_sdk::protocols::did_management::{
-    create::CreateDidWebvhResultBody,
+    create::{CreateDidWebvhBody, CreateDidWebvhResultBody},
     list::ListDidsWebvhResultBody,
     servers::{AddWebvhServerResultBody, ListWebvhServersResultBody, UpdateWebvhServerResultBody},
 };
@@ -20,26 +20,6 @@ pub struct AddServerRequest {
     pub id: String,
     pub did: String,
     pub label: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct CreateDidRequest {
-    pub context_id: String,
-    pub server_id: Option<String>,
-    pub url: Option<String>,
-    pub path: Option<String>,
-    pub label: Option<String>,
-    #[serde(default = "default_true")]
-    pub portable: bool,
-    #[serde(default)]
-    pub add_mediator_service: bool,
-    pub additional_services: Option<Vec<serde_json::Value>>,
-    #[serde(default)]
-    pub pre_rotation_count: u32,
-}
-
-fn default_true() -> bool {
-    true
 }
 
 #[derive(Debug, Deserialize)]
@@ -116,26 +96,17 @@ pub async fn remove_server_handler(
 pub async fn create_did_handler(
     auth: AdminAuth,
     State(state): State<AppState>,
-    Json(req): Json<CreateDidRequest>,
+    Json(body): Json<CreateDidWebvhBody>,
 ) -> Result<(StatusCode, Json<CreateDidWebvhResultBody>), AppError> {
     let config = state.config.read().await;
-    let params = operations::did_webvh::CreateDidWebvhParams {
-        context_id: req.context_id,
-        server_id: req.server_id,
-        url: req.url,
-        path: req.path,
-        label: req.label,
-        portable: req.portable,
-        add_mediator_service: req.add_mediator_service,
-        additional_services: req.additional_services,
-        pre_rotation_count: req.pre_rotation_count,
-    };
+    let params = body.into();
     let did_resolver = state
         .did_resolver
         .as_ref()
         .ok_or_else(|| AppError::Internal("DID resolver not available".into()))?;
     let result = operations::did_webvh::create_did_webvh(
         &state.keys_ks,
+        &state.imported_ks,
         &state.contexts_ks,
         &state.webvh_ks,
         &*state.seed_store,

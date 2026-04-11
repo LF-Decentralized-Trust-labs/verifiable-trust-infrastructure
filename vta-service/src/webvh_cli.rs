@@ -12,7 +12,7 @@ use crate::operations;
 use crate::store::Store;
 
 /// Create a synthetic super-admin AuthClaims for CLI operations.
-fn cli_super_admin() -> AuthClaims {
+pub(crate) fn cli_super_admin() -> AuthClaims {
     AuthClaims {
         did: "cli:local".to_string(),
         role: Role::Admin,
@@ -138,6 +138,7 @@ pub async fn run_create_did(
     let config = AppConfig::load(config_path.clone())?;
     let store = Store::open(&config.store)?;
     let keys_ks = store.keyspace("keys")?;
+    let imported_ks = store.keyspace("imported_secrets")?;
     let contexts_ks = store.keyspace("contexts")?;
     let webvh_ks = store.keyspace("webvh")?;
     let seed_store: Arc<dyn crate::keys::seed_store::SeedStore> =
@@ -159,6 +160,11 @@ pub async fn run_create_did(
         add_mediator_service: mediator_service,
         additional_services,
         pre_rotation_count: pre_rotation.unwrap_or(0),
+        did_document: None,
+        did_log: None,
+        set_primary: true,
+        signing_key_id: None,
+        ka_key_id: None,
     };
 
     let did_resolver = DIDCacheClient::new(DIDCacheConfigBuilder::default().build()).await?;
@@ -166,6 +172,7 @@ pub async fn run_create_did(
         Arc::new(tokio::sync::RwLock::new(None));
     let result = operations::did_webvh::create_did_webvh(
         &keys_ks,
+        &imported_ks,
         &contexts_ks,
         &webvh_ks,
         &*seed_store,

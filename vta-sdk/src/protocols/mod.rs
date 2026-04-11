@@ -6,6 +6,7 @@ pub mod backup_management;
 pub mod context_management;
 pub mod credential_management;
 pub mod did_management;
+pub mod discovery;
 pub mod key_management;
 pub mod seed_management;
 pub mod vta_management;

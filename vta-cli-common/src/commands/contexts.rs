@@ -309,6 +309,11 @@ pub async fn cmd_context_provision(
             add_mediator_service: opts.add_mediator_service,
             additional_services: None,
             pre_rotation_count: opts.pre_rotation_count,
+            did_document: None,
+            did_log: None,
+            set_primary: true,
+            signing_key_id: None,
+            ka_key_id: None,
         };
         let did_result = client.create_did_webvh(req).await?;
 

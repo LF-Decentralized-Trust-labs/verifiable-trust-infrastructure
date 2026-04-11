@@ -1,5 +1,100 @@
 # Changelog
 
+## 0.3.1 — 2026-04-11
+
+### Client-Provided DID Documents for WebVH Creation
+
+- **Three DID creation modes** — `POST /webvh/dids` now supports three
+  mutually exclusive modes:
+  - **VTA-built** (default) — VTA derives keys and builds the DID
+    Document internally (existing behavior, unchanged).
+  - **Template mode** (`did_document` field) — Client provides a DID
+    Document template with `{DID}` placeholders. VTA derives keys,
+    signs the log entry, and resolves placeholders via `didwebvh-rs`.
+    `add_mediator_service` and `additional_services` are ignored.
+  - **Final mode** (`did_log` field) — Client provides a complete,
+    pre-signed `did.jsonl` log entry. VTA publishes it as-is without
+    deriving keys or creating a log entry. No key records are stored.
+- **`set_primary` flag** — Optional boolean (default `true`). When
+  `false`, the context's primary DID (`ctx.did`) is not updated,
+  allowing multiple DIDs per context without overwriting the primary.
+- **CLI support** — `pnm webvh create-did` gains `--did-document <FILE>`,
+  `--did-log <FILE>`, and `--no-primary` flags.
+- **5 new integration tests** — Mutual exclusivity validation, template
+  mode with custom keys, final mode storage, and `set_primary`
+  true/false behavior.
+
+### User-Specified Keys for DID Creation
+
+- **`signing_key_id` / `ka_key_id` fields** — Optionally specify
+  existing VTA-managed keys (imported or derived) for DID creation
+  instead of having the VTA derive fresh keys. The signing key must
+  be Ed25519; the KA key must be X25519.
+- **Signing-only DIDs** — When only `signing_key_id` is provided, the
+  DID Document is created with authentication/assertion but no
+  keyAgreement, suitable for non-DIDComm use cases.
+- **DIDComm validation** — If the DID Document includes
+  `DIDCommMessaging` services (via `add_mediator_service`,
+  `additional_services`, or a template), `ka_key_id` is required.
+- **CLI support** — `pnm webvh create-did` gains `--signing-key` and
+  `--ka-key` flags.
+- **5 new integration tests** — Signing-only, both keys, KA-without-
+  signing rejection, DIDComm-requires-KA, wrong key type rejection.
+
+### Setup Wizard Improvements
+
+- **Simple/advanced toggle** — VTA DID creation now offers a simple
+  path (VTA creates everything) and an advanced path that reveals
+  template mode, pre-signed log import, and user-specified key options.
+- **Consolidated DID creation** — `did_webvh.rs` standalone CLI
+  rewritten as a thin interactive wrapper around `operations::create_did_webvh()`,
+  removing ~200 lines of duplicate key derivation and document building.
+- **VTA DID via operations layer** — `create_vta_did()` in the setup
+  wizard now uses `build_wizard_did()` → `operations::create_did_webvh()`
+  instead of direct `didwebvh-rs` calls.
+- **Pre-rotation UX** — Replaced interactive loop ("Generate another?")
+  with a count prompt ("Number of pre-rotation keys", default: 1).
+- **Post-creation hosting instructions** — After saving `did.jsonl`,
+  the wizard now shows the URL where it should be uploaded.
+
+### Capabilities Discovery
+
+- **`GET /capabilities`** — New authenticated endpoint reporting VTA
+  features (webvh, didcomm, tee, rest), enabled services, configured
+  WebVH servers, and supported DID creation modes. Allows 3rd party
+  apps using `vta-sdk` to probe what the VTA supports before attempting
+  operations.
+- **DIDComm discovery protocol** — `discover-capabilities` message type
+  returns the same information via DIDComm.
+- **`VtaClient::capabilities()`** — SDK client method for discovery.
+
+### Infrastructure & Bug Fixes
+
+- **Unified `build_did_document`** — merged `build_did_document` and
+  `build_did_document_from_keys` into a single function with `include_ka`
+  parameter.
+- **DID deletion cleans up key records** — `delete_did_webvh` now removes
+  associated signing, KA, and pre-rotation key records.
+- **DIDComm bridge wired in handler path** — WebVH server communication
+  via DIDComm now uses the real bridge instead of a dummy.
+- **Pre-rotation keys in TEE autogen** — TEE auto-generated DIDs now
+  include 1 pre-rotation key by default.
+- **Mediator DID format validation** — Setup wizard validates `did:`
+  prefix when entering an existing mediator DID.
+
+### Code Consolidation
+
+- **Eliminated `CreateDidRequest`** — REST route now uses
+  `CreateDidWebvhBody` from SDK protocol types directly.
+- **`From<CreateDidWebvhBody> for CreateDidWebvhParams`** —
+  Centralizes default value logic, replacing boilerplate conversions
+  in REST and DIDComm handlers.
+- **Removed ~316 lines of duplicate code** — Deleted `create_webvh_did()`
+  and `prompt_pre_rotation_keys()` from `setup.rs` after migrating
+  all callers to `build_wizard_did()`.
+- **Cleaned up unused imports** — Removed `didwebvh-rs` direct
+  dependencies from `setup.rs` now that it uses the operations layer.
+
 ## 0.3.0 — 2026-04-01
 
 ### Reader Role & Action Classification
