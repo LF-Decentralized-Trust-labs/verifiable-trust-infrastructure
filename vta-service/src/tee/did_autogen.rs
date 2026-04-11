@@ -113,10 +113,28 @@ pub async fn maybe_generate_vta_did(
     // Build DID document (inline — avoids dependency on webvh feature-gated modules)
     let did_document = build_vta_did_document(&derived, config);
 
+    // Generate pre-rotation keys (default: 1)
+    let (next_key_hashes, pre_rotation_keys) =
+        crate::operations::did_webvh::derive_pre_rotation_keys(
+            &seed,
+            &ctx.base_path,
+            "VTA",
+            &keys_ks,
+            1,
+        )
+        .await?;
+
     // Build parameters
     let parameters = WebVHParameters {
         update_keys: Some(Arc::new(vec![derived.signing_pub.clone().into()])),
         portable: Some(true),
+        next_key_hashes: if next_key_hashes.is_empty() {
+            None
+        } else {
+            Some(Arc::new(
+                next_key_hashes.into_iter().map(Into::into).collect(),
+            ))
+        },
         ..Default::default()
     };
 
@@ -152,6 +170,22 @@ pub async fn maybe_generate_vta_did(
     )
     .await
     .map_err(|e| AppError::Internal(format!("{e}")))?;
+
+    // Save pre-rotation key records
+    for (i, pk) in pre_rotation_keys.iter().enumerate() {
+        keys::save_key_record(
+            &keys_ks,
+            &format!("{final_did}#pre-rotation-{i}"),
+            &pk.path,
+            keys::KeyType::Ed25519,
+            &pk.public_key,
+            &pk.label,
+            Some("vta"),
+            Some(active_seed_id),
+        )
+        .await
+        .map_err(|e| AppError::Internal(format!("{e}")))?;
+    }
 
     // Update context with the new DID
     let mut ctx = ctx;

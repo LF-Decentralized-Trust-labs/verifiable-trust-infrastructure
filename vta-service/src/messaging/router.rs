@@ -42,6 +42,8 @@ pub struct VtaState {
     pub seed_store: Arc<dyn SeedStore>,
     pub config: Arc<RwLock<AppConfig>>,
     pub did_resolver: Option<DIDCacheClient>,
+    /// DIDComm bridge for outbound WebVH server communication.
+    pub didcomm_bridge: Arc<tokio::sync::RwLock<Option<crate::didcomm_bridge::DIDCommBridge>>>,
     #[cfg(feature = "tee")]
     pub tee_state: Option<crate::tee::TeeState>,
     /// Send `true` to trigger a soft restart.
@@ -245,6 +247,12 @@ pub fn build_router(state: Arc<VtaState>) -> Result<Router, DIDCommServiceError>
                 handler_fn(handlers::handle_request_attestation),
             )?;
     }
+
+    // Discovery (no auth required — the handler doesn't call auth_from_message)
+    router = router.route(
+        protocols::discovery::DISCOVER_CAPABILITIES,
+        handler_fn(handlers::handle_discover_capabilities),
+    )?;
 
     // Fallback, middleware, error handling
     router = router

@@ -198,6 +198,21 @@ enum WebvhCommands {
         /// Number of pre-rotation keys to generate
         #[arg(long, default_value = "0")]
         pre_rotation: u32,
+        /// Path to a JSON file containing a DID Document template (template mode)
+        #[arg(long)]
+        did_document: Option<String>,
+        /// Path to a did.jsonl file containing a pre-signed log entry (final mode)
+        #[arg(long)]
+        did_log: Option<String>,
+        /// Do not set this DID as the primary DID for the context
+        #[arg(long)]
+        no_primary: bool,
+        /// Use an existing key ID as the signing verification method
+        #[arg(long)]
+        signing_key: Option<String>,
+        /// Use an existing key ID as the key-agreement verification method
+        #[arg(long)]
+        ka_key: Option<String>,
     },
     /// List WebVH DIDs
     ListDids {
@@ -938,32 +953,35 @@ async fn main() {
                 mediator_service,
                 services,
                 pre_rotation,
+                did_document,
+                did_log,
+                no_primary,
+                signing_key,
+                ka_key,
             } => {
                 if server.is_none() && did_url.is_none() {
                     Err("either --server or --did-url is required".into())
                 } else if server.is_some() && did_url.is_some() {
                     Err("--server and --did-url are mutually exclusive".into())
                 } else {
-                    match services
-                        .map(|s| serde_json::from_str::<Vec<serde_json::Value>>(&s))
-                        .transpose()
-                    {
-                        Err(e) => Err(format!("invalid --services JSON: {e}").into()),
-                        Ok(additional_services) => {
-                            let req = vta_sdk::client::CreateDidWebvhRequest {
-                                context_id: context,
-                                server_id: server,
-                                url: did_url,
-                                path,
-                                label,
-                                portable,
-                                add_mediator_service: mediator_service,
-                                additional_services,
-                                pre_rotation_count: pre_rotation,
-                            };
-                            webvh::cmd_webvh_did_create(&client, req).await
-                        }
-                    }
+                    webvh::cmd_webvh_did_create_with_files(
+                        &client,
+                        context,
+                        server,
+                        did_url,
+                        path,
+                        label,
+                        portable,
+                        mediator_service,
+                        services,
+                        pre_rotation,
+                        did_document,
+                        did_log,
+                        no_primary,
+                        signing_key,
+                        ka_key,
+                    )
+                    .await
                 }
             }
             WebvhCommands::ListDids { context, server } => {

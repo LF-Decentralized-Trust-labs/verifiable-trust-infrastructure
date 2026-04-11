@@ -5,6 +5,7 @@ mod audit;
 mod auth;
 mod backup;
 mod cache;
+mod capabilities;
 mod config;
 mod contexts;
 #[cfg(feature = "webvh")]
@@ -149,8 +150,10 @@ pub fn router() -> Router<AppState> {
         .route("/backup/export", post(backup::export))
         .route("/backup/import", post(backup::import));
 
-    // Authenticated health details endpoint
-    let router = router.route("/health/details", get(health::health_details));
+    // Authenticated health details and capabilities
+    let router = router
+        .route("/health/details", get(health::health_details))
+        .route("/capabilities", get(capabilities::capabilities));
 
     // Apply global request body size limit to protect enclave memory
     router.layer(DefaultBodyLimit::max(MAX_BODY_SIZE))

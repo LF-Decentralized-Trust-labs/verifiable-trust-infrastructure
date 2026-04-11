@@ -697,32 +697,17 @@ pub async fn handle_create_did_webvh(
         .as_ref()
         .ok_or_else(|| handler_err("DID resolver not available"))?;
 
-    // NOTE: The DIDComm bridge for WebVH server communication is not yet
-    // available in the new service handler path. This will be wired in PR 3
-    // when DIDCommService replaces the manual thread. For now, pass a dummy
-    // empty bridge that will use REST fallback if available.
-    let bridge = std::sync::Arc::new(tokio::sync::RwLock::new(None));
-
     let result = operations::did_webvh::create_did_webvh(
         &state.keys_ks,
+        &state.imported_ks,
         &state.contexts_ks,
         &state.webvh_ks,
         &*state.seed_store,
         &config,
         &auth,
-        operations::did_webvh::CreateDidWebvhParams {
-            context_id: body.context_id,
-            server_id: body.server_id,
-            url: body.url,
-            path: body.path,
-            label: body.label,
-            portable: body.portable.unwrap_or(true),
-            add_mediator_service: body.add_mediator_service.unwrap_or(false),
-            additional_services: body.additional_services,
-            pre_rotation_count: body.pre_rotation_count.unwrap_or(0),
-        },
+        body.into(),
         did_resolver,
-        &bridge,
+        &state.didcomm_bridge,
         "didcomm",
     )
     .await
@@ -1129,6 +1114,65 @@ pub async fn handle_problem_report(_ctx: HandlerContext, message: Message) -> Ha
     let thid = message.thid.as_deref().unwrap_or("none");
     warn!(from, code, comment, thid, "received problem-report");
     Ok(None)
+}
+
+// ---------------------------------------------------------------------------
+// Discovery
+// ---------------------------------------------------------------------------
+
+pub async fn handle_discover_capabilities(
+    _ctx: HandlerContext,
+    _message: Message,
+    Extension(state): Extension<Arc<VtaState>>,
+) -> HandlerResult {
+    let config = state.config.read().await;
+
+    let features = vta_sdk::protocols::discovery::FeaturesInfo {
+        webvh: cfg!(feature = "webvh"),
+        didcomm: cfg!(feature = "didcomm"),
+        tee: cfg!(feature = "tee"),
+        rest: cfg!(feature = "rest"),
+    };
+
+    let services = vta_sdk::protocols::discovery::ServicesInfo {
+        rest: config.services.rest,
+        didcomm: config.services.didcomm,
+    };
+
+    #[cfg(feature = "webvh")]
+    let webvh_servers = {
+        let servers = crate::webvh_store::list_servers(&state.webvh_ks)
+            .await
+            .map_err(handler_err)?;
+        servers
+            .into_iter()
+            .map(|s| vta_sdk::protocols::discovery::WebvhServerInfo {
+                id: s.id,
+                label: s.label,
+            })
+            .collect()
+    };
+    #[cfg(not(feature = "webvh"))]
+    let webvh_servers: Vec<vta_sdk::protocols::discovery::WebvhServerInfo> = vec![];
+
+    let mut did_creation_modes = vec!["vta-built".to_string()];
+    if cfg!(feature = "webvh") {
+        did_creation_modes.push("template".to_string());
+        did_creation_modes.push("final".to_string());
+        did_creation_modes.push("user-specified-keys".to_string());
+    }
+
+    let result = vta_sdk::protocols::discovery::CapabilitiesResponse {
+        version: env!("CARGO_PKG_VERSION").to_string(),
+        features,
+        services,
+        webvh_servers,
+        did_creation_modes,
+    };
+    response(
+        vta_sdk::protocols::discovery::DISCOVER_CAPABILITIES_RESULT,
+        &result,
+    )
 }
 
 pub async fn handle_unknown(_ctx: HandlerContext, message: Message) -> HandlerResult {

@@ -20,6 +20,29 @@ pub struct CreateDidWebvhBody {
     pub additional_services: Option<Vec<serde_json::Value>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pre_rotation_count: Option<u32>,
+    /// Client-provided DID Document template. When set, the VTA uses this
+    /// instead of building the document internally. `{DID}` placeholders are
+    /// resolved by `didwebvh-rs`. Mutually exclusive with `did_log`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub did_document: Option<serde_json::Value>,
+    /// Complete, pre-signed did.jsonl log entry. When set, the VTA publishes
+    /// it as-is without deriving keys or creating a log entry. Mutually
+    /// exclusive with `did_document`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub did_log: Option<String>,
+    /// Whether to set this DID as the primary DID for the context.
+    /// Defaults to `true` for backwards compatibility.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub set_primary: Option<bool>,
+    /// Use an existing key as the signing (Ed25519) verification method.
+    /// When set, the VTA skips key derivation and uses this key instead.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signing_key_id: Option<String>,
+    /// Use an existing key as the key-agreement (X25519) verification method.
+    /// Required when the DID document includes DIDCommMessaging services.
+    /// Requires `signing_key_id` to also be set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ka_key_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -3,7 +3,7 @@ use std::sync::Arc;
 use affinidi_did_resolver_cache_sdk::DIDCacheClient;
 use chrono::Utc;
 use didwebvh_rs::create::{CreateDIDConfig, create_did};
-use didwebvh_rs::log_entry::LogEntryMethods;
+use didwebvh_rs::log_entry::{LogEntry, LogEntryMethods};
 use didwebvh_rs::parameters::Parameters as WebVHParameters;
 use didwebvh_rs::url::WebVHURL;
 use serde_json::json;
@@ -15,7 +15,7 @@ use affinidi_tdk::secrets_resolver::secrets::Secret;
 use crate::didcomm_bridge::DIDCommBridge;
 
 use vta_sdk::protocols::did_management::{
-    create::CreateDidWebvhResultBody,
+    create::{CreateDidWebvhBody, CreateDidWebvhResultBody},
     delete::DeleteDidWebvhResultBody,
     list::ListDidsWebvhResultBody,
     servers::{
@@ -28,14 +28,17 @@ use vta_sdk::webvh::{WebvhDidRecord, WebvhServerRecord};
 use crate::auth::AuthClaims;
 use crate::config::AppConfig;
 use crate::error::AppError;
+use crate::keys::imported;
 use crate::keys::paths::allocate_path;
 use crate::keys::seed_store::SeedStore;
 use crate::keys::seeds::{get_active_seed_id, load_seed_bytes};
-use crate::keys::{self, KeyType as SdkKeyType, PreRotationKeyData};
+use crate::keys::{self, KeyType as SdkKeyType, PreRotationKeyData, encode_private_multibase};
 use crate::store::KeyspaceHandle;
 use crate::webvh_client::{RequestUriResponse, WebvhClient};
 use crate::webvh_didcomm::WebvhDIDCommClient;
 use crate::webvh_store;
+use vta_sdk::keys::{KeyOrigin, KeyRecord, KeyStatus, KeyType};
+use zeroize::Zeroize;
 
 use ed25519_dalek_bip32::{DerivationPath, ExtendedSigningKey};
 
@@ -49,11 +52,149 @@ pub struct CreateDidWebvhParams {
     pub add_mediator_service: bool,
     pub additional_services: Option<Vec<serde_json::Value>>,
     pub pre_rotation_count: u32,
+    /// Client-provided DID Document template. Mutually exclusive with `did_log`.
+    pub did_document: Option<serde_json::Value>,
+    /// Complete, pre-signed did.jsonl log entry. Mutually exclusive with `did_document`.
+    pub did_log: Option<String>,
+    /// Whether to set this DID as the primary DID for the context.
+    pub set_primary: bool,
+    /// Use an existing key as the signing verification method.
+    pub signing_key_id: Option<String>,
+    /// Use an existing key as the key-agreement verification method.
+    pub ka_key_id: Option<String>,
+}
+
+impl From<CreateDidWebvhBody> for CreateDidWebvhParams {
+    fn from(body: CreateDidWebvhBody) -> Self {
+        Self {
+            context_id: body.context_id,
+            server_id: body.server_id,
+            url: body.url,
+            path: body.path,
+            label: body.label,
+            portable: body.portable.unwrap_or(true),
+            add_mediator_service: body.add_mediator_service.unwrap_or(false),
+            additional_services: body.additional_services,
+            pre_rotation_count: body.pre_rotation_count.unwrap_or(0),
+            did_document: body.did_document,
+            did_log: body.did_log,
+            set_primary: body.set_primary.unwrap_or(true),
+            signing_key_id: body.signing_key_id,
+            ka_key_id: body.ka_key_id,
+        }
+    }
+}
+
+/// Load an existing key record and return it as a `Secret` for use in DID creation.
+///
+/// Validates key type, status, and context access. Returns the Secret,
+/// public key multibase, and the original KeyRecord.
+async fn load_key_as_secret(
+    keys_ks: &KeyspaceHandle,
+    imported_ks: &KeyspaceHandle,
+    seed_store: &dyn SeedStore,
+    key_id: &str,
+    expected_type: KeyType,
+    auth: &AuthClaims,
+) -> Result<(Secret, String, KeyRecord), AppError> {
+    let record: KeyRecord = keys_ks
+        .get(keys::store_key(key_id))
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("key {key_id} not found")))?;
+
+    // Validate key type
+    if record.key_type != expected_type {
+        return Err(AppError::Validation(format!(
+            "key {key_id} is {} but expected {}",
+            record.key_type, expected_type
+        )));
+    }
+
+    // Validate status
+    if record.status != KeyStatus::Active {
+        return Err(AppError::Validation(format!(
+            "key {key_id} is not active (status: {:?})",
+            record.status
+        )));
+    }
+
+    // Validate context access
+    if let Some(ref ctx) = record.context_id {
+        auth.require_context(ctx)?;
+    } else if !auth.is_super_admin() {
+        return Err(AppError::Forbidden(
+            "only super admin can use keys without a context".into(),
+        ));
+    }
+
+    // Load private key material
+    let private_key_multibase = match record.origin {
+        KeyOrigin::Imported => {
+            let seed = load_seed_bytes(keys_ks, seed_store, None)
+                .await
+                .map_err(|e| AppError::Internal(format!("{e}")))?;
+            let mut secret_bytes = imported::load_secret(
+                imported_ks,
+                keys_ks,
+                &seed,
+                key_id,
+                &record.key_type.to_string(),
+            )
+            .await?;
+            let priv_mb = encode_private_multibase(&record.key_type, &secret_bytes);
+            secret_bytes.zeroize();
+            priv_mb
+        }
+        KeyOrigin::Derived => {
+            let seed = load_seed_bytes(keys_ks, seed_store, record.seed_id)
+                .await
+                .map_err(|e| AppError::Internal(format!("{e}")))?;
+            let bip32 = ExtendedSigningKey::from_seed(&seed).map_err(|e| {
+                AppError::Internal(format!("failed to create BIP-32 root key: {e}"))
+            })?;
+            let derivation_path: DerivationPath = record
+                .derivation_path
+                .parse()
+                .map_err(|e| AppError::Internal(format!("invalid derivation path: {e}")))?;
+            let derived_key = bip32
+                .derive(&derivation_path)
+                .map_err(|e| AppError::Internal(format!("key derivation failed: {e}")))?;
+            encode_private_multibase(&KeyType::Ed25519, derived_key.signing_key.as_bytes())
+        }
+    };
+
+    let secret = Secret::from_multibase(&private_key_multibase, None).map_err(|e| {
+        AppError::Internal(format!("failed to construct Secret from key {key_id}: {e}"))
+    })?;
+
+    Ok((secret, record.public_key.clone(), record))
+}
+
+/// Check whether a DID document (JSON) contains any DIDCommMessaging service.
+fn document_has_didcomm_service(doc: &serde_json::Value) -> bool {
+    doc.get("service")
+        .and_then(|s| s.as_array())
+        .is_some_and(|services| {
+            services.iter().any(|svc| {
+                svc.get("type")
+                    .and_then(|t| t.as_str())
+                    .is_some_and(|t| t == "DIDCommMessaging")
+                    || svc
+                        .get("type")
+                        .and_then(|t| t.as_array())
+                        .is_some_and(|types| {
+                            types
+                                .iter()
+                                .any(|t| t.as_str().is_some_and(|s| s == "DIDCommMessaging"))
+                        })
+            })
+        })
 }
 
 #[allow(clippy::too_many_arguments)]
 pub async fn create_did_webvh(
     keys_ks: &KeyspaceHandle,
+    imported_ks: &KeyspaceHandle,
     contexts_ks: &KeyspaceHandle,
     webvh_ks: &KeyspaceHandle,
     seed_store: &dyn SeedStore,
@@ -66,6 +207,20 @@ pub async fn create_did_webvh(
 ) -> Result<CreateDidWebvhResultBody, AppError> {
     auth.require_admin()?;
     auth.require_context(&params.context_id)?;
+
+    // Validate did_document and did_log are mutually exclusive
+    if params.did_document.is_some() && params.did_log.is_some() {
+        return Err(AppError::Validation(
+            "did_document and did_log are mutually exclusive".into(),
+        ));
+    }
+
+    // Validate ka_key_id requires signing_key_id
+    if params.ka_key_id.is_some() && params.signing_key_id.is_none() {
+        return Err(AppError::Validation(
+            "ka_key_id requires signing_key_id".into(),
+        ));
+    }
 
     // Validate exactly one of server_id / url is provided
     let serverless = match (&params.server_id, &params.url) {
@@ -88,26 +243,187 @@ pub async fn create_did_webvh(
         .await?
         .ok_or_else(|| AppError::NotFound(format!("context not found: {}", params.context_id)))?;
 
-    // Load seed
-    let active_seed_id = get_active_seed_id(keys_ks)
-        .await
-        .map_err(|e| AppError::Internal(format!("{e}")))?;
-    let seed = load_seed_bytes(keys_ks, seed_store, Some(active_seed_id))
-        .await
-        .map_err(|e| AppError::Internal(format!("{e}")))?;
+    let now = Utc::now();
+
+    // ── Final mode: client-provided pre-signed log entry ────────────
+    if let Some(ref did_log) = params.did_log {
+        let log_entry = LogEntry::deserialize_string(did_log, None)
+            .map_err(|e| AppError::Validation(format!("invalid did_log: {e}")))?;
+
+        let final_did_document = log_entry.get_did_document().map_err(|e| {
+            AppError::Validation(format!("failed to extract DID document from log: {e}"))
+        })?;
+        let final_did = final_did_document["id"]
+            .as_str()
+            .ok_or_else(|| AppError::Validation("DID document missing 'id' field".into()))?
+            .to_string();
+        let scid = log_entry.get_scid().unwrap_or_default().to_string();
+
+        // Publish to server if not serverless
+        if !serverless {
+            let server_id = params.server_id.as_ref().unwrap();
+            let server = webvh_store::get_server(webvh_ks, server_id)
+                .await?
+                .ok_or_else(|| {
+                    AppError::NotFound(format!("webvh server not found: {server_id}"))
+                })?;
+            let transport =
+                WebvhTransport::from_server(&server, did_resolver, didcomm_bridge, config).await?;
+            // Final mode has no mnemonic from a server request — use the SCID as identifier
+            transport.publish_did(&scid, did_log).await?;
+        }
+
+        // Optionally set as primary DID
+        if params.set_primary {
+            ctx.did = Some(final_did.clone());
+            ctx.updated_at = now;
+            crate::contexts::store_context(contexts_ks, &ctx)
+                .await
+                .map_err(|e| AppError::Internal(format!("{e}")))?;
+        }
+
+        // Store DID record and log
+        let server_id_str = params
+            .server_id
+            .as_deref()
+            .unwrap_or("serverless")
+            .to_string();
+        let did_record = WebvhDidRecord {
+            did: final_did.clone(),
+            server_id: server_id_str.clone(),
+            mnemonic: String::new(),
+            scid: scid.clone(),
+            context_id: params.context_id.clone(),
+            portable: params.portable,
+            log_entry_count: 1,
+            created_at: now,
+            updated_at: now,
+        };
+        webvh_store::store_did(webvh_ks, &did_record).await?;
+        webvh_store::store_did_log(webvh_ks, &final_did, did_log).await?;
+
+        info!(
+            channel,
+            did = %final_did,
+            context = %params.context_id,
+            "did:webvh created (final mode)"
+        );
+
+        return Ok(CreateDidWebvhResultBody {
+            did: final_did.clone(),
+            context_id: params.context_id,
+            server_id: if serverless { None } else { params.server_id },
+            mnemonic: None,
+            scid,
+            portable: params.portable,
+            signing_key_id: String::new(),
+            ka_key_id: String::new(),
+            pre_rotation_key_count: 0,
+            created_at: now,
+            did_document: Some(final_did_document),
+            log_entry: Some(did_log.clone()),
+        });
+    }
+
+    // ── VTA-built or template mode ──────────────────────────────────
 
     let label = params.label.as_deref().unwrap_or(&params.context_id);
 
-    // Derive entity keys
-    let mut derived = keys::derive_entity_keys(
-        &seed,
-        &ctx.base_path,
-        &format!("{label} signing key"),
-        &format!("{label} key-agreement key"),
-        keys_ks,
-    )
-    .await
-    .map_err(|e| AppError::Internal(format!("{e}")))?;
+    // Track whether keys were user-specified (affects key record saving)
+    let user_specified_keys = params.signing_key_id.is_some();
+
+    // Load or derive entity keys
+    let (derived, active_seed_id) = if let Some(ref signing_key_id) = params.signing_key_id {
+        // ── User-specified keys ─────────────────────────────────────
+        let (mut signing_secret, signing_pub, signing_record) = load_key_as_secret(
+            keys_ks,
+            imported_ks,
+            seed_store,
+            signing_key_id,
+            KeyType::Ed25519,
+            auth,
+        )
+        .await?;
+
+        // Convert signing key ID to did:key format (required by didwebvh-rs)
+        let pub_mb = signing_secret
+            .get_public_keymultibase()
+            .map_err(|e| AppError::Internal(format!("{e}")))?;
+        signing_secret.id = format!("did:key:{pub_mb}#{pub_mb}");
+
+        let (ka_secret, ka_pub, ka_path, ka_label) = if let Some(ref ka_key_id) = params.ka_key_id {
+            let (ka_secret, ka_pub, ka_record) = load_key_as_secret(
+                keys_ks,
+                imported_ks,
+                seed_store,
+                ka_key_id,
+                KeyType::X25519,
+                auth,
+            )
+            .await?;
+            (
+                ka_secret,
+                ka_pub,
+                ka_record.derivation_path,
+                ka_record
+                    .label
+                    .unwrap_or_else(|| format!("{label} key-agreement key")),
+            )
+        } else {
+            // No KA key — use dummy values (won't be in the document)
+            (
+                Secret::generate_ed25519(None, None),
+                String::new(),
+                String::new(),
+                String::new(),
+            )
+        };
+
+        let derived = keys::DerivedEntityKeys {
+            signing_secret,
+            signing_path: signing_record.derivation_path.clone(),
+            signing_pub,
+            signing_priv: String::new(), // Not needed for DID creation
+            signing_label: signing_record
+                .label
+                .unwrap_or_else(|| format!("{label} signing key")),
+            ka_secret,
+            ka_path,
+            ka_pub,
+            ka_priv: String::new(),
+            ka_label,
+        };
+
+        // seed_id from the signing key record (may be None for imported)
+        (derived, signing_record.seed_id)
+    } else {
+        // ── VTA-derived keys ────────────────────────────────────────
+        let active_seed_id = get_active_seed_id(keys_ks)
+            .await
+            .map_err(|e| AppError::Internal(format!("{e}")))?;
+        let seed = load_seed_bytes(keys_ks, seed_store, Some(active_seed_id))
+            .await
+            .map_err(|e| AppError::Internal(format!("{e}")))?;
+
+        let mut derived = keys::derive_entity_keys(
+            &seed,
+            &ctx.base_path,
+            &format!("{label} signing key"),
+            &format!("{label} key-agreement key"),
+            keys_ks,
+        )
+        .await
+        .map_err(|e| AppError::Internal(format!("{e}")))?;
+
+        // Convert signing key ID to did:key format (required by didwebvh-rs)
+        let pub_mb = derived
+            .signing_secret
+            .get_public_keymultibase()
+            .map_err(|e| AppError::Internal(format!("{e}")))?;
+        derived.signing_secret.id = format!("did:key:{pub_mb}#{pub_mb}");
+
+        (derived, Some(active_seed_id))
+    };
 
     // Resolve URL: serverless uses user-provided URL, server-managed requests from server
     let (url_str, mnemonic) = if serverless {
@@ -136,38 +452,63 @@ pub async fn create_did_webvh(
         (uri_response.did_url, Some(uri_response.mnemonic))
     };
 
-    // Convert signing key ID to did:key format (required by didwebvh-rs)
-    derived.signing_secret.id = [
-        "did:key:",
-        &derived
-            .signing_secret
-            .get_public_keymultibase()
-            .map_err(|e| AppError::Internal(format!("{e}")))?,
-        "#",
-        &derived
-            .signing_secret
-            .get_public_keymultibase()
-            .map_err(|e| AppError::Internal(format!("{e}")))?,
-    ]
-    .concat();
+    // Build DID document: use client-provided template or build internally
+    let has_ka = params.ka_key_id.is_some() || !user_specified_keys;
+    let did_document = match params.did_document {
+        Some(doc) => doc,
+        None if user_specified_keys => {
+            // Build document from user-specified keys (signing only, or signing + KA)
+            build_did_document_with_options(
+                &derived,
+                config,
+                has_ka,
+                params.add_mediator_service,
+                &params.additional_services,
+            )
+        }
+        None => build_did_document(
+            &derived,
+            config,
+            params.add_mediator_service,
+            &params.additional_services,
+        ),
+    };
 
-    // Build DID document
-    let did_document = build_did_document(
-        &derived,
-        config,
-        params.add_mediator_service,
-        &params.additional_services,
-    );
+    // Validate DIDComm services require a KA key
+    if !has_ka && (params.add_mediator_service || document_has_didcomm_service(&did_document)) {
+        return Err(AppError::Validation(
+            "DIDCommMessaging services require a key-agreement key (ka_key_id)".into(),
+        ));
+    }
 
-    // Derive pre-rotation keys
-    let (next_key_hashes, pre_rotation_keys) = derive_pre_rotation_keys(
-        &seed,
-        &ctx.base_path,
-        label,
-        keys_ks,
-        params.pre_rotation_count,
-    )
-    .await?;
+    // Derive pre-rotation keys (requires seed)
+    let seed_for_pre_rotation = if params.pre_rotation_count > 0 {
+        let sid = match active_seed_id {
+            Some(id) => id,
+            None => get_active_seed_id(keys_ks)
+                .await
+                .map_err(|e| AppError::Internal(format!("{e}")))?,
+        };
+        Some(
+            load_seed_bytes(keys_ks, seed_store, Some(sid))
+                .await
+                .map_err(|e| AppError::Internal(format!("{e}")))?,
+        )
+    } else {
+        None
+    };
+    let (next_key_hashes, pre_rotation_keys) = if let Some(ref seed) = seed_for_pre_rotation {
+        derive_pre_rotation_keys(
+            seed,
+            &ctx.base_path,
+            label,
+            keys_ks,
+            params.pre_rotation_count,
+        )
+        .await?
+    } else {
+        (vec![], vec![])
+    };
 
     // Build parameters
     let parameters = WebVHParameters {
@@ -205,18 +546,51 @@ pub async fn create_did_webvh(
     let log_content = serde_json::to_string(result.log_entry())
         .map_err(|e| AppError::Internal(format!("failed to serialize DID log: {e}")))?;
 
-    // Save key records (common to both paths)
-    keys::save_entity_key_records(
-        &final_did,
-        &derived,
-        keys_ks,
-        Some(&params.context_id),
-        Some(active_seed_id),
-    )
-    .await
-    .map_err(|e| AppError::Internal(format!("{e}")))?;
+    // Save key records
+    if !user_specified_keys {
+        // VTA-derived: save both signing and KA key records
+        keys::save_entity_key_records(
+            &final_did,
+            &derived,
+            keys_ks,
+            Some(&params.context_id),
+            active_seed_id,
+        )
+        .await
+        .map_err(|e| AppError::Internal(format!("{e}")))?;
+    } else {
+        // User-specified: save key records referencing the user's keys
+        keys::save_key_record(
+            keys_ks,
+            &format!("{final_did}#key-0"),
+            &derived.signing_path,
+            SdkKeyType::Ed25519,
+            &derived.signing_pub,
+            &derived.signing_label,
+            Some(&params.context_id),
+            active_seed_id,
+        )
+        .await
+        .map_err(|e| AppError::Internal(format!("{e}")))?;
+
+        if has_ka {
+            keys::save_key_record(
+                keys_ks,
+                &format!("{final_did}#key-1"),
+                &derived.ka_path,
+                SdkKeyType::X25519,
+                &derived.ka_pub,
+                &derived.ka_label,
+                Some(&params.context_id),
+                active_seed_id,
+            )
+            .await
+            .map_err(|e| AppError::Internal(format!("{e}")))?;
+        }
+    }
 
     // Save pre-rotation key records
+    let pre_rotation_seed_id = active_seed_id.unwrap_or(0);
     for (i, pk) in pre_rotation_keys.iter().enumerate() {
         keys::save_key_record(
             keys_ks,
@@ -226,13 +600,20 @@ pub async fn create_did_webvh(
             &pk.public_key,
             &pk.label,
             Some(&params.context_id),
-            Some(active_seed_id),
+            Some(pre_rotation_seed_id),
         )
         .await
         .map_err(|e| AppError::Internal(format!("{e}")))?;
     }
 
-    let now = Utc::now();
+    // Optionally set as primary DID
+    if params.set_primary {
+        ctx.did = Some(final_did.clone());
+        ctx.updated_at = now;
+        crate::contexts::store_context(contexts_ks, &ctx)
+            .await
+            .map_err(|e| AppError::Internal(format!("{e}")))?;
+    }
 
     if serverless {
         // Serverless: extract final DID document from log entry, return it + log entry.
@@ -242,13 +623,6 @@ pub async fn create_did_webvh(
             .get_did_document()
             .ok()
             .unwrap_or(did_document);
-
-        // Update context with the new DID
-        ctx.did = Some(final_did.clone());
-        ctx.updated_at = Utc::now();
-        crate::contexts::store_context(contexts_ks, &ctx)
-            .await
-            .map_err(|e| AppError::Internal(format!("{e}")))?;
 
         // Store DID record and log
         let did_record = WebvhDidRecord {
@@ -298,13 +672,6 @@ pub async fn create_did_webvh(
         let transport =
             WebvhTransport::from_server(&server, did_resolver, didcomm_bridge, config).await?;
         transport.publish_did(mnemonic, &log_content).await?;
-
-        // Update context with the new DID
-        ctx.did = Some(final_did.clone());
-        ctx.updated_at = Utc::now();
-        crate::contexts::store_context(contexts_ks, &ctx)
-            .await
-            .map_err(|e| AppError::Internal(format!("{e}")))?;
 
         // Store DID record and log
         let did_record = WebvhDidRecord {
@@ -405,7 +772,7 @@ pub async fn list_dids_webvh(
 #[allow(clippy::too_many_arguments)]
 pub async fn delete_did_webvh(
     webvh_ks: &KeyspaceHandle,
-    _keys_ks: &KeyspaceHandle,
+    keys_ks: &KeyspaceHandle,
     _seed_store: &dyn SeedStore,
     config: &AppConfig,
     auth: &AuthClaims,
@@ -436,8 +803,22 @@ pub async fn delete_did_webvh(
         }
     }
 
-    // Remove local records
+    // Remove local DID record and log
     webvh_store::delete_did(webvh_ks, did).await?;
+
+    // Clean up associated key records (best-effort)
+    for key_id in &[format!("{did}#key-0"), format!("{did}#key-1")] {
+        let _ = keys_ks.remove(keys::store_key(key_id)).await;
+    }
+    // Clean up pre-rotation key records
+    for i in 0..100u32 {
+        let key_id = format!("{did}#pre-rotation-{i}");
+        let store_key = keys::store_key(&key_id);
+        if keys_ks.get_raw(store_key.clone()).await?.is_none() {
+            break;
+        }
+        let _ = keys_ks.remove(store_key).await;
+    }
 
     info!(channel, did = %did, "webvh DID deleted");
     Ok(DeleteDidWebvhResultBody {
@@ -720,36 +1101,78 @@ async fn validate_server_did(
 // Helpers
 // ---------------------------------------------------------------------------
 
+/// Build a DID document with the given keys.
+///
+/// When `include_ka` is true (default for VTA-derived keys), adds a
+/// keyAgreement verification method. When false (signing-only DID),
+/// the document contains only authentication/assertion.
 pub fn build_did_document(
     derived: &keys::DerivedEntityKeys,
     config: &AppConfig,
     add_mediator_service: bool,
     additional_services: &Option<Vec<serde_json::Value>>,
 ) -> serde_json::Value {
+    build_did_document_inner(
+        derived,
+        config,
+        true,
+        add_mediator_service,
+        additional_services,
+    )
+}
+
+/// Build a DID document with optional keyAgreement support.
+pub(crate) fn build_did_document_with_options(
+    derived: &keys::DerivedEntityKeys,
+    config: &AppConfig,
+    include_ka: bool,
+    add_mediator_service: bool,
+    additional_services: &Option<Vec<serde_json::Value>>,
+) -> serde_json::Value {
+    build_did_document_inner(
+        derived,
+        config,
+        include_ka,
+        add_mediator_service,
+        additional_services,
+    )
+}
+
+fn build_did_document_inner(
+    derived: &keys::DerivedEntityKeys,
+    config: &AppConfig,
+    include_ka: bool,
+    add_mediator_service: bool,
+    additional_services: &Option<Vec<serde_json::Value>>,
+) -> serde_json::Value {
+    let mut vm = vec![json!({
+        "id": "{DID}#key-0",
+        "type": "Multikey",
+        "controller": "{DID}",
+        "publicKeyMultibase": &derived.signing_pub
+    })];
+
     let mut did_document = json!({
         "@context": [
             "https://www.w3.org/ns/did/v1",
             "https://www.w3.org/ns/cid/v1"
         ],
         "id": "{DID}",
-        "verificationMethod": [
-            {
-                "id": "{DID}#key-0",
-                "type": "Multikey",
-                "controller": "{DID}",
-                "publicKeyMultibase": &derived.signing_pub
-            },
-            {
-                "id": "{DID}#key-1",
-                "type": "Multikey",
-                "controller": "{DID}",
-                "publicKeyMultibase": &derived.ka_pub
-            }
-        ],
         "authentication": ["{DID}#key-0"],
-        "assertionMethod": ["{DID}#key-0"],
-        "keyAgreement": ["{DID}#key-1"]
+        "assertionMethod": ["{DID}#key-0"]
     });
+
+    if include_ka {
+        vm.push(json!({
+            "id": "{DID}#key-1",
+            "type": "Multikey",
+            "controller": "{DID}",
+            "publicKeyMultibase": &derived.ka_pub
+        }));
+        did_document["keyAgreement"] = json!(["{DID}#key-1"]);
+    }
+
+    did_document["verificationMethod"] = json!(vm);
 
     // Optionally add mediator DIDComm service
     if add_mediator_service && let Some(ref msg) = config.messaging {

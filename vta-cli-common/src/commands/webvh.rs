@@ -149,6 +149,66 @@ pub async fn cmd_webvh_did_create(
     Ok(())
 }
 
+/// Helper that reads optional file inputs before building a `CreateDidWebvhRequest`.
+#[allow(clippy::too_many_arguments)]
+pub async fn cmd_webvh_did_create_with_files(
+    client: &VtaClient,
+    context_id: String,
+    server_id: Option<String>,
+    url: Option<String>,
+    path: Option<String>,
+    label: Option<String>,
+    portable: bool,
+    add_mediator_service: bool,
+    services: Option<String>,
+    pre_rotation_count: u32,
+    did_document_path: Option<String>,
+    did_log_path: Option<String>,
+    no_primary: bool,
+    signing_key_id: Option<String>,
+    ka_key_id: Option<String>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let did_document = match did_document_path {
+        Some(p) => {
+            let content =
+                std::fs::read_to_string(&p).map_err(|e| format!("failed to read {p}: {e}"))?;
+            Some(
+                serde_json::from_str::<serde_json::Value>(&content)
+                    .map_err(|e| format!("invalid JSON in {p}: {e}"))?,
+            )
+        }
+        None => None,
+    };
+    let did_log = match did_log_path {
+        Some(p) => {
+            Some(std::fs::read_to_string(&p).map_err(|e| format!("failed to read {p}: {e}"))?)
+        }
+        None => None,
+    };
+    let additional_services = services
+        .map(|s| serde_json::from_str::<Vec<serde_json::Value>>(&s))
+        .transpose()
+        .map_err(|e| format!("invalid --services JSON: {e}"))?;
+
+    let req = CreateDidWebvhRequest {
+        context_id,
+        server_id,
+        url,
+        path,
+        label,
+        portable,
+        add_mediator_service,
+        additional_services,
+        pre_rotation_count,
+        did_document,
+        did_log,
+        set_primary: !no_primary,
+        signing_key_id,
+        ka_key_id,
+    };
+    cmd_webvh_did_create(client, req).await
+}
+
 pub async fn cmd_webvh_did_list(
     client: &VtaClient,
     context_id: Option<&str>,

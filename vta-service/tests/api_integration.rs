@@ -64,7 +64,7 @@ impl TestApp {
             jwt_signing_key = "{}"
             "#,
             dir.path().display(),
-            BASE64.encode(&jwt_seed),
+            BASE64.encode(jwt_seed),
         ))
         .expect("parse config");
         // Set config_path to a writable location so update_config can persist
@@ -86,7 +86,14 @@ impl TestApp {
             wrapping_cache: vta_service::keys::wrapping::WrappingKeyCache::new(),
             config: Arc::new(RwLock::new(config)),
             seed_store,
-            did_resolver: None,
+            did_resolver: {
+                use affinidi_did_resolver_cache_sdk::{
+                    DIDCacheClient, config::DIDCacheConfigBuilder,
+                };
+                DIDCacheClient::new(DIDCacheConfigBuilder::default().build())
+                    .await
+                    .ok()
+            },
             secrets_resolver: None,
             #[cfg(feature = "didcomm")]
             didcomm_bridge: Arc::new(tokio::sync::RwLock::new(None)),
@@ -129,6 +136,7 @@ impl TestApp {
 struct TestContext {
     jwt_keys: Arc<JwtKeys>,
     sessions_ks: KeyspaceHandle,
+    #[allow(dead_code)]
     acl_ks: KeyspaceHandle,
     _dir: tempfile::TempDir,
 }
@@ -162,6 +170,7 @@ impl TestContext {
     }
 
     /// Create an ACL entry for a DID.
+    #[allow(dead_code)]
     async fn create_acl(&self, did: &str, role: Role, contexts: Vec<String>) {
         let entry = vti_common::acl::AclEntry {
             did: did.to_string(),
@@ -265,6 +274,31 @@ fn delete_auth(uri: &str, token: &str) -> Request<Body> {
         .header("Authorization", format!("Bearer {token}"))
         .body(Body::empty())
         .unwrap()
+}
+
+// ── Capabilities ──────────────────────────────────────────────────
+
+#[tokio::test]
+async fn capabilities_requires_auth() {
+    let (app, _ctx) = TestApp::new().await;
+    let (status, _) = app.request(get("/capabilities")).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn capabilities_returns_features() {
+    let (app, ctx) = TestApp::new().await;
+    let token = ctx
+        .auth_token("did:key:z6MkReader", "reader", vec!["any".into()])
+        .await;
+    let (status, body) = app.request(get_auth("/capabilities", &token)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body["version"].as_str().is_some());
+    assert!(body["features"].is_object());
+    assert!(body["services"].is_object());
+    assert!(body["did_creation_modes"].is_array());
+    // webvh feature is compiled in for tests
+    assert_eq!(body["features"]["webvh"], true);
 }
 
 // ── Health ─────────────────────────────────────────────────────────
@@ -1172,8 +1206,462 @@ async fn reader_cannot_create_key() {
         .request(post_auth(
             "/keys",
             &reader_token,
-            json!({"key_type": "Ed25519", "context_id": "test-ctx"}),
+            json!({"key_type": "ed25519", "context_id": "test-ctx"}),
         ))
         .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
+}
+
+// ── WebVH DID creation mode tests ─────────────────────────────────
+
+/// Helper: create a context via the API and return admin token.
+async fn setup_webvh_context(app: &TestApp, ctx: &TestContext, context_id: &str) -> String {
+    let super_token = ctx.auth_token("did:key:z6MkAdmin", "admin", vec![]).await;
+    let (status, _) = app
+        .request(post_auth(
+            "/contexts",
+            &super_token,
+            json!({"id": context_id, "name": context_id}),
+        ))
+        .await;
+    assert!(status.is_success(), "create context: {status}");
+    super_token
+}
+
+#[cfg(feature = "webvh")]
+#[tokio::test]
+async fn create_did_webvh_rejects_both_document_and_log() {
+    let (app, ctx) = TestApp::new().await;
+    let token = setup_webvh_context(&app, &ctx, "test-reject").await;
+
+    let (status, body) = app
+        .request(post_auth(
+            "/webvh/dids",
+            &token,
+            json!({
+                "context_id": "test-reject",
+                "url": "https://example.com/.well-known/did/did.jsonl",
+                "did_document": {"id": "{DID}"},
+                "did_log": "{\"some\": \"log\"}"
+            }),
+        ))
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "expected 400: {body}");
+}
+
+#[cfg(feature = "webvh")]
+#[tokio::test]
+async fn create_did_webvh_template_mode() {
+    let (app, ctx) = TestApp::new().await;
+    let token = setup_webvh_context(&app, &ctx, "test-template").await;
+
+    // Client-provided DID document template with {DID} placeholders
+    let template = json!({
+        "@context": [
+            "https://www.w3.org/ns/did/v1",
+            "https://www.w3.org/ns/cid/v1"
+        ],
+        "id": "{DID}",
+        "verificationMethod": [{
+            "id": "{DID}#custom-key",
+            "type": "Multikey",
+            "controller": "{DID}",
+            "publicKeyMultibase": "z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK"
+        }],
+        "authentication": ["{DID}#custom-key"],
+        "assertionMethod": ["{DID}#custom-key"]
+    });
+
+    let (status, body) = app
+        .request(post_auth(
+            "/webvh/dids",
+            &token,
+            json!({
+                "context_id": "test-template",
+                "url": "https://example.com/.well-known/did/did.jsonl",
+                "did_document": template,
+            }),
+        ))
+        .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "template create: {status} {body}"
+    );
+    assert!(body["did"].as_str().is_some(), "response has did");
+    assert!(
+        body["did_document"].is_object(),
+        "response has did_document"
+    );
+    assert!(
+        body["log_entry"].as_str().is_some(),
+        "response has log_entry"
+    );
+    // Verify the template was used (custom key ID present in returned document)
+    let doc = &body["did_document"];
+    let vm = doc["verificationMethod"]
+        .as_array()
+        .expect("verificationMethod array");
+    assert!(
+        vm.iter().any(|v| {
+            v["id"]
+                .as_str()
+                .is_some_and(|id| id.ends_with("#custom-key"))
+        }),
+        "template's custom key should be in the returned document"
+    );
+}
+
+#[cfg(feature = "webvh")]
+#[tokio::test]
+async fn create_did_webvh_final_mode_stores_record() {
+    let (app, ctx) = TestApp::new().await;
+    let token = setup_webvh_context(&app, &ctx, "test-final").await;
+
+    // First, create a DID via VTA-built mode to get a valid log entry
+    let (status, created) = app
+        .request(post_auth(
+            "/webvh/dids",
+            &token,
+            json!({
+                "context_id": "test-final",
+                "url": "https://example.com/.well-known/did/did.jsonl",
+                "set_primary": false,
+            }),
+        ))
+        .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "bootstrap create: {status} {created}"
+    );
+    let log_entry = created["log_entry"].as_str().expect("log_entry string");
+
+    // Now create another DID using the log entry in final mode, under a new context
+    let token2 = setup_webvh_context(&app, &ctx, "test-final-2").await;
+    let (status, body) = app
+        .request(post_auth(
+            "/webvh/dids",
+            &token2,
+            json!({
+                "context_id": "test-final-2",
+                "url": "https://example.com/.well-known/did/did.jsonl",
+                "did_log": log_entry,
+            }),
+        ))
+        .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "final mode create: {status} {body}"
+    );
+    let final_did = body["did"].as_str().expect("did in response");
+    assert!(!final_did.is_empty());
+    // signing_key_id and ka_key_id are empty in final mode (VTA didn't derive keys)
+    assert_eq!(body["signing_key_id"].as_str().unwrap(), "");
+    assert_eq!(body["ka_key_id"].as_str().unwrap(), "");
+}
+
+#[cfg(feature = "webvh")]
+#[tokio::test]
+async fn create_did_webvh_set_primary_false() {
+    let (app, ctx) = TestApp::new().await;
+    let token = setup_webvh_context(&app, &ctx, "test-no-primary").await;
+
+    let (status, _) = app
+        .request(post_auth(
+            "/webvh/dids",
+            &token,
+            json!({
+                "context_id": "test-no-primary",
+                "url": "https://example.com/.well-known/did/did.jsonl",
+                "set_primary": false,
+            }),
+        ))
+        .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    // Context's primary DID should still be null
+    let (status, body) = app
+        .request(get_auth("/contexts/test-no-primary", &token))
+        .await;
+    assert!(status.is_success(), "get context: {status}");
+    assert!(
+        body["did"].is_null(),
+        "context did should be null when set_primary=false"
+    );
+}
+
+#[cfg(feature = "webvh")]
+#[tokio::test]
+async fn create_did_webvh_set_primary_true() {
+    let (app, ctx) = TestApp::new().await;
+    let token = setup_webvh_context(&app, &ctx, "test-primary").await;
+
+    let (status, created) = app
+        .request(post_auth(
+            "/webvh/dids",
+            &token,
+            json!({
+                "context_id": "test-primary",
+                "url": "https://example.com/.well-known/did/did.jsonl",
+                "set_primary": true,
+            }),
+        ))
+        .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let created_did = created["did"].as_str().expect("did");
+
+    // Context's primary DID should be set
+    let (status, body) = app
+        .request(get_auth("/contexts/test-primary", &token))
+        .await;
+    assert!(status.is_success(), "get context: {status}");
+    assert_eq!(
+        body["did"].as_str().unwrap(),
+        created_did,
+        "context did should match created DID"
+    );
+}
+
+// ── User-specified key tests ──────────────────────────────────────
+
+/// Helper: import an Ed25519 key and return the key_id.
+#[cfg(feature = "webvh")]
+async fn import_ed25519_key(app: &TestApp, token: &str, label: &str, context_id: &str) -> String {
+    // 32 deterministic bytes for the Ed25519 seed (test only)
+    let seed_bytes = [0x42u8; 32];
+    let mb = multibase::encode(multibase::Base::Base58Btc, seed_bytes);
+
+    let (status, body) = app
+        .request(post_auth(
+            "/keys/import",
+            token,
+            json!({
+                "key_type": "ed25519",
+                "private_key_multibase": mb,
+                "label": label,
+                "context_id": context_id,
+            }),
+        ))
+        .await;
+    assert!(status.is_success(), "import ed25519: {status} {body}");
+    body["key_id"].as_str().unwrap().to_string()
+}
+
+/// Helper: import an X25519 key and return the key_id.
+#[cfg(feature = "webvh")]
+async fn import_x25519_key(app: &TestApp, token: &str, label: &str, context_id: &str) -> String {
+    // 32 deterministic bytes for the X25519 private key (test only)
+    let key_bytes = [0x99u8; 32];
+    let mb = multibase::encode(multibase::Base::Base58Btc, key_bytes);
+
+    let (status, body) = app
+        .request(post_auth(
+            "/keys/import",
+            token,
+            json!({
+                "key_type": "x25519",
+                "private_key_multibase": mb,
+                "label": label,
+                "context_id": context_id,
+            }),
+        ))
+        .await;
+    assert!(status.is_success(), "import x25519: {status} {body}");
+    body["key_id"].as_str().unwrap().to_string()
+}
+
+#[cfg(feature = "webvh")]
+#[tokio::test]
+async fn create_did_webvh_with_user_signing_key() {
+    let (app, ctx) = TestApp::new().await;
+    let token = setup_webvh_context(&app, &ctx, "test-user-sign").await;
+    let signing_key = import_ed25519_key(&app, &token, "my-sign", "test-user-sign").await;
+
+    let (status, body) = app
+        .request(post_auth(
+            "/webvh/dids",
+            &token,
+            json!({
+                "context_id": "test-user-sign",
+                "url": "https://example.com/.well-known/did/did.jsonl",
+                "signing_key_id": signing_key,
+            }),
+        ))
+        .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "signing-only create: {status} {body}"
+    );
+    assert!(body["did"].as_str().is_some());
+    // Document should have signing key but no keyAgreement
+    let doc = &body["did_document"];
+    assert!(doc["authentication"].is_array());
+    assert!(doc.get("keyAgreement").is_none() || doc["keyAgreement"].is_null());
+}
+
+#[cfg(feature = "webvh")]
+#[tokio::test]
+async fn create_did_webvh_with_user_signing_and_ka_keys() {
+    let (app, ctx) = TestApp::new().await;
+    let token = setup_webvh_context(&app, &ctx, "test-user-both").await;
+    let signing_key = import_ed25519_key(&app, &token, "my-sign", "test-user-both").await;
+    let ka_key = import_x25519_key(&app, &token, "my-ka", "test-user-both").await;
+
+    let (status, body) = app
+        .request(post_auth(
+            "/webvh/dids",
+            &token,
+            json!({
+                "context_id": "test-user-both",
+                "url": "https://example.com/.well-known/did/did.jsonl",
+                "signing_key_id": signing_key,
+                "ka_key_id": ka_key,
+            }),
+        ))
+        .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "both keys create: {status} {body}"
+    );
+    let doc = &body["did_document"];
+    assert!(doc["keyAgreement"].is_array(), "should have keyAgreement");
+    let vm = doc["verificationMethod"].as_array().unwrap();
+    assert_eq!(vm.len(), 2, "should have 2 verification methods");
+}
+
+#[cfg(feature = "webvh")]
+#[tokio::test]
+async fn create_did_webvh_ka_without_signing_rejected() {
+    let (app, ctx) = TestApp::new().await;
+    let token = setup_webvh_context(&app, &ctx, "test-ka-only").await;
+    let ka_key = import_x25519_key(&app, &token, "my-ka", "test-ka-only").await;
+
+    let (status, _) = app
+        .request(post_auth(
+            "/webvh/dids",
+            &token,
+            json!({
+                "context_id": "test-ka-only",
+                "url": "https://example.com/.well-known/did/did.jsonl",
+                "ka_key_id": ka_key,
+            }),
+        ))
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+#[cfg(feature = "webvh")]
+#[tokio::test]
+async fn create_did_webvh_didcomm_requires_ka_key() {
+    let (app, ctx) = TestApp::new().await;
+    let token = setup_webvh_context(&app, &ctx, "test-didcomm-ka").await;
+    let signing_key = import_ed25519_key(&app, &token, "my-sign", "test-didcomm-ka").await;
+
+    // Signing key only + mediator service → should fail
+    let (status, body) = app
+        .request(post_auth(
+            "/webvh/dids",
+            &token,
+            json!({
+                "context_id": "test-didcomm-ka",
+                "url": "https://example.com/.well-known/did/did.jsonl",
+                "signing_key_id": signing_key,
+                "add_mediator_service": true,
+            }),
+        ))
+        .await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "didcomm without ka: {status} {body}"
+    );
+}
+
+#[cfg(feature = "webvh")]
+#[tokio::test]
+async fn create_did_webvh_wrong_key_type_rejected() {
+    let (app, ctx) = TestApp::new().await;
+    let token = setup_webvh_context(&app, &ctx, "test-wrong-type").await;
+    let ka_key = import_x25519_key(&app, &token, "my-ka", "test-wrong-type").await;
+
+    // Use X25519 key as signing key → should fail
+    let (status, _) = app
+        .request(post_auth(
+            "/webvh/dids",
+            &token,
+            json!({
+                "context_id": "test-wrong-type",
+                "url": "https://example.com/.well-known/did/did.jsonl",
+                "signing_key_id": ka_key,
+            }),
+        ))
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+// ── Server-managed DID creation tests ─────────────────────────────
+
+#[cfg(feature = "webvh")]
+#[tokio::test]
+async fn create_did_webvh_unknown_server_returns_404() {
+    let (app, ctx) = TestApp::new().await;
+    let token = setup_webvh_context(&app, &ctx, "test-no-server").await;
+
+    let (status, body) = app
+        .request(post_auth(
+            "/webvh/dids",
+            &token,
+            json!({
+                "context_id": "test-no-server",
+                "server_id": "nonexistent-server",
+            }),
+        ))
+        .await;
+    assert_eq!(
+        status,
+        StatusCode::NOT_FOUND,
+        "unknown server_id: {status} {body}"
+    );
+}
+
+#[cfg(feature = "webvh")]
+#[tokio::test]
+async fn create_did_webvh_server_and_url_mutually_exclusive() {
+    let (app, ctx) = TestApp::new().await;
+    let token = setup_webvh_context(&app, &ctx, "test-exclusive").await;
+
+    let (status, _) = app
+        .request(post_auth(
+            "/webvh/dids",
+            &token,
+            json!({
+                "context_id": "test-exclusive",
+                "server_id": "some-server",
+                "url": "https://example.com/.well-known/did/did.jsonl",
+            }),
+        ))
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+#[cfg(feature = "webvh")]
+#[tokio::test]
+async fn create_did_webvh_neither_server_nor_url_rejected() {
+    let (app, ctx) = TestApp::new().await;
+    let token = setup_webvh_context(&app, &ctx, "test-neither").await;
+
+    let (status, _) = app
+        .request(post_auth(
+            "/webvh/dids",
+            &token,
+            json!({
+                "context_id": "test-neither",
+            }),
+        ))
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
 }

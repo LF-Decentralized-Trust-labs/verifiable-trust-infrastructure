@@ -285,6 +285,7 @@ pub async fn run(
                 seed_store: seed_store.clone(),
                 config: Arc::new(RwLock::new(config.clone())),
                 did_resolver: did_resolver.clone(),
+                didcomm_bridge: didcomm_bridge.clone(),
                 #[cfg(feature = "tee")]
                 tee_state: tee_context.as_ref().map(|tc| tc.state.clone()),
                 restart_tx: restart_tx.clone(),
