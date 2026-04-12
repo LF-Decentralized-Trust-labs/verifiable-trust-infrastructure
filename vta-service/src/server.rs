@@ -87,7 +87,7 @@ pub struct AppState {
     pub did_resolver: Option<DIDCacheClient>,
     pub secrets_resolver: Option<Arc<ThreadedSecretsResolver>>,
     #[cfg(feature = "didcomm")]
-    pub didcomm_bridge: Arc<tokio::sync::RwLock<Option<DIDCommBridge>>>,
+    pub didcomm_bridge: Arc<DIDCommBridge>,
     pub jwt_keys: Option<Arc<JwtKeys>>,
     pub atm: Option<ATM>,
     pub tee: Option<TeeContext>,
@@ -157,7 +157,7 @@ pub async fn build_app_state(
         did_resolver,
         secrets_resolver,
         #[cfg(feature = "didcomm")]
-        didcomm_bridge: Arc::new(tokio::sync::RwLock::new(None)),
+        didcomm_bridge: Arc::new(DIDCommBridge::new()),
         jwt_keys,
         atm,
         tee: tee_context,
@@ -266,10 +266,11 @@ pub async fn run(
         let storage_auth_config = config.auth.clone();
         let has_auth = jwt_keys.is_some();
 
-        // Shared DIDComm bridge (still used by REST handlers for WebVH request-response)
+        // Shared DIDComm bridge for outbound request-response messaging.
+        // Starts disconnected; the BridgeHandler captures the listener's ATM
+        // on the first inbound message.
         #[cfg(feature = "didcomm")]
-        let didcomm_bridge: Arc<tokio::sync::RwLock<Option<DIDCommBridge>>> =
-            Arc::new(tokio::sync::RwLock::new(None));
+        let didcomm_bridge: Arc<DIDCommBridge> = Arc::new(DIDCommBridge::new());
 
         // Build VtaState for the DIDComm service router
         #[cfg(feature = "didcomm")]
@@ -389,12 +390,15 @@ pub async fn run(
                         }],
                     };
 
-                    let router =
-                        messaging::router::build_router(Arc::clone(vta_state)).map_err(|e| {
-                            AppError::Internal(format!("failed to build DIDComm router: {e}"))
-                        })?;
+                    let handler = messaging::router::build_handler(
+                        Arc::clone(vta_state),
+                        didcomm_bridge.clone(),
+                    )
+                    .map_err(|e| {
+                        AppError::Internal(format!("failed to build DIDComm handler: {e}"))
+                    })?;
 
-                    match DIDCommService::start(service_config, router, didcomm_shutdown.clone())
+                    match DIDCommService::start(service_config, handler, didcomm_shutdown.clone())
                         .await
                     {
                         Ok(service) => {

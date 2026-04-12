@@ -52,6 +52,7 @@ hkdf = "0.12"
 affinidi-tdk = { workspace = true }
 affinidi-messaging-didcomm = "0.13"
 affinidi-messaging-didcomm-service = { workspace = true }
+async-trait = "0.1"
 affinidi-tdk-common = "0.5"
 affinidi-did-resolver-cache-sdk = { version = "0.8", features = ["network"] }
 tokio-util = { version = "0.7", features = ["rt"] }

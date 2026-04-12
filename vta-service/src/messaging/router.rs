@@ -15,6 +15,7 @@ use tokio::sync::RwLock;
 use affinidi_did_resolver_cache_sdk::DIDCacheClient;
 
 use crate::config::AppConfig;
+use crate::didcomm_bridge::DIDCommBridge;
 use crate::keys::seed_store::SeedStore;
 use crate::store::KeyspaceHandle;
 
@@ -43,15 +44,63 @@ pub struct VtaState {
     pub config: Arc<RwLock<AppConfig>>,
     pub did_resolver: Option<DIDCacheClient>,
     /// DIDComm bridge for outbound WebVH server communication.
-    pub didcomm_bridge: Arc<tokio::sync::RwLock<Option<crate::didcomm_bridge::DIDCommBridge>>>,
+    pub didcomm_bridge: Arc<DIDCommBridge>,
     #[cfg(feature = "tee")]
     pub tee_state: Option<crate::tee::TeeState>,
     /// Send `true` to trigger a soft restart.
     pub restart_tx: tokio::sync::watch::Sender<bool>,
 }
 
-/// Build the DIDComm message router with all VTA protocol handlers.
-pub fn build_router(state: Arc<VtaState>) -> Result<Router, DIDCommServiceError> {
+// ---------------------------------------------------------------------------
+// BridgeHandler — wraps the Router to intercept outbound-response routing
+// ---------------------------------------------------------------------------
+
+/// Handler wrapper that bridges the DIDComm listener's ATM to the
+/// outbound [`DIDCommBridge`].
+///
+/// On every inbound message this handler:
+/// 1. Captures the listener's ATM/profile so the bridge can reuse the
+///    same mediator connection for outbound sends.
+/// 2. Checks if the message completes a pending outbound request
+///    (via [`DIDCommBridge::try_complete`]). If so, the message is
+///    consumed and not dispatched to the inner Router.
+/// 3. Otherwise delegates to the inner Router for normal handler dispatch.
+pub struct BridgeHandler {
+    inner: Router,
+    bridge: Arc<DIDCommBridge>,
+}
+
+#[async_trait::async_trait]
+impl affinidi_messaging_didcomm_service::DIDCommHandler for BridgeHandler {
+    async fn handle(
+        &self,
+        ctx: affinidi_messaging_didcomm_service::HandlerContext,
+        message: affinidi_messaging_didcomm::Message,
+        meta: affinidi_messaging_didcomm::UnpackMetadata,
+    ) -> Result<Option<affinidi_messaging_didcomm_service::DIDCommResponse>, DIDCommServiceError>
+    {
+        // Keep the bridge's ATM current (cheap clone — ATM wraps Arc internally).
+        self.bridge
+            .update_connection(ctx.atm.clone(), ctx.profile.clone())
+            .await;
+
+        // Route responses to pending outbound requests before normal dispatch.
+        if self.bridge.try_complete(&message) {
+            return Ok(None);
+        }
+
+        self.inner.handle(ctx, message, meta).await
+    }
+}
+
+/// Build the DIDComm message handler with all VTA protocol handlers.
+///
+/// Returns a [`BridgeHandler`] that wraps the Router and integrates
+/// outbound request-response routing via the shared [`DIDCommBridge`].
+pub fn build_handler(
+    state: Arc<VtaState>,
+    bridge: Arc<DIDCommBridge>,
+) -> Result<BridgeHandler, DIDCommServiceError> {
     let mut router = Router::new()
         .extension(state)
         // Built-in protocol handlers
@@ -265,5 +314,8 @@ pub fn build_router(state: Arc<VtaState>) -> Result<Router, DIDCommServiceError>
         )
         .layer(RequestLogging);
 
-    Ok(router)
+    Ok(BridgeHandler {
+        inner: router,
+        bridge,
+    })
 }
