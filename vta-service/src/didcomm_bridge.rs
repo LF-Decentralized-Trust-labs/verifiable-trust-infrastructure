@@ -24,6 +24,12 @@ pub struct DIDCommBridge {
     pending: PendingMap,
 }
 
+impl Default for DIDCommBridge {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl DIDCommBridge {
     /// Create a new bridge in disconnected state.
     ///
@@ -46,7 +52,7 @@ impl DIDCommBridge {
     }
 
     /// Try to complete a pending outbound request. Returns true if the
-    /// message was routed to a waiting [`send_and_wait`] caller.
+    /// message was routed to a waiting [`Self::send_and_wait`] caller.
     pub fn try_complete(&self, msg: &Message) -> bool {
         if let Some(thid) = &msg.thid
             && let Some(tx) = self.pending.lock().unwrap().remove(thid)
