@@ -909,8 +909,8 @@ async fn build_wizard_did(
 
     let auth = cli_super_admin();
     let did_resolver = DIDCacheClient::new(DIDCacheConfigBuilder::default().build()).await?;
-    let no_bridge: Arc<tokio::sync::RwLock<Option<crate::didcomm_bridge::DIDCommBridge>>> =
-        Arc::new(tokio::sync::RwLock::new(None));
+    let no_bridge: Arc<crate::didcomm_bridge::DIDCommBridge> =
+        Arc::new(crate::didcomm_bridge::DIDCommBridge::new());
 
     let params = CreateDidWebvhParams {
         context_id: context_id.to_string(),

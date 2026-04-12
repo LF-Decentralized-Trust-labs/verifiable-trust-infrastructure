@@ -7740,6 +7740,7 @@ dependencies = [
  "affinidi-tdk",
  "affinidi-tdk-common",
  "argon2",
+ "async-trait",
  "aws-config",
  "aws-sdk-kms",
  "aws-sdk-secretsmanager",

@@ -202,7 +202,7 @@ pub async fn create_did_webvh(
     auth: &AuthClaims,
     params: CreateDidWebvhParams,
     did_resolver: &DIDCacheClient,
-    didcomm_bridge: &Arc<tokio::sync::RwLock<Option<DIDCommBridge>>>,
+    didcomm_bridge: &Arc<DIDCommBridge>,
     channel: &str,
 ) -> Result<CreateDidWebvhResultBody, AppError> {
     auth.require_admin()?;
@@ -778,7 +778,7 @@ pub async fn delete_did_webvh(
     auth: &AuthClaims,
     did: &str,
     did_resolver: &DIDCacheClient,
-    didcomm_bridge: &Arc<tokio::sync::RwLock<Option<DIDCommBridge>>>,
+    didcomm_bridge: &Arc<DIDCommBridge>,
     channel: &str,
 ) -> Result<DeleteDidWebvhResultBody, AppError> {
     auth.require_admin()?;
@@ -930,7 +930,7 @@ pub async fn remove_webvh_server(
 enum WebvhTransport<'a> {
     Rest(WebvhClient),
     DIDComm {
-        bridge: &'a Arc<tokio::sync::RwLock<Option<DIDCommBridge>>>,
+        bridge: &'a DIDCommBridge,
         vta_did: &'a str,
         server_did: String,
     },
@@ -943,7 +943,7 @@ impl<'a> WebvhTransport<'a> {
     async fn from_server(
         server: &WebvhServerRecord,
         did_resolver: &DIDCacheClient,
-        didcomm_bridge: &'a Arc<tokio::sync::RwLock<Option<DIDCommBridge>>>,
+        didcomm_bridge: &'a Arc<DIDCommBridge>,
         config: &'a AppConfig,
     ) -> Result<Self, AppError> {
         let resolved = did_resolver.resolve(&server.did).await.map_err(|e| {
@@ -958,15 +958,6 @@ impl<'a> WebvhTransport<'a> {
             .any(|svc| svc.type_.iter().any(|t| t == "DIDCommMessaging"));
         if has_didcomm {
             info!(server_did = %server.did, transport = "didcomm", "resolved webvh server endpoint");
-            let guard = didcomm_bridge.read().await;
-            let _bridge = guard.as_ref().ok_or_else(|| {
-                AppError::Internal(
-                    "DIDComm not available — mediator connection not established".into(),
-                )
-            })?;
-            // Drop the guard — we'll re-acquire when needed via the enum variant.
-            // For now, just validate it's available.
-            drop(guard);
             let vta_did = config.vta_did.as_deref().ok_or_else(|| {
                 AppError::Internal(
                     "VTA DID not configured — cannot communicate with WebVH server via DIDComm"
@@ -1001,35 +992,15 @@ impl<'a> WebvhTransport<'a> {
         )))
     }
 
-    /// Acquire the DIDComm bridge and return an error if the connection is down.
-    async fn acquire_bridge(
-        &self,
-    ) -> Result<tokio::sync::RwLockReadGuard<'_, Option<DIDCommBridge>>, AppError> {
-        match self {
-            Self::DIDComm { bridge, .. } => {
-                let guard = bridge.read().await;
-                if guard.is_none() {
-                    return Err(AppError::Internal(
-                        "DIDComm not available — mediator connection not established".into(),
-                    ));
-                }
-                Ok(guard)
-            }
-            _ => Err(AppError::Internal("not a DIDComm transport".into())),
-        }
-    }
-
     async fn request_uri(&self, path: Option<&str>) -> Result<RequestUriResponse, AppError> {
         match self {
             Self::Rest(c) => c.request_uri(path).await,
             Self::DIDComm {
+                bridge,
                 vta_did,
                 server_did,
-                ..
             } => {
-                let guard = self.acquire_bridge().await?;
-                let b = guard.as_ref().unwrap();
-                WebvhDIDCommClient::new(b, vta_did, server_did)
+                WebvhDIDCommClient::new(bridge, vta_did, server_did)
                     .request_uri(path)
                     .await
             }
@@ -1040,13 +1011,11 @@ impl<'a> WebvhTransport<'a> {
         match self {
             Self::Rest(c) => c.publish_did(mnemonic, log_content).await,
             Self::DIDComm {
+                bridge,
                 vta_did,
                 server_did,
-                ..
             } => {
-                let guard = self.acquire_bridge().await?;
-                let b = guard.as_ref().unwrap();
-                WebvhDIDCommClient::new(b, vta_did, server_did)
+                WebvhDIDCommClient::new(bridge, vta_did, server_did)
                     .publish_did(mnemonic, log_content)
                     .await
             }
@@ -1057,13 +1026,11 @@ impl<'a> WebvhTransport<'a> {
         match self {
             Self::Rest(c) => c.delete_did(mnemonic).await,
             Self::DIDComm {
+                bridge,
                 vta_did,
                 server_did,
-                ..
             } => {
-                let guard = self.acquire_bridge().await?;
-                let b = guard.as_ref().unwrap();
-                WebvhDIDCommClient::new(b, vta_did, server_did)
+                WebvhDIDCommClient::new(bridge, vta_did, server_did)
                     .delete_did(mnemonic)
                     .await
             }

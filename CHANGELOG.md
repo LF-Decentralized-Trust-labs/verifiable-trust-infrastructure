@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.3.2 — 2026-04-12
+
+### Fixed
+
+- **DIDComm outbound response routing** — The `DIDCommBridge` now
+  correctly receives responses to outbound request-response messages
+  (e.g., WebVH DID creation via DIDComm transport). Previously,
+  `try_complete()` was never called on inbound messages, so
+  `send_and_wait` would always time out.
+- **Single mediator connection** — Replaced the dual-ATM architecture
+  (one for the listener, one for the bridge) with a single shared
+  connection. The new `BridgeHandler` wrapper captures the listener's
+  ATM from `HandlerContext` and intercepts response messages before
+  normal handler dispatch. This eliminates the
+  `w.websocket.duplicate-channel` error loop that occurred when two
+  connections used the same DID.
+
 ## 0.3.1 — 2026-04-11
 
 ### Client-Provided DID Documents for WebVH Creation

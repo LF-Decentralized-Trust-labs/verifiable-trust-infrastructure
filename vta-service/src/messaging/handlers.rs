@@ -801,8 +801,6 @@ pub async fn handle_delete_did_webvh(
         .did_resolver
         .as_ref()
         .ok_or_else(|| handler_err("DID resolver not available"))?;
-    // NOTE: Bridge not yet wired — see handle_create_did_webvh comment
-    let bridge = std::sync::Arc::new(tokio::sync::RwLock::new(None));
     let result = operations::did_webvh::delete_did_webvh(
         &state.webvh_ks,
         &state.keys_ks,
@@ -811,7 +809,7 @@ pub async fn handle_delete_did_webvh(
         &auth,
         &body.did,
         did_resolver,
-        &bridge,
+        &state.didcomm_bridge,
         "didcomm",
     )
     .await
