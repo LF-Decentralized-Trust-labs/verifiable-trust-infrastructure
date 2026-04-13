@@ -268,7 +268,7 @@ fn run_rest_thread(
     });
 }
 
-/// DIDComm thread: connects to the mediator and processes inbound messages.
+/// DIDComm thread: runs the DIDComm service until shutdown.
 fn run_didcomm_thread(
     config: AppConfig,
     secrets_resolver: Option<Arc<ThreadedSecretsResolver>>,
@@ -293,20 +293,8 @@ fn run_didcomm_thread(
             }
         };
 
-        // Initialize ATM connection
-        let (atm, profile) = match messaging::init_didcomm_connection(&config, sr, did).await {
-            Some(handles) => handles,
-            None => {
-                let _ = shutdown_rx.changed().await;
-                info!("DIDComm thread shutting down (init failed)");
-                return;
-            }
-        };
+        messaging::run_didcomm_service(&config, sr, did, shutdown_rx).await;
 
-        // Run message loop until shutdown
-        messaging::run_didcomm_loop(&atm, &profile, did, shutdown_rx).await;
-
-        // Graceful ATM shutdown
         info!("DIDComm thread shutting down");
     });
 }

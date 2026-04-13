@@ -1,54 +1,60 @@
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 
+use affinidi_messaging_didcomm_service::DIDCommService;
 use affinidi_tdk::didcomm::Message;
-use affinidi_tdk::messaging::ATM;
-use affinidi_tdk::messaging::profiles::ATMProfile;
-use vta_sdk::didcomm_transport::{DIDCommSendParams, PendingMap, send_and_wait_raw};
+use tokio::sync::oneshot;
 
 use crate::error::{AppError, bad_gateway_error};
+use vta_sdk::protocols::{PROBLEM_REPORT_TYPE, extract_problem_report};
 
-/// Bridge between REST/DIDComm handlers and the DIDComm listener's ATM.
+/// Map of pending request IDs to oneshot senders for response routing.
+pub type PendingMap = Arc<std::sync::Mutex<HashMap<String, oneshot::Sender<Message>>>>;
+
+/// Bridge between REST/DIDComm handlers and the DIDComm service's outbound
+/// send capability.
 ///
 /// Provides outbound request-response DIDComm messaging by registering
 /// oneshot channels keyed by message ID. The [`BridgeHandler`] wrapper
 /// calls [`try_complete`] on each inbound message to route responses
 /// back to the waiting handler.
 ///
-/// The bridge starts disconnected. The listener's ATM is captured via
-/// [`update_connection`] when the first inbound message arrives.
+/// The bridge starts without a service reference. Call [`set_service`]
+/// after [`DIDCommService::start`] to enable outbound sends.
 ///
 /// [`BridgeHandler`]: crate::messaging::router::BridgeHandler
 pub struct DIDCommBridge {
-    connection: tokio::sync::RwLock<Option<(ATM, Arc<ATMProfile>)>>,
+    service: tokio::sync::OnceCell<DIDCommService>,
     pending: PendingMap,
-}
-
-impl Default for DIDCommBridge {
-    fn default() -> Self {
-        Self::new()
-    }
+    listener_id: String,
 }
 
 impl DIDCommBridge {
-    /// Create a new bridge in disconnected state.
+    /// Create a new bridge targeting a specific listener.
     ///
-    /// The connection will be populated by [`BridgeHandler`] once the
-    /// DIDComm listener connects to the mediator.
-    pub fn new() -> Self {
+    /// Call [`set_service`] after the DIDComm service starts to enable
+    /// outbound sends.
+    pub fn new(listener_id: impl Into<String>) -> Self {
         Self {
-            connection: tokio::sync::RwLock::new(None),
+            service: tokio::sync::OnceCell::new(),
             pending: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            listener_id: listener_id.into(),
         }
     }
 
-    /// Store the listener's ATM connection for outbound use.
+    /// Create a placeholder bridge for test/CLI contexts that never send.
     ///
-    /// Called by [`BridgeHandler`] on every inbound message to keep
-    /// the reference current across listener reconnects.
-    pub async fn update_connection(&self, atm: ATM, profile: Arc<ATMProfile>) {
-        let mut guard = self.connection.write().await;
-        *guard = Some((atm, profile));
+    /// Attempting to send via a placeholder will return an error.
+    pub fn placeholder() -> Self {
+        Self::new("")
+    }
+
+    /// Store the DIDComm service reference for outbound sends.
+    ///
+    /// Called once after [`DIDCommService::start`] completes.
+    pub fn set_service(&self, service: DIDCommService) {
+        let _ = self.service.set(service);
     }
 
     /// Try to complete a pending outbound request. Returns true if the
@@ -67,7 +73,6 @@ impl DIDCommBridge {
     #[allow(clippy::too_many_arguments)]
     pub async fn send_and_wait(
         &self,
-        vta_did: &str,
         server_did: &str,
         msg_type: &str,
         body: serde_json::Value,
@@ -75,31 +80,75 @@ impl DIDCommBridge {
         problem_report_type: &str,
         timeout_secs: u64,
     ) -> Result<Message, AppError> {
-        let (atm, profile) = {
-            let guard = self.connection.read().await;
-            guard
-                .as_ref()
-                .map(|(a, p)| (a.clone(), p.clone()))
-                .ok_or_else(|| {
-                    AppError::Internal(
-                        "DIDComm not available — mediator connection not established".into(),
-                    )
-                })?
-        };
+        let service = self
+            .service
+            .get()
+            .ok_or_else(|| AppError::Internal("DIDComm service not initialized".into()))?;
 
-        send_and_wait_raw(DIDCommSendParams {
-            atm: &atm,
-            profile: &profile,
-            pending: &self.pending,
-            from_did: vta_did,
-            to_did: server_did,
-            msg_type,
-            body,
-            expected_type,
-            problem_report_type,
-            timeout_secs,
-        })
-        .await
-        .map_err(bad_gateway_error)
+        let vta_did = service
+            .listener_did(&self.listener_id)
+            .await
+            .ok_or_else(|| {
+                AppError::Internal(format!(
+                    "listener '{}' not found in DIDComm service",
+                    self.listener_id
+                ))
+            })?;
+
+        let msg_id = uuid::Uuid::new_v4().to_string();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let msg = Message::build(msg_id.clone(), msg_type.to_string(), body)
+            .from(vta_did.clone())
+            .to(server_did.to_string())
+            .created_time(now)
+            .expires_time(now + timeout_secs)
+            .finalize();
+
+        // Register pending before sending
+        let (tx, rx) = oneshot::channel();
+        self.pending.lock().unwrap().insert(msg_id.clone(), tx);
+
+        // Send via the DIDComm service with retry on reconnect
+        service
+            .send_message_with_retry(
+                &self.listener_id,
+                msg,
+                server_did,
+                3,
+                Duration::from_secs(2),
+            )
+            .await
+            .map_err(|e| {
+                self.pending.lock().unwrap().remove(&msg_id);
+                bad_gateway_error(format!("failed to send message: {e}"))
+            })?;
+
+        // Wait for response with timeout
+        let response = tokio::time::timeout(Duration::from_secs(timeout_secs), rx)
+            .await
+            .map_err(|_| {
+                self.pending.lock().unwrap().remove(&msg_id);
+                bad_gateway_error("timeout waiting for DIDComm response".to_string())
+            })?
+            .map_err(|_| bad_gateway_error("pending request channel dropped".to_string()))?;
+
+        // Check for problem report
+        if response.typ == problem_report_type || response.typ == PROBLEM_REPORT_TYPE {
+            let (code, comment) = extract_problem_report(&response.body);
+            return Err(bad_gateway_error(format!("{code}: {comment}")));
+        }
+
+        // Verify expected type
+        if response.typ != expected_type {
+            return Err(bad_gateway_error(format!(
+                "unexpected response type: expected {expected_type}, got {}",
+                response.typ
+            )));
+        }
+
+        Ok(response)
     }
 }
