@@ -17,10 +17,10 @@ pub type PendingMap = Arc<std::sync::Mutex<HashMap<String, oneshot::Sender<Messa
 ///
 /// Provides outbound request-response DIDComm messaging by registering
 /// oneshot channels keyed by message ID. The [`BridgeHandler`] wrapper
-/// calls [`try_complete`] on each inbound message to route responses
+/// calls [`try_complete`](Self::try_complete) on each inbound message to route responses
 /// back to the waiting handler.
 ///
-/// The bridge starts without a service reference. Call [`set_service`]
+/// The bridge starts without a service reference. Call [`set_service`](Self::set_service)
 /// after [`DIDCommService::start`] to enable outbound sends.
 ///
 /// [`BridgeHandler`]: crate::messaging::router::BridgeHandler
@@ -33,7 +33,7 @@ pub struct DIDCommBridge {
 impl DIDCommBridge {
     /// Create a new bridge targeting a specific listener.
     ///
-    /// Call [`set_service`] after the DIDComm service starts to enable
+    /// Call [`set_service`](Self::set_service) after the DIDComm service starts to enable
     /// outbound sends.
     pub fn new(listener_id: impl Into<String>) -> Self {
         Self {
