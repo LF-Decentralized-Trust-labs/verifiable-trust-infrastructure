@@ -11,6 +11,7 @@ use affinidi_messaging_didcomm_service::{
     TRUST_PING_TYPE, handler_fn, ignore_handler, trust_ping_handler,
 };
 use tokio::sync::RwLock;
+use tracing::debug;
 
 use affinidi_did_resolver_cache_sdk::DIDCacheClient;
 
@@ -87,6 +88,16 @@ impl affinidi_messaging_didcomm_service::DIDCommHandler for BridgeHandler {
         // Route responses to pending outbound requests before normal dispatch.
         if self.bridge.try_complete(&message) {
             return Ok(None);
+        }
+
+        // Log unmatched responses (likely stale messages from a previous session)
+        if message.thid.is_some() {
+            debug!(
+                msg_type = %message.typ,
+                thid = message.thid.as_deref().unwrap_or(""),
+                from = message.from.as_deref().unwrap_or("unknown"),
+                "unmatched response — no pending request for thread (stale message)"
+            );
         }
 
         self.inner.handle(ctx, message, meta).await

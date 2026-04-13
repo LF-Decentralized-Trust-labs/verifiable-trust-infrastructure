@@ -1107,10 +1107,10 @@ pub async fn handle_problem_report(_ctx: HandlerContext, message: Message) -> Ha
         .body
         .get("comment")
         .and_then(|v| v.as_str())
-        .unwrap_or("");
+        .unwrap_or("no details provided");
     let from = message.from.as_deref().unwrap_or("unknown");
     let thid = message.thid.as_deref().unwrap_or("none");
-    warn!(from, code, comment, thid, "received problem-report");
+    warn!(from, code, comment, thid, msg_type = %message.typ, "received problem-report");
     Ok(None)
 }
 
@@ -1174,7 +1174,33 @@ pub async fn handle_discover_capabilities(
 }
 
 pub async fn handle_unknown(_ctx: HandlerContext, message: Message) -> HandlerResult {
-    warn!(msg_type = %message.typ, "unknown message type — ignoring");
+    let from = message.from.as_deref().unwrap_or("unknown");
+    let thid = message.thid.as_deref().unwrap_or("none");
+
+    // Extract problem-report details if present in the body
+    if message.typ.contains("problem-report") {
+        let code = message
+            .body
+            .get("code")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown");
+        let comment = message
+            .body
+            .get("comment")
+            .and_then(|v| v.as_str())
+            .unwrap_or("no details provided");
+        warn!(
+            from,
+            code,
+            comment,
+            thid,
+            msg_type = %message.typ,
+            "received unhandled problem-report"
+        );
+        return Ok(None);
+    }
+
+    warn!(from, thid, msg_type = %message.typ, "unknown message type — ignoring");
     Ok(Some(DIDCommResponse::problem_report(
         ProblemReport::bad_request(format!("unsupported message type: {}", message.typ)),
     )))
