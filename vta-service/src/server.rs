@@ -157,7 +157,8 @@ pub async fn build_app_state(
         did_resolver,
         secrets_resolver,
         #[cfg(feature = "didcomm")]
-        didcomm_bridge: Arc::new(DIDCommBridge::new()),
+        didcomm_bridge: Arc::new(DIDCommBridge::placeholder()),
+
         jwt_keys,
         atm,
         tee: tee_context,
@@ -267,10 +268,9 @@ pub async fn run(
         let has_auth = jwt_keys.is_some();
 
         // Shared DIDComm bridge for outbound request-response messaging.
-        // Starts disconnected; the BridgeHandler captures the listener's ATM
-        // on the first inbound message.
+        // The service reference is set after DIDCommService::start().
         #[cfg(feature = "didcomm")]
-        let didcomm_bridge: Arc<DIDCommBridge> = Arc::new(DIDCommBridge::new());
+        let didcomm_bridge: Arc<DIDCommBridge> = Arc::new(DIDCommBridge::new("vta-main"));
 
         // Build VtaState for the DIDComm service router
         #[cfg(feature = "didcomm")]
@@ -402,6 +402,15 @@ pub async fn run(
                         .await
                     {
                         Ok(service) => {
+                            // Wait for the mediator connection before accepting traffic
+                            if let Err(e) = service
+                                .wait_connected("vta-main", Duration::from_secs(30))
+                                .await
+                            {
+                                warn!("DIDComm listener not connected after 30s: {e}");
+                            }
+                            didcomm_bridge.set_service(service.clone());
+                            spawn_event_logger(service.clone());
                             info!("DIDComm service started");
                             Some(service)
                         }
@@ -477,10 +486,10 @@ pub async fn run(
             }
         }
 
-        // Signal DIDComm service to stop and wait for graceful shutdown
+        // Gracefully shut down the DIDComm service and wait for listeners
+        // to disconnect from the mediator.
         #[cfg(feature = "didcomm")]
-        if let Some(service) = didcomm_service {
-            didcomm_shutdown.cancel();
+        if let Some(ref service) = didcomm_service {
             service.shutdown().await;
             info!("DIDComm service stopped");
         }
@@ -870,6 +879,46 @@ fn decode_jwt_key(b64: &str) -> Result<JwtKeys, AppError> {
     let keys = JwtKeys::from_ed25519_bytes(&key_bytes, "VTA")?;
     debug!("JWT signing key decoded successfully");
     Ok(keys)
+}
+
+/// Spawn a background task that logs DIDComm listener lifecycle events.
+#[cfg(feature = "didcomm")]
+fn spawn_event_logger(service: DIDCommService) {
+    use affinidi_messaging_didcomm_service::ListenerEvent;
+
+    let mut rx = service.subscribe();
+    tokio::spawn(async move {
+        loop {
+            match rx.recv().await {
+                Ok(ListenerEvent::Connected { listener_id }) => {
+                    info!(listener = %listener_id, "DIDComm listener connected to mediator");
+                }
+                Ok(ListenerEvent::Disconnected { listener_id, error }) => {
+                    warn!(
+                        listener = %listener_id,
+                        error = error.as_deref().unwrap_or("none"),
+                        "DIDComm listener disconnected from mediator"
+                    );
+                }
+                Ok(ListenerEvent::Restarting {
+                    listener_id,
+                    attempt,
+                    delay,
+                }) => {
+                    info!(
+                        listener = %listener_id,
+                        attempt,
+                        delay_secs = delay.as_secs(),
+                        "DIDComm listener restarting"
+                    );
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                    warn!(skipped = n, "DIDComm event logger lagged");
+                }
+            }
+        }
+    });
 }
 
 async fn shutdown_signal() {

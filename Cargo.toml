@@ -28,7 +28,7 @@ repository = "https://github.com/OpenVTC/verifiable-trust-infrastructure"
 
 # Affinidi Trust Development Kit
 affinidi-tdk = "0.6"
-affinidi-messaging-didcomm-service = "0.1"
+affinidi-messaging-didcomm-service = "0.2"
 
 # Decentralized Trust Graph Credentials
 dtg-credentials = "0.1"

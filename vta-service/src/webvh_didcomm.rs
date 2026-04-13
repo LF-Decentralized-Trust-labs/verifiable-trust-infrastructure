@@ -13,21 +13,16 @@ const MSG_PROBLEM_REPORT: &str = "https://affinidi.com/webvh/1.0/did/problem-rep
 
 /// DIDComm-based client for communicating with a WebVH server.
 ///
-/// Routes messages through the main ATM connection via [`DIDCommBridge`],
+/// Routes messages through the DIDComm service's listener connection,
 /// avoiding duplicate WebSocket connections to the mediator.
 pub struct WebvhDIDCommClient<'a> {
     bridge: &'a DIDCommBridge,
-    vta_did: &'a str,
     server_did: &'a str,
 }
 
 impl<'a> WebvhDIDCommClient<'a> {
-    pub fn new(bridge: &'a DIDCommBridge, vta_did: &'a str, server_did: &'a str) -> Self {
-        Self {
-            bridge,
-            vta_did,
-            server_did,
-        }
+    pub fn new(bridge: &'a DIDCommBridge, server_did: &'a str) -> Self {
+        Self { bridge, server_did }
     }
 
     /// Request a URI allocation from the WebVH server.
@@ -40,7 +35,6 @@ impl<'a> WebvhDIDCommClient<'a> {
         let response = self
             .bridge
             .send_and_wait(
-                self.vta_did,
                 self.server_did,
                 MSG_DID_REQUEST,
                 body,
@@ -63,7 +57,6 @@ impl<'a> WebvhDIDCommClient<'a> {
 
         self.bridge
             .send_and_wait(
-                self.vta_did,
                 self.server_did,
                 MSG_DID_PUBLISH,
                 body,
@@ -81,7 +74,6 @@ impl<'a> WebvhDIDCommClient<'a> {
 
         self.bridge
             .send_and_wait(
-                self.vta_did,
                 self.server_did,
                 MSG_DELETE,
                 body,

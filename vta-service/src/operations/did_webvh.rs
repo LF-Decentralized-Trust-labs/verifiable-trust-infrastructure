@@ -268,7 +268,7 @@ pub async fn create_did_webvh(
                     AppError::NotFound(format!("webvh server not found: {server_id}"))
                 })?;
             let transport =
-                WebvhTransport::from_server(&server, did_resolver, didcomm_bridge, config).await?;
+                WebvhTransport::from_server(&server, did_resolver, didcomm_bridge).await?;
             // Final mode has no mnemonic from a server request — use the SCID as identifier
             transport.publish_did(&scid, did_log).await?;
         }
@@ -440,8 +440,7 @@ pub async fn create_did_webvh(
             .await?
             .ok_or_else(|| AppError::NotFound(format!("webvh server not found: {server_id}")))?;
 
-        let transport =
-            WebvhTransport::from_server(&server, did_resolver, didcomm_bridge, config).await?;
+        let transport = WebvhTransport::from_server(&server, did_resolver, didcomm_bridge).await?;
         let uri_response = transport.request_uri(params.path.as_deref()).await?;
 
         // Validate the URL
@@ -669,8 +668,7 @@ pub async fn create_did_webvh(
             .await?
             .ok_or_else(|| AppError::NotFound(format!("webvh server not found: {server_id}")))?;
 
-        let transport =
-            WebvhTransport::from_server(&server, did_resolver, didcomm_bridge, config).await?;
+        let transport = WebvhTransport::from_server(&server, did_resolver, didcomm_bridge).await?;
         transport.publish_did(mnemonic, &log_content).await?;
 
         // Store DID record and log
@@ -774,7 +772,7 @@ pub async fn delete_did_webvh(
     webvh_ks: &KeyspaceHandle,
     keys_ks: &KeyspaceHandle,
     _seed_store: &dyn SeedStore,
-    config: &AppConfig,
+    _config: &AppConfig,
     auth: &AuthClaims,
     did: &str,
     did_resolver: &DIDCacheClient,
@@ -791,7 +789,7 @@ pub async fn delete_did_webvh(
     let server = webvh_store::get_server(webvh_ks, &record.server_id).await?;
 
     if let Some(server) = server {
-        match WebvhTransport::from_server(&server, did_resolver, didcomm_bridge, config).await {
+        match WebvhTransport::from_server(&server, did_resolver, didcomm_bridge).await {
             Ok(transport) => {
                 if let Err(e) = transport.delete_did(&record.mnemonic).await {
                     tracing::warn!(did = %did, error = %e, "failed to delete DID from webvh-server (continuing local cleanup)");
@@ -931,7 +929,6 @@ enum WebvhTransport<'a> {
     Rest(WebvhClient),
     DIDComm {
         bridge: &'a DIDCommBridge,
-        vta_did: &'a str,
         server_did: String,
     },
 }
@@ -944,7 +941,6 @@ impl<'a> WebvhTransport<'a> {
         server: &WebvhServerRecord,
         did_resolver: &DIDCacheClient,
         didcomm_bridge: &'a Arc<DIDCommBridge>,
-        config: &'a AppConfig,
     ) -> Result<Self, AppError> {
         let resolved = did_resolver.resolve(&server.did).await.map_err(|e| {
             AppError::Internal(format!("failed to resolve server DID {}: {e}", server.did))
@@ -958,15 +954,8 @@ impl<'a> WebvhTransport<'a> {
             .any(|svc| svc.type_.iter().any(|t| t == "DIDCommMessaging"));
         if has_didcomm {
             info!(server_did = %server.did, transport = "didcomm", "resolved webvh server endpoint");
-            let vta_did = config.vta_did.as_deref().ok_or_else(|| {
-                AppError::Internal(
-                    "VTA DID not configured — cannot communicate with WebVH server via DIDComm"
-                        .into(),
-                )
-            })?;
             return Ok(Self::DIDComm {
                 bridge: didcomm_bridge,
-                vta_did,
                 server_did: server.did.clone(),
             });
         }
@@ -995,12 +984,8 @@ impl<'a> WebvhTransport<'a> {
     async fn request_uri(&self, path: Option<&str>) -> Result<RequestUriResponse, AppError> {
         match self {
             Self::Rest(c) => c.request_uri(path).await,
-            Self::DIDComm {
-                bridge,
-                vta_did,
-                server_did,
-            } => {
-                WebvhDIDCommClient::new(bridge, vta_did, server_did)
+            Self::DIDComm { bridge, server_did } => {
+                WebvhDIDCommClient::new(bridge, server_did)
                     .request_uri(path)
                     .await
             }
@@ -1010,12 +995,8 @@ impl<'a> WebvhTransport<'a> {
     async fn publish_did(&self, mnemonic: &str, log_content: &str) -> Result<(), AppError> {
         match self {
             Self::Rest(c) => c.publish_did(mnemonic, log_content).await,
-            Self::DIDComm {
-                bridge,
-                vta_did,
-                server_did,
-            } => {
-                WebvhDIDCommClient::new(bridge, vta_did, server_did)
+            Self::DIDComm { bridge, server_did } => {
+                WebvhDIDCommClient::new(bridge, server_did)
                     .publish_did(mnemonic, log_content)
                     .await
             }
@@ -1025,12 +1006,8 @@ impl<'a> WebvhTransport<'a> {
     async fn delete_did(&self, mnemonic: &str) -> Result<(), AppError> {
         match self {
             Self::Rest(c) => c.delete_did(mnemonic).await,
-            Self::DIDComm {
-                bridge,
-                vta_did,
-                server_did,
-            } => {
-                WebvhDIDCommClient::new(bridge, vta_did, server_did)
+            Self::DIDComm { bridge, server_did } => {
+                WebvhDIDCommClient::new(bridge, server_did)
                     .delete_did(mnemonic)
                     .await
             }

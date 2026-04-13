@@ -141,7 +141,7 @@ pub async fn run_create_did_webvh(
     let auth = cli_super_admin();
     let did_resolver = DIDCacheClient::new(DIDCacheConfigBuilder::default().build()).await?;
     let no_bridge: Arc<crate::didcomm_bridge::DIDCommBridge> =
-        Arc::new(crate::didcomm_bridge::DIDCommBridge::new());
+        Arc::new(crate::didcomm_bridge::DIDCommBridge::placeholder());
 
     let params = CreateDidWebvhParams {
         context_id: args.context.clone(),

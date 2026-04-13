@@ -168,7 +168,7 @@ pub async fn run_create_did(
     };
 
     let did_resolver = DIDCacheClient::new(DIDCacheConfigBuilder::default().build()).await?;
-    let no_bridge: Arc<DIDCommBridge> = Arc::new(DIDCommBridge::new());
+    let no_bridge: Arc<DIDCommBridge> = Arc::new(DIDCommBridge::placeholder());
     let result = operations::did_webvh::create_did_webvh(
         &keys_ks,
         &imported_ks,
@@ -256,7 +256,7 @@ pub async fn run_delete_did(
 
     let auth = cli_super_admin();
     let did_resolver = DIDCacheClient::new(DIDCacheConfigBuilder::default().build()).await?;
-    let no_bridge: Arc<DIDCommBridge> = Arc::new(DIDCommBridge::new());
+    let no_bridge: Arc<DIDCommBridge> = Arc::new(DIDCommBridge::placeholder());
     operations::did_webvh::delete_did_webvh(
         &webvh_ks,
         &keys_ks,

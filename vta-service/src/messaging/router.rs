@@ -80,11 +80,6 @@ impl affinidi_messaging_didcomm_service::DIDCommHandler for BridgeHandler {
         meta: affinidi_messaging_didcomm::UnpackMetadata,
     ) -> Result<Option<affinidi_messaging_didcomm_service::DIDCommResponse>, DIDCommServiceError>
     {
-        // Keep the bridge's ATM current (cheap clone — ATM wraps Arc internally).
-        self.bridge
-            .update_connection(ctx.atm.clone(), ctx.profile.clone())
-            .await;
-
         // Route responses to pending outbound requests before normal dispatch.
         if self.bridge.try_complete(&message) {
             return Ok(None);

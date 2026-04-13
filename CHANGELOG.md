@@ -1,5 +1,40 @@
 # Changelog
 
+## 0.4.0 — 2026-04-13
+
+### Changed
+
+- **Upgrade to `affinidi-messaging-didcomm-service` v0.2** — Both VTA
+  and VTC now use the v0.2 DIDComm service framework, which provides
+  production-ready lifecycle management for mediator connections.
+- **VTA DIDComm bridge simplified** — The bridge no longer captures the
+  listener's ATM from handler context. Instead, it uses
+  `DIDCommService::send_message_with_retry()` for resilient delivery
+  with exponential backoff across mediator reconnects, and
+  `listener_did()` for dynamic DID lookup.
+- **VTA startup blocks until mediator is ready** — The server now calls
+  `wait_connected()` after starting the DIDComm service, ensuring the
+  mediator connection is established before accepting REST traffic.
+- **VTC migrated to DIDComm service framework** — Replaced the manual
+  ATM/WebSocket dispatch loop with `DIDCommService` + `Router`. VTC
+  now gets automatic reconnection, typed message routing, and lifecycle
+  event logging for free.
+
+### Added
+
+- **DIDComm lifecycle event logging** — Both VTA and VTC log mediator
+  connection events (`Connected`, `Disconnected`, `Restarting`) via
+  the service's `subscribe()` broadcast channel.
+
+### Removed
+
+- **`vta-sdk::didcomm_init`** — Manual ATM/WebSocket/profile setup
+  module removed. All DIDComm connection management is now handled by
+  `DIDCommService`.
+- **`vta-sdk::didcomm_transport`** — The `send_and_wait_raw` function
+  and `DIDCommSendParams` struct removed. The `PendingMap` type has
+  moved into the VTA service's `DIDCommBridge`.
+
 ## 0.3.3 — 2026-04-13
 
 ### Fixed

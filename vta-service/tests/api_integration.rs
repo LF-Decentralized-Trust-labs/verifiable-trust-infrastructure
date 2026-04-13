@@ -96,7 +96,7 @@ impl TestApp {
             },
             secrets_resolver: None,
             #[cfg(feature = "didcomm")]
-            didcomm_bridge: Arc::new(vta_service::didcomm_bridge::DIDCommBridge::new()),
+            didcomm_bridge: Arc::new(vta_service::didcomm_bridge::DIDCommBridge::placeholder()),
             jwt_keys: Some(jwt_keys.clone()),
             atm: None,
             tee: None,
