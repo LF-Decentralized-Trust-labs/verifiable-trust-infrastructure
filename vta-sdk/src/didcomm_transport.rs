@@ -46,9 +46,15 @@ pub async fn send_and_wait_raw(params: DIDCommSendParams<'_>) -> Result<Message,
         timeout_secs,
     } = params;
     let msg_id = uuid::Uuid::new_v4().to_string();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
     let msg = Message::build(msg_id.clone(), msg_type.to_string(), body)
         .from(from_did.to_string())
         .to(to_did.to_string())
+        .created_time(now)
+        .expires_time(now + timeout_secs)
         .finalize();
 
     // Register pending before sending

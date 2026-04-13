@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.3.3 — 2026-04-13
+
+### Fixed
+
+- **DIDComm message expiry** — Outbound DIDComm messages now include
+  `created_time` and `expires_time` fields, preventing stale messages
+  from accumulating at the mediator between sessions. Expiry matches
+  the caller's timeout (30 seconds for WebVH operations).
+- **Problem-report logging** — Unhandled problem-report messages (e.g.,
+  protocol-specific types from WebVH servers) now log `code`, `comment`,
+  `from`, and `msg_type` instead of just "unknown message type". The
+  standard problem-report handler also includes `msg_type` to
+  distinguish between protocol-specific and standard problem reports.
+- **Stale message detection** — The DIDComm bridge now logs unmatched
+  responses (messages with a `thid` that don't match any pending
+  request) at DEBUG level, identifying them as likely stale messages
+  from a previous session.
+
 ## 0.3.2 — 2026-04-12
 
 ### Fixed
