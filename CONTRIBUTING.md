@@ -77,7 +77,7 @@ Before submitting a pull request:
 See [README.md](README.md) for the crate overview. Key design documents:
 
 - [Architecture & API](docs/design.md)
-- [Security Architecture](docs/security-architecture.md)
+- [Security Architecture](docs/security.md)
 - [DIDComm Protocol](docs/didcomm_protocol.md)
 - [BIP-32 Paths](docs/bip32_paths.md)
 - [Feature Flags](docs/feature-flags.md)

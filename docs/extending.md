@@ -106,8 +106,7 @@ platform-specific logic your environment needs, then call `server::run()`.
 ### 4. Common patterns
 
 **Custom store backend:** Implement `VsockStore`-like adapter (or add a new
-variant to the `Store` enum in `vti-common/src/store/mod.rs`). See
-[Store Migration Path](store-migration.md) for the trait-based design.
+variant to the `Store` enum in `vti-common/src/store/mod.rs`).
 
 **Custom seed storage:** Implement the `SeedStore` trait from
 `vta-service/src/keys/seed_store/mod.rs`. Examples: `PlaintextSeedStore`,
