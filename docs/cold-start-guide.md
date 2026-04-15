@@ -148,12 +148,28 @@ cargo run --package pnm-cli -- --help
 
 ```bash
 cd ~/devel/affinidi/affinidi-tdk-rs
-cargo build --package affinidi-messaging-mediator --features setup
+cargo build --package affinidi-messaging-mediator --features setup,vta-keyring
 ```
 
 This builds two binaries:
 - `mediator` -- the main mediator service
 - `mediator-setup-vta` -- the VTA integration wizard
+
+**Feature flags** control which VTA credential storage backends are available
+at runtime. The `setup` flag is required for the wizard binary; the others
+determine where the mediator stores its VTA credential:
+
+| Feature | Purpose | When to use |
+|---------|---------|-------------|
+| `setup` | Builds `mediator-setup-vta` wizard | Always needed for first-time setup |
+| `vta-keyring` | OS keyring credential storage (`keyring://`) | Local dev on macOS / Linux desktop |
+| `vta-aws-secrets` | AWS Secrets Manager credential storage (`aws_secrets://`) | Production / cloud deployments |
+| *(none)* | Config-file credential storage (`string://`) | Always available -- dev/CI only |
+
+> **Tip:** If you plan to choose "OS Keyring" during the mediator setup
+> wizard (Phase 5.2), you **must** include `vta-keyring` in the build.
+> Without it the keyring option will fail at runtime. For a quick local
+> setup, `string://` (embed in config) works without any extra flags.
 
 ### 1.3 Build the WebVH server
 
@@ -586,8 +602,8 @@ Mediator VTA Bundle Import
 
   Storage backend:
     > Embed in config file (string://) - simple, suitable for dev/CI
-      AWS Secrets Manager (aws_secrets://) - production
-      OS Keyring (keyring://) - local dev with OS keychain
+      AWS Secrets Manager (aws_secrets://) - production     [requires vta-aws-secrets feature]
+      OS Keyring (keyring://) - local dev with OS keychain  [requires vta-keyring feature]
 
   * Secrets bundle cached (2 secrets)
 
@@ -1045,7 +1061,7 @@ VTA_LOG_LEVEL=debug cargo run --package vta-service
 # ── Phase 1: Build all repos ──
 cd ~/devel/fpp/verifiable-trust-infrastructure && cargo build --workspace
 cd ~/devel/affinidi/affinidi-webvh-service && cargo build -p webvh-daemon --release
-cd ~/devel/affinidi/affinidi-tdk-rs && cargo build -p affinidi-messaging-mediator --features setup
+cd ~/devel/affinidi/affinidi-tdk-rs && cargo build -p affinidi-messaging-mediator --features setup,vta-keyring
 
 # ── Phase 2: VTA setup wizard (offline — no services needed) ──
 cd ~/devel/fpp/verifiable-trust-infrastructure
