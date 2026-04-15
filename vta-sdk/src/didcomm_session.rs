@@ -14,6 +14,7 @@ use crate::protocols::PROBLEM_REPORT_TYPE;
 ///
 /// Uses WebSocket streaming to receive responses from the mediator.
 /// Designed for CLI tools that send a request and wait for a reply.
+#[derive(Clone)]
 pub struct DIDCommSession {
     atm: Arc<ATM>,
     profile: Arc<ATMProfile>,

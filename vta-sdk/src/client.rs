@@ -23,11 +23,16 @@ struct RestAuth {
     credential: Option<AuthCredential>,
 }
 
+/// Cloneable transport layer.
+///
+/// Auth state is wrapped in `Arc<Mutex>` so cloned clients share tokens
+/// and avoid redundant authentication round-trips.
+#[derive(Clone)]
 enum Transport {
     Rest {
         client: Client,
         base_url: String,
-        auth: tokio::sync::Mutex<RestAuth>,
+        auth: std::sync::Arc<tokio::sync::Mutex<RestAuth>>,
     },
     #[cfg(feature = "session")]
     DIDComm {
@@ -38,6 +43,10 @@ enum Transport {
 }
 
 /// HTTP/DIDComm client for the VTA service API.
+///
+/// Cloning a `VtaClient` is cheap — clones share the underlying HTTP
+/// connection pool and authentication state.
+#[derive(Clone)]
 pub struct VtaClient {
     transport: Transport,
 }
@@ -511,13 +520,13 @@ impl VtaClient {
             transport: Transport::Rest {
                 client: Client::new(),
                 base_url: base_url.trim_end_matches('/').to_string(),
-                auth: tokio::sync::Mutex::new(RestAuth {
+                auth: std::sync::Arc::new(tokio::sync::Mutex::new(RestAuth {
                     token: None,
                     expires_at: None,
                     refresh_token: None,
                     refresh_expires_at: None,
                     credential: None,
-                }),
+                })),
             },
         }
     }
@@ -542,7 +551,7 @@ impl VtaClient {
             transport: Transport::Rest {
                 client: http,
                 base_url,
-                auth: tokio::sync::Mutex::new(RestAuth {
+                auth: std::sync::Arc::new(tokio::sync::Mutex::new(RestAuth {
                     token: Some(result.access_token),
                     expires_at: Some(result.access_expires_at),
                     refresh_token: result.refresh_token,
@@ -552,7 +561,7 @@ impl VtaClient {
                         private_key_multibase: cred.private_key_multibase,
                         vta_did: cred.vta_did,
                     }),
-                }),
+                })),
             },
         })
     }
