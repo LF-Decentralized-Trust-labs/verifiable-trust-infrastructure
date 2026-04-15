@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.4.1 — 2026-04-15
+
+### Added
+
+- **`VtaClient` and `DIDCommSession` are now `Clone`** — Cloning a
+  `VtaClient` is cheap; clones share the underlying HTTP connection pool
+  and authentication state via `Arc<Mutex>`, avoiding redundant auth
+  round-trips.
+- **Cold-start bootstrap guide** (`docs/cold-start-guide.md`) —
+  Step-by-step walkthrough for bootstrapping a VTA + Mediator + WebVH
+  environment from scratch.
+
+### Changed
+
+- **Consolidated security documentation** — Merged `threat-model.md`
+  and `security-architecture.md` into a single `docs/security.md`.
+  Removed stale `docs/VTA_Service_Overview.md` and
+  `docs/store-migration.md`.
+
 ## 0.4.0 — 2026-04-13
 
 ### Changed
