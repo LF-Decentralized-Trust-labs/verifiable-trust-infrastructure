@@ -184,10 +184,16 @@ cargo run --package cnm-cli -- keys list
 
 See [PNM CLI](pnm-cli/README.md) and [CNM CLI](cnm-cli/README.md) for command references.
 
-## Additional Resources
+## Documentation
 
-- [Integration Guide](docs/integration-guide.md) -- how to integrate a 3rd-party application with the VTA
+- [Design Document](docs/design.md) -- architecture, API, and workspace structure
+- [Security Architecture](docs/security.md) -- defense-in-depth model and threat model
+- [TEE Enclave Security](docs/design/tee-enclave-security.md) -- Nitro Enclave KMS bootstrap and encrypted storage design
+- [Cold-Start Guide](docs/cold-start-guide.md) -- bootstrapping a VTA + WebVH + mediator from scratch
+- [Integration Guide](docs/integration-guide.md) -- integrating a 3rd-party application with the VTA
+- [DIDComm Protocol](docs/didcomm_protocol.md) -- message types, schemas, and authorization
+- [BIP-32 Path Specification](docs/bip32_paths.md) -- hierarchical key derivation paths
+- [Feature Flags](docs/feature-flags.md) -- Cargo feature flags and deployment profiles
+- [Adding a Front-End](docs/extending.md) -- how to add a new VTA deployment binary
+- [Store Migration](docs/design/store-migration.md) -- enum-to-trait migration path for storage backends
 - [First Person Project White Paper](https://www.firstperson.network/white-paper)
-- [Design Document](docs/design.md)
-- [BIP-32 Path Specification](docs/bip32_paths.md)
-- [Security Architecture](docs/security.md)

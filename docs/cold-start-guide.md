@@ -68,6 +68,52 @@ before any service is running. Both the WebVH server and mediator support
 offline DID import (`load-did` / `--import-bundle`) so they can bootstrap
 with pre-generated artifacts before the VTA is reachable.
 
+### DID Naming Conventions
+
+Before running the setup wizard, decide on a naming convention for your DIDs.
+Each `did:webvh` identifier maps to a path on the WebVH hosting server (e.g.,
+`did:webvh:example.com:vta` is served at `example.com/vta/did.jsonl`). Choose
+names that are short, descriptive, and won't collide with the server's own
+routes.
+
+**Reserved names (affinidi-webvh-service).** The following names are reserved
+and **cannot** be used as the first path segment of a DID:
+
+| Reserved name | Reason |
+|---------------|--------|
+| `.well-known` | Root/server DID -- only an admin can create this DID |
+| `api` | Management API routes |
+| `auth` | Authentication routes |
+| `dids` | DID introspection routes |
+| `stats` | Statistics routes |
+| `acl` | ACL management routes |
+| `health` | Health check routes |
+
+**Path segment rules.** Each segment of a custom DID path must:
+
+- Be **2--63 characters** long (total path max 255 characters)
+- Contain only **lowercase letters, digits, and hyphens** (`[a-z0-9-]`)
+- **Start and end** with an alphanumeric character (not a hyphen)
+- Not contain empty segments (no double slashes)
+
+**Examples:**
+
+| DID path | Valid? | Notes |
+|----------|--------|-------|
+| `vta` | Yes | Simple, descriptive |
+| `mediator` | Yes | |
+| `my-app` | Yes | Hyphens allowed mid-segment |
+| `org/dept/service` | Yes | Multi-segment paths work |
+| `api` | **No** | Reserved name |
+| `API` | **No** | Uppercase not allowed |
+| `health/vta` | **No** | First segment is reserved |
+| `v` | **No** | Too short (min 2 chars) |
+| `-bad` | **No** | Cannot start with hyphen |
+
+> **Tip:** The `.well-known` path is special -- it represents the root DID for
+> the WebVH server itself. Only admins can create it, and it's typically used
+> for the WebVH server's own identity, not application DIDs.
+
 ### Bootstrap Order
 
 | Phase | What | Runs Against | Produces |
