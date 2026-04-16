@@ -127,6 +127,23 @@ check_cmd jq
 if command -v nitro-cli &>/dev/null; then
     ok "nitro-cli found"
     HAS_NITRO_CLI=true
+
+    # Verify the nitro_enclaves kernel module is loaded (requires enclave support
+    # to be enabled on the EC2 instance at launch or via modify-instance-attribute)
+    if [ -d /sys/module/nitro_enclaves ]; then
+        ok "nitro_enclaves kernel module is loaded"
+    else
+        err "nitro_enclaves kernel module is NOT loaded"
+        err "Enclave support is not enabled on this EC2 instance."
+        err ""
+        err "To fix, stop the instance (not reboot), enable enclave support, then start:"
+        err "  aws ec2 stop-instances --instance-ids \$(curl -s http://169.254.169.254/latest/meta-data/instance-id)"
+        err "  aws ec2 modify-instance-attribute --instance-id <instance-id> --enclave-options Enabled=true"
+        err "  aws ec2 start-instances --instance-id <instance-id>"
+        err ""
+        err "Or re-launch with: aws ec2 run-instances ... --enclave-options Enabled=true"
+        MISSING+=("nitro_enclaves kernel module")
+    fi
 else
     warn "nitro-cli not found — EIF build and enclave launch will be skipped"
     warn "This is expected if you're building on a developer machine"

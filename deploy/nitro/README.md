@@ -148,6 +148,45 @@ These values are set in `config.toml` before building the EIF:
 | IMDS hop limit | Must be **2** (see below) |
 | IAM role | Minimal: `kms:Decrypt`, `kms:GenerateDataKey` only (see Step 3) |
 
+### Enclave Support
+
+Nitro Enclave support must be **enabled on the EC2 instance** — it cannot be
+turned on while the instance is running. If you forgot to enable it at launch
+time, you must stop the instance, enable it, then start it again:
+
+```bash
+# Check if enclave support is enabled
+aws ec2 describe-instances --instance-ids <your-instance-id> \
+    --query 'Reservations[].Instances[].EnclaveOptions'
+# → [{"Enabled": true}]
+```
+
+If `Enabled` is `false`:
+
+```bash
+# Stop the instance first (not reboot — enclave options require a full stop)
+aws ec2 stop-instances --instance-ids <your-instance-id>
+aws ec2 wait instance-stopped --instance-ids <your-instance-id>
+
+# Enable enclave support
+aws ec2 modify-instance-attribute --instance-id <your-instance-id> \
+    --enclave-options Enabled=true
+
+# Start the instance
+aws ec2 start-instances --instance-ids <your-instance-id>
+```
+
+Or enable it at launch time:
+
+```bash
+aws ec2 run-instances ... --enclave-options Enabled=true
+```
+
+Without enclave support enabled, the `nitro_enclaves` kernel module will not
+load and the `nitro-enclaves-allocator` service will fail with
+*"The CPU pool file is missing. Please make sure the Nitro Enclaves driver is
+inserted."*
+
 ### IMDS Hop Limit
 
 The AWS SDK inside the enclave fetches IAM credentials from the Instance
