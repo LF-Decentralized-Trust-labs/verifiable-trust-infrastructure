@@ -180,6 +180,41 @@ if [ "$HAS_NITRO_CLI" = true ]; then
     check_group "ne" "Run: sudo usermod -aG ne $CURRENT_USER"
 fi
 
+# Check Nitro Enclave allocator resources
+ALLOCATOR_YAML="/etc/nitro_enclaves/allocator.yaml"
+if [ "$HAS_NITRO_CLI" = true ]; then
+    if [ -f "$ALLOCATOR_YAML" ]; then
+        ALLOC_CPU=$(grep -E '^\s*cpu_count\s*:' "$ALLOCATOR_YAML" | awk '{print $2}')
+        ALLOC_MEM=$(grep -E '^\s*memory_mib\s*:' "$ALLOCATOR_YAML" | awk '{print $2}')
+        ALLOC_CPU="${ALLOC_CPU:-0}"
+        ALLOC_MEM="${ALLOC_MEM:-0}"
+
+        REQUESTED_CPU="${VTA_ENCLAVE_CPU:-1}"
+        REQUESTED_MEM="${VTA_ENCLAVE_MEM:-512}"
+
+        if [ "$ALLOC_CPU" -ge "$REQUESTED_CPU" ] 2>/dev/null; then
+            ok "Enclave allocator: ${ALLOC_CPU} CPUs reserved (need ${REQUESTED_CPU})"
+        else
+            err "Enclave allocator has ${ALLOC_CPU} CPUs reserved but ${REQUESTED_CPU} required"
+            err "Edit $ALLOCATOR_YAML and set cpu_count: ${REQUESTED_CPU}"
+            err "Then run: sudo systemctl restart nitro-enclaves-allocator"
+            MISSING+=("enclave allocator CPU")
+        fi
+
+        if [ "$ALLOC_MEM" -ge "$REQUESTED_MEM" ] 2>/dev/null; then
+            ok "Enclave allocator: ${ALLOC_MEM} MiB reserved (need ${REQUESTED_MEM})"
+        else
+            err "Enclave allocator has ${ALLOC_MEM} MiB reserved but ${REQUESTED_MEM} MiB required"
+            err "Edit $ALLOCATOR_YAML and set memory_mib: ${REQUESTED_MEM}"
+            err "Then run: sudo systemctl restart nitro-enclaves-allocator"
+            MISSING+=("enclave allocator memory")
+        fi
+    else
+        warn "$ALLOCATOR_YAML not found — cannot verify enclave resource allocation"
+        warn "Ensure the nitro-enclaves-allocator is installed and configured"
+    fi
+fi
+
 if [ ${#MISSING[@]} -gt 0 ]; then
     err "Missing requirements: ${MISSING[*]}"
     err "Fix the above issues and re-run this script."
