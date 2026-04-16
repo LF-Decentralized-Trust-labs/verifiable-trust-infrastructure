@@ -223,11 +223,15 @@ sudo systemctl enable --now nitro-enclaves-allocator docker
 
 # Add your user to the docker and ne groups (required before building images)
 sudo usermod -aG docker,ne $USER
-
-# IMPORTANT: Log out and back in (or run `newgrp docker`) for group changes
-# to take effect. Docker commands will fail with "permission denied" until
-# your session picks up the new group membership.
 ```
+
+> **You MUST log out and log back in** (or start a new SSH session) after
+> adding groups. Until your session picks up the new membership, `docker`
+> commands will fail with "permission denied" and `nitro-cli` commands will
+> fail with "operation not permitted". The `deploy-vta.sh` script checks
+> for these group memberships and will refuse to continue if they are missing
+> from your current session. Running `newgrp docker && newgrp ne` in your
+> current shell is a quick alternative to a full logout.
 
 ### Configure Enclave Resources
 

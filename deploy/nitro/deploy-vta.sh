@@ -167,15 +167,10 @@ else
     exit 1
 fi
 
-# Check Docker is running
-if docker info &>/dev/null; then
-    ok "Docker daemon is running"
-else
-    err "Docker daemon is not running. Start it and re-run."
-    exit 1
-fi
-
-# Check group memberships for the current user
+# Check group memberships for the current user.
+# This runs BEFORE the Docker daemon check because a missing 'docker' group
+# membership causes 'docker info' to fail with a permission error that looks
+# like the daemon isn't running.
 CURRENT_USER=$(id -un)
 USER_GROUPS=$(id -Gn)
 
@@ -186,7 +181,12 @@ check_group() {
     else
         err "User '$CURRENT_USER' is NOT in the '$group' group"
         err "$hint"
-        err "After adding, log out and back in (or run 'newgrp $group') for it to take effect."
+        err ""
+        err "IMPORTANT: After adding the group, you MUST log out and log back in"
+        err "(or start a new SSH session) for the change to take effect."
+        err "Alternatively, run 'newgrp $group' in your current shell."
+        err "Until you do this, commands like 'docker info' will fail with"
+        err "'permission denied' even though the group has been added."
         MISSING+=("$group group membership")
     fi
 }
@@ -195,6 +195,20 @@ check_group "docker" "Run: sudo usermod -aG docker $CURRENT_USER"
 
 if [ "$HAS_NITRO_CLI" = true ]; then
     check_group "ne" "Run: sudo usermod -aG ne $CURRENT_USER"
+fi
+
+if [ ${#MISSING[@]} -gt 0 ]; then
+    err "Missing requirements: ${MISSING[*]}"
+    err "Fix the above issues, then log out and back in before re-running this script."
+    exit 1
+fi
+
+# Check Docker is running (after group check so permission errors are caught above)
+if docker info &>/dev/null; then
+    ok "Docker daemon is running"
+else
+    err "Docker daemon is not running. Start it with: sudo systemctl start docker"
+    exit 1
 fi
 
 # Check Nitro Enclave allocator resources
