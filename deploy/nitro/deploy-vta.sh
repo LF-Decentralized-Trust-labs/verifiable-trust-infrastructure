@@ -158,6 +158,34 @@ else
     exit 1
 fi
 
+# Check group memberships for the current user
+CURRENT_USER=$(id -un)
+USER_GROUPS=$(id -Gn)
+
+check_group() {
+    local group="$1" hint="$2"
+    if echo "$USER_GROUPS" | grep -qw "$group"; then
+        ok "User '$CURRENT_USER' is in the '$group' group"
+    else
+        err "User '$CURRENT_USER' is NOT in the '$group' group"
+        err "$hint"
+        err "After adding, log out and back in (or run 'newgrp $group') for it to take effect."
+        MISSING+=("$group group membership")
+    fi
+}
+
+check_group "docker" "Run: sudo usermod -aG docker $CURRENT_USER"
+
+if [ "$HAS_NITRO_CLI" = true ]; then
+    check_group "ne" "Run: sudo usermod -aG ne $CURRENT_USER"
+fi
+
+if [ ${#MISSING[@]} -gt 0 ]; then
+    err "Missing requirements: ${MISSING[*]}"
+    err "Fix the above issues and re-run this script."
+    exit 1
+fi
+
 # =============================================================================
 # Step 1: Build Profile
 # =============================================================================
