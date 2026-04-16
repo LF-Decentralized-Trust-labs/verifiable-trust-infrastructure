@@ -78,7 +78,10 @@ See [README.md](README.md) for the crate overview. Key design documents:
 
 - [Architecture & API](docs/design.md)
 - [Security Architecture](docs/security.md)
+- [Cold-Start Guide](docs/cold-start-guide.md)
+- [Integration Guide](docs/integration-guide.md)
 - [DIDComm Protocol](docs/didcomm_protocol.md)
 - [BIP-32 Paths](docs/bip32_paths.md)
 - [Feature Flags](docs/feature-flags.md)
 - [TEE Enclave Security](docs/design/tee-enclave-security.md)
+- [Store Migration](docs/design/store-migration.md)

@@ -68,6 +68,52 @@ before any service is running. Both the WebVH server and mediator support
 offline DID import (`load-did` / `--import-bundle`) so they can bootstrap
 with pre-generated artifacts before the VTA is reachable.
 
+### DID Naming Conventions
+
+Before running the setup wizard, decide on a naming convention for your DIDs.
+Each `did:webvh` identifier maps to a path on the WebVH hosting server (e.g.,
+`did:webvh:example.com:vta` is served at `example.com/vta/did.jsonl`). Choose
+names that are short, descriptive, and won't collide with the server's own
+routes.
+
+**Reserved names (affinidi-webvh-service).** The following names are reserved
+and **cannot** be used as the first path segment of a DID:
+
+| Reserved name | Reason |
+|---------------|--------|
+| `.well-known` | Root/server DID -- only an admin can create this DID |
+| `api` | Management API routes |
+| `auth` | Authentication routes |
+| `dids` | DID introspection routes |
+| `stats` | Statistics routes |
+| `acl` | ACL management routes |
+| `health` | Health check routes |
+
+**Path segment rules.** Each segment of a custom DID path must:
+
+- Be **2--63 characters** long (total path max 255 characters)
+- Contain only **lowercase letters, digits, and hyphens** (`[a-z0-9-]`)
+- **Start and end** with an alphanumeric character (not a hyphen)
+- Not contain empty segments (no double slashes)
+
+**Examples:**
+
+| DID path | Valid? | Notes |
+|----------|--------|-------|
+| `vta` | Yes | Simple, descriptive |
+| `mediator` | Yes | |
+| `my-app` | Yes | Hyphens allowed mid-segment |
+| `org/dept/service` | Yes | Multi-segment paths work |
+| `api` | **No** | Reserved name |
+| `API` | **No** | Uppercase not allowed |
+| `health/vta` | **No** | First segment is reserved |
+| `v` | **No** | Too short (min 2 chars) |
+| `-bad` | **No** | Cannot start with hyphen |
+
+> **Tip:** The `.well-known` path is special -- it represents the root DID for
+> the WebVH server itself. Only admins can create it, and it's typically used
+> for the WebVH server's own identity, not application DIDs.
+
 ### Bootstrap Order
 
 | Phase | What | Runs Against | Produces |
@@ -102,12 +148,28 @@ cargo run --package pnm-cli -- --help
 
 ```bash
 cd ~/devel/affinidi/affinidi-tdk-rs
-cargo build --package affinidi-messaging-mediator --features setup
+cargo build --package affinidi-messaging-mediator --features setup,vta-keyring
 ```
 
 This builds two binaries:
 - `mediator` -- the main mediator service
 - `mediator-setup-vta` -- the VTA integration wizard
+
+**Feature flags** control which VTA credential storage backends are available
+at runtime. The `setup` flag is required for the wizard binary; the others
+determine where the mediator stores its VTA credential:
+
+| Feature | Purpose | When to use |
+|---------|---------|-------------|
+| `setup` | Builds `mediator-setup-vta` wizard | Always needed for first-time setup |
+| `vta-keyring` | OS keyring credential storage (`keyring://`) | Local dev on macOS / Linux desktop |
+| `vta-aws-secrets` | AWS Secrets Manager credential storage (`aws_secrets://`) | Production / cloud deployments |
+| *(none)* | Config-file credential storage (`string://`) | Always available -- dev/CI only |
+
+> **Tip:** If you plan to choose "OS Keyring" during the mediator setup
+> wizard (Phase 5.2), you **must** include `vta-keyring` in the build.
+> Without it the keyring option will fail at runtime. For a quick local
+> setup, `string://` (embed in config) works without any extra flags.
 
 ### 1.3 Build the WebVH server
 
@@ -540,8 +602,8 @@ Mediator VTA Bundle Import
 
   Storage backend:
     > Embed in config file (string://) - simple, suitable for dev/CI
-      AWS Secrets Manager (aws_secrets://) - production
-      OS Keyring (keyring://) - local dev with OS keychain
+      AWS Secrets Manager (aws_secrets://) - production     [requires vta-aws-secrets feature]
+      OS Keyring (keyring://) - local dev with OS keychain  [requires vta-keyring feature]
 
   * Secrets bundle cached (2 secrets)
 
@@ -999,7 +1061,7 @@ VTA_LOG_LEVEL=debug cargo run --package vta-service
 # ── Phase 1: Build all repos ──
 cd ~/devel/fpp/verifiable-trust-infrastructure && cargo build --workspace
 cd ~/devel/affinidi/affinidi-webvh-service && cargo build -p webvh-daemon --release
-cd ~/devel/affinidi/affinidi-tdk-rs && cargo build -p affinidi-messaging-mediator --features setup
+cd ~/devel/affinidi/affinidi-tdk-rs && cargo build -p affinidi-messaging-mediator --features setup,vta-keyring
 
 # ── Phase 2: VTA setup wizard (offline — no services needed) ──
 cd ~/devel/fpp/verifiable-trust-infrastructure
