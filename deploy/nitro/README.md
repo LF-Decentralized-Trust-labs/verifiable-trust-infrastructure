@@ -136,30 +136,6 @@ These values are set in `config.toml` before building the EIF:
 | B (Full API, REST + DIDComm) | Required | Required | Recommended |
 | C (REST only) | Required | Not needed | Recommended |
 
-## Quick Start
-
-For an interactive end-to-end deployment, use the deployment script:
-
-```bash
-./deploy/nitro/deploy-vta.sh
-```
-
-This walks through all the steps below — prerequisite checks, build profile
-selection, signing key generation, IAM and KMS setup, Docker/EIF builds,
-enclave launch, and parent proxy startup.
-
-For CI/CD, use non-interactive mode with environment variables:
-
-```bash
-VTA_PROFILE=hardened \
-VTA_REGION=us-east-1 \
-VTA_ROLE_NAME=vta-enclave-role \
-VTA_MEDIATOR_DID="did:web:mediator.example.com" \
-./deploy/nitro/deploy-vta.sh --non-interactive
-```
-
-The rest of this guide documents each step in detail.
-
 ## Prerequisites
 
 ### EC2 Instance
@@ -226,6 +202,36 @@ cpu_count: 1
 ```bash
 sudo systemctl restart nitro-enclaves-allocator
 ```
+
+## Quick Start
+
+> **You MUST complete all of the prerequisites above before running the
+> deployment script.** The script checks for required tools, AWS credentials,
+> and group memberships at startup, but it cannot install packages, configure
+> enclave resources, or set the IMDS hop limit for you. Skipping these steps
+> will cause hard-to-diagnose failures during the build or enclave launch.
+
+For an interactive end-to-end deployment, use the deployment script:
+
+```bash
+./deploy/nitro/deploy-vta.sh
+```
+
+This walks through all the steps below — build profile selection, signing key
+generation, IAM and KMS setup, Docker/EIF builds, enclave launch, and parent
+proxy startup.
+
+For CI/CD, use non-interactive mode with environment variables:
+
+```bash
+VTA_PROFILE=hardened \
+VTA_REGION=us-east-1 \
+VTA_ROLE_NAME=vta-enclave-role \
+VTA_MEDIATOR_DID="did:web:mediator.example.com" \
+./deploy/nitro/deploy-vta.sh --non-interactive
+```
+
+The rest of this guide documents each step in detail.
 
 ## Step 1: Generate EIF Signing Key
 
