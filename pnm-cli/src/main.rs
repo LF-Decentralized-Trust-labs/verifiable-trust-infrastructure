@@ -1,4 +1,5 @@
 mod auth;
+mod bootstrap;
 mod config;
 mod setup;
 
@@ -102,6 +103,45 @@ enum Commands {
     Vta {
         #[command(subcommand)]
         command: VtaCommands,
+    },
+
+    /// Sealed-transfer bootstrap (consumer side).
+    Bootstrap {
+        #[command(subcommand)]
+        command: BootstrapCommands,
+    },
+}
+
+#[derive(Subcommand)]
+enum BootstrapCommands {
+    /// Generate an ephemeral keypair and emit a BootstrapRequest for the producer.
+    ///
+    /// The X25519 secret is stored on disk under
+    /// `~/.config/pnm/bootstrap-secrets/<bundle_id>.key` (mode 0600). The
+    /// emitted JSON file contains only the public key, a fresh nonce, and an
+    /// optional label — no secrets cross the boundary.
+    Request {
+        /// Output path for the BootstrapRequest JSON.
+        #[arg(long)]
+        out: std::path::PathBuf,
+        /// Optional human-readable label visible to the operator.
+        #[arg(long)]
+        label: Option<String>,
+    },
+    /// Open an armored sealed bundle returned by the producer.
+    ///
+    /// `--expect-digest <hex>` is required by default. Use `--no-verify-digest`
+    /// to opt out (with a warning) — there is no silent TOFU.
+    Open {
+        /// Path to the armored bundle file.
+        #[arg(long)]
+        bundle: std::path::PathBuf,
+        /// Expected SHA-256 digest, communicated out-of-band by the producer.
+        #[arg(long)]
+        expect_digest: Option<String>,
+        /// Skip out-of-band digest verification (testing only — prints a warning).
+        #[arg(long)]
+        no_verify_digest: bool,
     },
 }
 
@@ -627,7 +667,11 @@ fn requires_auth(cmd: &Commands) -> bool {
     }
     !matches!(
         cmd,
-        Commands::Health | Commands::Auth { .. } | Commands::Setup { .. } | Commands::Vta { .. }
+        Commands::Health
+            | Commands::Auth { .. }
+            | Commands::Setup { .. }
+            | Commands::Vta { .. }
+            | Commands::Bootstrap { .. }
     )
 }
 
@@ -667,6 +711,26 @@ async fn main() {
     match &cli.command {
         Commands::Setup { credential } => {
             let result = setup::run_setup(credential.as_deref(), &mut pnm_config).await;
+            if let Err(e) = result {
+                eprintln!("Error: {e}");
+                std::process::exit(1);
+            }
+            return;
+        }
+        Commands::Bootstrap { command } => {
+            let result = match command {
+                BootstrapCommands::Request { out, label } => {
+                    bootstrap::run_request(out.clone(), label.clone()).await
+                }
+                BootstrapCommands::Open {
+                    bundle,
+                    expect_digest,
+                    no_verify_digest,
+                } => {
+                    bootstrap::run_open(bundle.clone(), expect_digest.clone(), *no_verify_digest)
+                        .await
+                }
+            };
             if let Err(e) = result {
                 eprintln!("Error: {e}");
                 std::process::exit(1);
@@ -804,6 +868,7 @@ async fn main() {
 
     let result = match cli.command {
         Commands::Setup { .. } => unreachable!(),
+        Commands::Bootstrap { .. } => unreachable!(),
         Commands::Vta {
             command: VtaCommands::Restart,
         } => cmd_restart(&client).await,

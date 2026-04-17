@@ -16,6 +16,8 @@ pub mod didcomm_session;
 pub mod keys;
 pub mod prelude;
 pub mod protocols;
+#[cfg(feature = "sealed-transfer")]
+pub mod sealed_transfer;
 #[cfg(feature = "session")]
 pub mod session;
 pub mod webvh;

@@ -1,5 +1,6 @@
 // CLI-only modules (not part of the library)
 mod acl_cli;
+mod bootstrap_cli;
 mod did_key;
 #[cfg(feature = "setup")]
 mod did_webvh;
@@ -120,6 +121,38 @@ enum Commands {
     Webvh {
         #[command(subcommand)]
         command: WebvhCommands,
+    },
+    /// Sealed-transfer bootstrap (offline producer side — Mode C).
+    Bootstrap {
+        #[command(subcommand)]
+        command: BootstrapCommands,
+    },
+}
+
+#[derive(Subcommand)]
+enum BootstrapCommands {
+    /// Seal a payload for a consumer's BootstrapRequest (offline / Mode C).
+    ///
+    /// Reads the consumer's request (containing their ephemeral X25519 pubkey
+    /// and a nonce), seals the supplied payload to that pubkey using HPKE, and
+    /// writes an armored bundle. Prints the canonical SHA-256 digest the
+    /// operator must communicate to the consumer out-of-band so they can pass
+    /// it to `pnm bootstrap open --expect-digest`.
+    ///
+    /// Producer authenticity in this mode is `PinnedOnly`: the consumer trusts
+    /// the producer pubkey embedded in the bundle because they pinned it
+    /// out-of-band. Stronger assertions (DID-signed, attestation) ship with
+    /// later phases.
+    Seal {
+        /// Path to the consumer's BootstrapRequest JSON.
+        #[arg(long)]
+        request: PathBuf,
+        /// Path to a JSON file containing a SealedPayloadV1.
+        #[arg(long)]
+        payload: PathBuf,
+        /// Output path for the armored bundle.
+        #[arg(long)]
+        out: PathBuf,
     },
 }
 
@@ -483,6 +516,19 @@ async fn main() {
                 WebvhCommands::DeleteDid { did } => {
                     webvh_cli::run_delete_did(cli.config, did).await
                 }
+            };
+            if let Err(e) = result {
+                eprintln!("Error: {e}");
+                std::process::exit(1);
+            }
+        }
+        Some(Commands::Bootstrap { command }) => {
+            let result = match command {
+                BootstrapCommands::Seal {
+                    request,
+                    payload,
+                    out,
+                } => bootstrap_cli::run_seal(request, payload, out).await,
             };
             if let Err(e) = result {
                 eprintln!("Error: {e}");
