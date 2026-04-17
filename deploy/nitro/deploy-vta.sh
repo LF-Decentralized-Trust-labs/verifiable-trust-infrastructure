@@ -197,6 +197,22 @@ if [ "$HAS_NITRO_CLI" = true ]; then
     check_group "ne" "Run: sudo usermod -aG ne $CURRENT_USER"
 fi
 
+# Rust toolchain is required on the parent EC2 instance (where HAS_NITRO_CLI=true)
+# to build the enclave-proxy from source and to install the DID resolver sidecar
+# via `cargo install`. Not needed on a build-only machine.
+if [ "$HAS_NITRO_CLI" = true ]; then
+    if command -v cargo &>/dev/null; then
+        ok "cargo found: $(command -v cargo) ($(cargo --version 2>/dev/null))"
+    else
+        err "cargo (Rust toolchain) not found"
+        err "Required on the parent EC2 instance to build the enclave-proxy"
+        err "and install the DID resolver sidecar. Install with:"
+        err "  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y"
+        err "  source \"\$HOME/.cargo/env\""
+        MISSING+=("cargo")
+    fi
+fi
+
 if [ ${#MISSING[@]} -gt 0 ]; then
     err "Missing requirements: ${MISSING[*]}"
     err "Fix the above issues, then log out and back in before re-running this script."

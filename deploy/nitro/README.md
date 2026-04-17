@@ -225,6 +225,26 @@ sudo systemctl enable --now nitro-enclaves-allocator docker
 sudo usermod -aG docker,ne $USER
 ```
 
+**Rust toolchain** (required on the parent EC2 instance):
+
+The `enclave-proxy` binary is built from source on the parent instance
+(see [Step 6](#step-6-start-the-parent-proxy-before-the-enclave)), and the
+DID resolver sidecar is installed via `cargo install`
+(see [DID Resolution](#did-resolution)). Both require a working Rust
+toolchain — the `enclave-proxy` crate's MSRV is **Rust 1.91.0**.
+
+```bash
+# Install rustup (official installer — picks up a current stable toolchain)
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+source "$HOME/.cargo/env"
+
+# Verify
+cargo --version   # cargo 1.91.0 or newer
+```
+
+Rust is **not** required on the build machine where the Docker image and
+EIF are built — only on the EC2 parent instance that runs the enclave.
+
 > **You MUST log out and log back in** (or start a new SSH session) after
 > adding groups. Until your session picks up the new membership, `docker`
 > commands will fail with "permission denied" and `nitro-cli` commands will
