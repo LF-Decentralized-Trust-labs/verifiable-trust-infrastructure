@@ -331,6 +331,7 @@ pub async fn generate_credentials(
         allowed_contexts: req.allowed_contexts,
         created_at: now_epoch(),
         created_by: auth.0.did,
+        expires_at: None,
     };
     store_acl_entry(&acl, &entry).await?;
 

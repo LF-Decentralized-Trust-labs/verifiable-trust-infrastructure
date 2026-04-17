@@ -7,6 +7,7 @@
 //! with the appropriate store backend and TEE context.
 
 pub mod acl;
+pub mod acl_sweeper;
 pub mod audit;
 pub mod auth;
 pub mod config;

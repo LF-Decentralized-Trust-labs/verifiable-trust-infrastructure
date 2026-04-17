@@ -4,6 +4,7 @@ mod attestation;
 mod audit;
 mod auth;
 mod backup;
+mod bootstrap;
 mod cache;
 mod capabilities;
 mod config;
@@ -32,6 +33,8 @@ pub fn health_router() -> Router<AppState> {
 
 pub fn router() -> Router<AppState> {
     let router = Router::new()
+        // Sealed-transfer bootstrap (unauthenticated — token or attestation gated)
+        .route("/bootstrap/request", post(bootstrap::request))
         // Auth routes (flattened to avoid nest + root-route matching issues in Axum 0.8)
         .route("/auth/challenge", post(auth::challenge))
         .route("/auth/", post(auth::authenticate))

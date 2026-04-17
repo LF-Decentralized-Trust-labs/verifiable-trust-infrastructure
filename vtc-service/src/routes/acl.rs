@@ -103,6 +103,7 @@ pub async fn create_acl(
         allowed_contexts: req.allowed_contexts,
         created_at: now_epoch(),
         created_by: auth.0.did,
+        expires_at: None,
     };
 
     store_acl_entry(&acl, &entry).await?;

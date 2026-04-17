@@ -59,6 +59,7 @@ pub async fn create_acl(
         allowed_contexts,
         created_at: now_epoch(),
         created_by: auth.did.clone(),
+        expires_at: None,
     };
 
     store_acl_entry(acl_ks, &entry).await?;

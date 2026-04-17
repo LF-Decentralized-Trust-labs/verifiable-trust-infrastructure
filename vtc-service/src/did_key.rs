@@ -33,6 +33,7 @@ pub async fn run_create_did_key(args: CreateDidKeyArgs) -> Result<(), Box<dyn st
                 .unwrap()
                 .as_secs(),
             created_by: "cli:create-did-key".into(),
+            expires_at: None,
         };
         store_acl_entry(&acl_ks, &entry).await?;
         eprintln!("ACL entry created: {} (admin)", did);

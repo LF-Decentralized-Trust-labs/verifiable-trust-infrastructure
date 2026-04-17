@@ -437,6 +437,7 @@ pub async fn run_setup_wizard(
             .unwrap()
             .as_secs(),
         created_by: "setup".into(),
+        expires_at: None,
     };
     store_acl_entry(&acl_ks, &admin_entry).await?;
     eprintln!("  Admin DID added to ACL: {admin_did}");

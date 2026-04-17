@@ -22,10 +22,12 @@ use std::path::{Path, PathBuf};
 
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64URL;
+use serde::{Deserialize, Serialize};
 use vta_sdk::sealed_transfer::{
     BootstrapRequest, SealedPayloadV1, armor, bundle_digest, generate_keypair, open_bundle,
 };
 
+use crate::auth;
 use crate::config;
 
 const SECRETS_SUBDIR: &str = "bootstrap-secrets";
@@ -206,4 +208,139 @@ pub async fn run_open(
     }
 
     Ok(())
+}
+
+// ── online flow (Mode A) ──────────────────────────────────────────────
+
+#[derive(Debug, Serialize)]
+struct BootstrapRequestWire {
+    version: u8,
+    client_pubkey: String,
+    nonce: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    token: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    label: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct BootstrapResponseWire {
+    bundle: String,
+    digest: String,
+}
+
+/// `pnm bootstrap connect --vta-url <URL> --token <TOKEN> [--expect-digest <HEX>]`
+///
+/// One-command online bootstrap against a running VTA. Generates an ephemeral
+/// keypair, POSTs to `/bootstrap/request` with the supplied token, opens the
+/// returned sealed bundle, installs the minted credential via `pnm auth
+/// login`, and registers the VTA under a slug in `pnm` config.
+pub async fn run_connect(
+    vta_url: String,
+    token: String,
+    expect_digest: Option<String>,
+    vta_slug: Option<String>,
+    pnm_config: &mut crate::config::PnmConfig,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let (secret, public) = generate_keypair();
+    let nonce: [u8; 16] = rand::random();
+    let bundle_id_hex = hex_lower(&nonce);
+
+    let body = BootstrapRequestWire {
+        version: 1,
+        client_pubkey: B64URL.encode(public),
+        nonce: B64URL.encode(nonce),
+        token: Some(token),
+        label: None,
+    };
+
+    let url = format!("{}/bootstrap/request", vta_url.trim_end_matches('/'));
+    let client = reqwest::Client::new();
+    let resp = client.post(&url).json(&body).send().await?;
+    let status = resp.status();
+    if !status.is_success() {
+        let body = resp.text().await.unwrap_or_default();
+        return Err(format!("bootstrap request failed ({status}): {body}").into());
+    }
+    let wire: BootstrapResponseWire = resp.json().await?;
+
+    // Optional client-side digest verification. The token + TLS give the
+    // primary integrity anchor; this is a belt-and-suspenders check the
+    // operator can opt into by communicating the digest out-of-band at
+    // token-issue time.
+    if let Some(expected) = &expect_digest {
+        if expected.to_ascii_lowercase() != wire.digest.to_ascii_lowercase() {
+            return Err(format!(
+                "server-reported digest {} does not match expected {}",
+                wire.digest, expected
+            )
+            .into());
+        }
+    }
+
+    let bundles = armor::decode(&wire.bundle)?;
+    if bundles.len() != 1 {
+        return Err(format!(
+            "expected exactly one armored bundle from server, got {}",
+            bundles.len()
+        )
+        .into());
+    }
+    let bundle = &bundles[0];
+    if hex_lower(&bundle.bundle_id) != bundle_id_hex {
+        return Err("server-returned bundle_id does not match our nonce".into());
+    }
+
+    let opened = open_bundle(&secret, bundle, expect_digest.as_deref())?;
+
+    let credential = match opened.payload {
+        SealedPayloadV1::AdminCredential(c) => c,
+        other => {
+            return Err(format!(
+                "expected AdminCredential payload from online bootstrap, got {}",
+                variant_name(&other)
+            )
+            .into());
+        }
+    };
+
+    let encoded = credential.encode()?;
+
+    let slug = vta_slug.unwrap_or_else(|| default_slug(&credential.vta_did));
+    pnm_config.vtas.insert(
+        slug.clone(),
+        crate::config::VtaConfig {
+            name: slug.clone(),
+            url: Some(vta_url.clone()),
+            vta_did: Some(credential.vta_did.clone()),
+        },
+    );
+    if pnm_config.default_vta.is_none() {
+        pnm_config.default_vta = Some(slug.clone());
+    }
+    crate::config::save_config(pnm_config)?;
+
+    let keyring_key = crate::config::vta_keyring_key(&slug);
+    auth::login(&encoded, &vta_url, &keyring_key).await?;
+
+    println!();
+    println!("Bootstrap complete.");
+    println!("  VTA slug:   {slug}");
+    println!("  Client DID: {}", credential.did);
+    println!("  VTA DID:    {}", credential.vta_did);
+    println!("  Digest:     {}", bundle_digest(bundle));
+    Ok(())
+}
+
+fn variant_name(p: &SealedPayloadV1) -> &'static str {
+    match p {
+        SealedPayloadV1::AdminCredential(_) => "AdminCredential",
+        SealedPayloadV1::ContextProvision(_) => "ContextProvision",
+        SealedPayloadV1::DidSecrets(_) => "DidSecrets",
+        SealedPayloadV1::AdminKeySet(_) => "AdminKeySet",
+    }
+}
+
+fn default_slug(vta_did: &str) -> String {
+    vta_did.rsplit(':').next().unwrap_or("vta").to_string()
 }

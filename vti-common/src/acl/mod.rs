@@ -6,6 +6,13 @@ use crate::auth::extractor::AuthClaims;
 use crate::error::AppError;
 use crate::store::KeyspaceHandle;
 
+pub mod pending_bootstrap;
+pub use pending_bootstrap::{
+    PendingBootstrap, consume_pending_bootstrap, delete_pending_bootstrap,
+    get_pending_bootstrap_by_hash, get_pending_bootstrap_by_token, list_pending_bootstraps,
+    store_pending_bootstrap,
+};
+
 /// Roles that determine endpoint access permissions.
 ///
 /// Hierarchy (most to least privileged):
@@ -14,6 +21,10 @@ use crate::store::KeyspaceHandle;
 /// - **Application** — standard API access (sign, cache write) within allowed contexts
 /// - **Reader** — read-only access to keys, contexts, DIDs within allowed contexts
 /// - **Monitor** — infrastructure-only: metrics and health endpoints
+/// - **Bootstrap** — one-shot, non-composable. Holds no standing permissions;
+///   exists only as a marker for an in-flight sealed-bootstrap swap and is
+///   never reachable via `check_acl`. Assigning it through any normal route
+///   is rejected by [`validate_role_assignment`].
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub enum Role {
@@ -22,6 +33,7 @@ pub enum Role {
     Application,
     Reader,
     Monitor,
+    Bootstrap,
 }
 
 impl fmt::Display for Role {
@@ -32,6 +44,7 @@ impl fmt::Display for Role {
             Role::Application => write!(f, "application"),
             Role::Reader => write!(f, "reader"),
             Role::Monitor => write!(f, "monitor"),
+            Role::Bootstrap => write!(f, "bootstrap"),
         }
     }
 }
@@ -45,6 +58,7 @@ impl Role {
             "application" => Ok(Role::Application),
             "reader" => Ok(Role::Reader),
             "monitor" => Ok(Role::Monitor),
+            "bootstrap" => Ok(Role::Bootstrap),
             _ => Err(AppError::Internal(format!("unknown role: {s}"))),
         }
     }
@@ -60,6 +74,23 @@ pub struct AclEntry {
     pub allowed_contexts: Vec<String>,
     pub created_at: u64,
     pub created_by: String,
+    /// Unix-epoch seconds at which this entry expires and should be pruned by
+    /// the background sweeper. `None` is permanent (existing pre-Phase-2
+    /// behavior; entries serialized before this field existed deserialize with
+    /// this default).
+    #[serde(default)]
+    pub expires_at: Option<u64>,
+}
+
+impl AclEntry {
+    /// Returns true if this entry has passed its configured `expires_at`.
+    /// Permanent entries (no `expires_at`) never expire.
+    pub fn is_expired(&self, now_unix: u64) -> bool {
+        match self.expires_at {
+            Some(deadline) => now_unix >= deadline,
+            None => false,
+        }
+    }
 }
 
 fn acl_key(did: &str) -> String {
@@ -92,11 +123,26 @@ pub async fn list_acl_entries(acl: &KeyspaceHandle) -> Result<Vec<AclEntry>, App
     Ok(entries)
 }
 
+fn now_epoch() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
 /// Check whether a DID is in the ACL and return its role.
 ///
-/// Returns `Forbidden` if the DID is not found.
+/// Returns `Forbidden` if the DID is not found, if its entry has expired, or
+/// if the stored role is `Bootstrap` (which is never a valid authenticated
+/// identity — it only marks an in-flight sealed-bootstrap swap).
 pub async fn check_acl(acl: &KeyspaceHandle, did: &str) -> Result<Role, AppError> {
     match get_acl_entry(acl, did).await? {
+        Some(entry) if entry.is_expired(now_epoch()) => {
+            Err(AppError::Forbidden(format!("ACL entry expired: {did}")))
+        }
+        Some(entry) if entry.role == Role::Bootstrap => Err(AppError::Forbidden(format!(
+            "bootstrap-role DID cannot authenticate: {did}"
+        ))),
         Some(entry) => Ok(entry.role),
         None => Err(AppError::Forbidden(format!("DID not in ACL: {did}"))),
     }
@@ -104,12 +150,18 @@ pub async fn check_acl(acl: &KeyspaceHandle, did: &str) -> Result<Role, AppError
 
 /// Check whether a DID is in the ACL and return its role and allowed contexts.
 ///
-/// Returns `Forbidden` if the DID is not found.
+/// Returns `Forbidden` under the same conditions as [`check_acl`].
 pub async fn check_acl_full(
     acl: &KeyspaceHandle,
     did: &str,
 ) -> Result<(Role, Vec<String>), AppError> {
     match get_acl_entry(acl, did).await? {
+        Some(entry) if entry.is_expired(now_epoch()) => {
+            Err(AppError::Forbidden(format!("ACL entry expired: {did}")))
+        }
+        Some(entry) if entry.role == Role::Bootstrap => Err(AppError::Forbidden(format!(
+            "bootstrap-role DID cannot authenticate: {did}"
+        ))),
         Some(entry) => Ok((entry.role, entry.allowed_contexts)),
         None => Err(AppError::Forbidden(format!("DID not in ACL: {did}"))),
     }
@@ -118,14 +170,22 @@ pub async fn check_acl_full(
 /// Validate that the caller is allowed to assign the given role.
 ///
 /// - Only Admins can assign the Admin role.
-/// - Reader, Application, and Monitor roles cannot assign any role.
+/// - Reader, Application, Monitor, and Bootstrap roles cannot assign any role.
+/// - No one can assign the Bootstrap role through a normal ACL route — it
+///   exists only as a marker for an in-flight sealed-bootstrap swap and is
+///   never persisted to an `AclEntry` via operator-facing endpoints.
 pub fn validate_role_assignment(caller: &AuthClaims, target_role: &Role) -> Result<(), AppError> {
     if matches!(
         caller.role,
-        Role::Monitor | Role::Reader | Role::Application
+        Role::Monitor | Role::Reader | Role::Application | Role::Bootstrap
     ) {
         return Err(AppError::Forbidden(
             "insufficient role to assign roles".into(),
+        ));
+    }
+    if *target_role == Role::Bootstrap {
+        return Err(AppError::Forbidden(
+            "the bootstrap role cannot be assigned directly".into(),
         ));
     }
     if *target_role == Role::Admin && caller.role != Role::Admin {

@@ -122,7 +122,7 @@ enum Commands {
         #[command(subcommand)]
         command: WebvhCommands,
     },
-    /// Sealed-transfer bootstrap (offline producer side — Mode C).
+    /// Sealed-transfer bootstrap (seal for Mode C; token lifecycle for Mode A).
     Bootstrap {
         #[command(subcommand)]
         command: BootstrapCommands,
@@ -153,6 +153,37 @@ enum BootstrapCommands {
         /// Output path for the armored bundle.
         #[arg(long)]
         out: PathBuf,
+    },
+
+    /// Issue a one-time bootstrap token (online Mode A).
+    ///
+    /// Stores a `PendingBootstrap` row keyed by SHA-256(token); the token is
+    /// printed exactly once. Consumers present it to `POST /bootstrap/request`
+    /// which atomically deletes the row and mints an `AclEntry` with the
+    /// `--role` and `--contexts` frozen here.
+    IssueToken {
+        /// Target role for the eventual AclEntry (admin, initiator,
+        /// application, reader, or monitor).
+        #[arg(long)]
+        role: String,
+        /// Comma-separated context IDs. Required for non-admin roles.
+        #[arg(long, value_delimiter = ',')]
+        contexts: Vec<String>,
+        /// Validity window. Accepts `<N>[s|m|h|d]` (e.g. `24h`, `7d`).
+        #[arg(long)]
+        expires: String,
+        /// Optional label for operator-side management.
+        #[arg(long)]
+        label: Option<String>,
+    },
+
+    /// List pending bootstrap tokens (metadata only — token hashes are one-way).
+    ListTokens,
+
+    /// Revoke a pending bootstrap token by its hex hash or label.
+    RevokeToken {
+        /// Full hex-encoded token hash (preferred) or exact operator label.
+        id_or_label: String,
     },
 }
 
@@ -523,12 +554,31 @@ async fn main() {
             }
         }
         Some(Commands::Bootstrap { command }) => {
+            // Token lifecycle commands mutate ACL state — block when sealed.
+            if matches!(
+                command,
+                BootstrapCommands::IssueToken { .. } | BootstrapCommands::RevokeToken { .. }
+            ) {
+                check_seal(&cli.config).await;
+            }
             let result = match command {
                 BootstrapCommands::Seal {
                     request,
                     payload,
                     out,
                 } => bootstrap_cli::run_seal(request, payload, out).await,
+                BootstrapCommands::IssueToken {
+                    role,
+                    contexts,
+                    expires,
+                    label,
+                } => {
+                    bootstrap_cli::run_issue_token(cli.config, role, contexts, expires, label).await
+                }
+                BootstrapCommands::ListTokens => bootstrap_cli::run_list_tokens(cli.config).await,
+                BootstrapCommands::RevokeToken { id_or_label } => {
+                    bootstrap_cli::run_revoke_token(cli.config, id_or_label).await
+                }
             };
             if let Err(e) = result {
                 eprintln!("Error: {e}");
@@ -665,6 +715,7 @@ async fn run_bootstrap_admin(
             .unwrap()
             .as_secs(),
         created_by: "cli:bootstrap-admin".into(),
+        expires_at: None,
     };
     acl::store_acl_entry(&acl_ks, &entry).await?;
 

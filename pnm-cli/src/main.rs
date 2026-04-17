@@ -143,6 +143,28 @@ enum BootstrapCommands {
         #[arg(long)]
         no_verify_digest: bool,
     },
+
+    /// One-command online bootstrap against a running VTA (Mode A).
+    ///
+    /// Generates an ephemeral keypair, POSTs to `/bootstrap/request` with the
+    /// one-time token from the operator, opens the returned sealed bundle,
+    /// and installs the minted credential via `pnm auth login`.
+    Connect {
+        /// Base URL of the target VTA.
+        #[arg(long)]
+        vta_url: String,
+        /// One-time bootstrap token issued by the operator (required — Mode A).
+        #[arg(long)]
+        token: String,
+        /// Optional out-of-band digest anchor. Compared against the server's
+        /// reported digest and the locally computed one.
+        #[arg(long)]
+        expect_digest: Option<String>,
+        /// Slug to register this VTA under in pnm config (default: tail of the
+        /// VTA DID).
+        #[arg(long)]
+        slug: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -729,6 +751,21 @@ async fn main() {
                 } => {
                     bootstrap::run_open(bundle.clone(), expect_digest.clone(), *no_verify_digest)
                         .await
+                }
+                BootstrapCommands::Connect {
+                    vta_url,
+                    token,
+                    expect_digest,
+                    slug,
+                } => {
+                    bootstrap::run_connect(
+                        vta_url.clone(),
+                        token.clone(),
+                        expect_digest.clone(),
+                        slug.clone(),
+                        &mut pnm_config,
+                    )
+                    .await
                 }
             };
             if let Err(e) = result {

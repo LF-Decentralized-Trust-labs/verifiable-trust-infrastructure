@@ -26,6 +26,7 @@ thiserror = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 ed25519-dalek = { workspace = true }
+sha2 = { workspace = true }
 
 # Secrets resolver (for error type)
 affinidi-tdk = { workspace = true }
