@@ -281,8 +281,10 @@ For an interactive end-to-end deployment, use the deployment script:
 ```
 
 This walks through all the steps below — build profile selection, signing key
-generation, IAM and KMS setup, Docker/EIF builds, enclave launch, and parent
-proxy startup.
+generation, IAM and KMS setup, Docker/EIF builds, DID resolver sidecar
+install/start, parent `enclave-proxy` build/start, and finally the enclave
+launch. Parent-side services are started **before** the enclave (the order
+matters — see [Step 6](#step-6-start-the-parent-side-services-before-the-enclave)).
 
 For CI/CD, use non-interactive mode with environment variables:
 
@@ -706,12 +708,23 @@ scp deploy/nitro/config.toml ec2-user@<instance-ip>:~/config.toml
 
 If building directly on the EC2 instance, the files are already in place.
 
-## Step 6: Start the Parent Proxy (before the enclave)
+## Step 6: Start the Parent-Side Services (before the enclave)
 
-> **Important:** The parent proxy must be running **before** the enclave
-> starts. On boot, the enclave immediately tries to reach KMS and IMDS
-> through vsock. If the parent proxy isn't listening, these connections
-> fail and the VTA crashes.
+> **Important:** Both the DID resolver sidecar and the `enclave-proxy` must
+> be running **before** the enclave starts, in that order:
+>
+>   1. DID resolver sidecar (`affinidi-did-resolver-cache-server` on :8080)
+>   2. `enclave-proxy` (bridges vsock ↔ everything else)
+>   3. `nitro-cli run-enclave`
+>
+> On boot, the enclave immediately tries to reach KMS, IMDS, and the DID
+> resolver through vsock. If any of these are not listening, the VTA
+> crashes during TEE bootstrap or auth initialization.
+>
+> `deploy-vta.sh` installs and starts both services automatically in Steps
+> 9 and 10, and tracks them via pidfiles in `.deploy-nitro/` so re-runs
+> don't spawn duplicates. If you're running the steps by hand, do them in
+> the order listed above.
 
 The parent proxy bridges all networking between the enclave and the outside
 world. This includes DID resolution (`did:web`, `did:webvh`) — the enclave has
@@ -752,11 +765,14 @@ cd deploy/nitro/enclave-proxy
 cargo build --release
 cd ../../..
 
-# Run with the finalized config
-./deploy/nitro/enclave-proxy/target/release/enclave-proxy -c ~/config.toml
+# Run with the finalized config. Pin --enclave-cid 16 so the proxy doesn't
+# auto-detect a stale CID from an old enclave you're about to terminate.
+./deploy/nitro/enclave-proxy/target/release/enclave-proxy \
+    --config ~/config.toml --enclave-cid 16
 
 # With additional allowlisted hosts (WebVH servers, etc.)
-./deploy/nitro/enclave-proxy/target/release/enclave-proxy -c ~/config.toml webvh-server.example.com:443
+./deploy/nitro/enclave-proxy/target/release/enclave-proxy \
+    --config ~/config.toml --enclave-cid 16 webvh-server.example.com:443
 
 ```
 
@@ -791,22 +807,71 @@ DID resolution uses two components:
    on the parent EC2 instance as a sidecar. The VTA inside the enclave
    connects to it via WebSocket (network mode) through vsock:5600.
 
-Install and start the resolver sidecar on the parent:
+**Source and crate:** the sidecar is published on crates.io as
+[`affinidi-did-resolver-cache-server`](https://crates.io/crates/affinidi-did-resolver-cache-server)
+and lives upstream at
+[`affinidi/affinidi-tdk-rs`](https://github.com/affinidi/affinidi-tdk-rs)
+under `crates/identity/affinidi-did-resolver-cache-server/`. A plain
+`cargo install affinidi-did-resolver-cache-server` is all you need —
+no git clone, no feature flags. "Network mode" refers to the WebSocket
+endpoint at `/did/v1/ws`, which the server exposes by default.
+
+#### Automatic (recommended)
+
+`deploy-vta.sh` does all of this for you in **Step 9**, before the
+`enclave-proxy` and the enclave itself:
+
+- Runs `cargo install affinidi-did-resolver-cache-server` if the binary
+  isn't on `$PATH` yet.
+- Creates a runtime directory at `.deploy-nitro/resolver/` with a
+  minimal `conf/cache-conf.toml` (the sidecar hard-codes its config
+  path relative to CWD — there is no CLI flag to override it).
+- Starts the sidecar in the background with `nohup`, binding to
+  `127.0.0.1:8080` (override with `VTA_RESOLVER_LISTEN=host:port`).
+- Writes `.deploy-nitro/resolver.pid` so re-runs reuse the existing
+  process instead of spawning duplicates.
+
+Logs land in `.deploy-nitro/resolver.log`.
+
+#### Manual
+
+If you're not using the script (e.g., managing the parent instance
+with systemd), install and start it by hand:
 
 ```bash
-# Install (first time only)
+# Install (first time only — compiles from source, takes a few minutes)
 cargo install affinidi-did-resolver-cache-server
 
-# Run in background
-affinidi-did-resolver-cache-server &
+# Create a runtime directory with the required config file.
+# The server reads `conf/cache-conf.toml` relative to its CWD — there
+# is no CLI flag to override the path.
+mkdir -p ~/vta-resolver/conf
+cat > ~/vta-resolver/conf/cache-conf.toml <<'EOF'
+log_level = "info"
+listen_address = "${LISTEN_ADDRESS:127.0.0.1:8080}"
+statistics_interval = "${STATISTICS_INTERVAL:60}"
+enable_http_endpoint = "${ENABLE_HTTP_ENDPOINT:true}"
+enable_websocket_endpoint = "${ENABLE_WEBSOCKET_ENDPOINT:true}"
+
+[cache]
+capacity_count = "${CACHE_CAPACITY_COUNT:1000}"
+expire = "${EXPIRE:300}"
+EOF
+
+# Start it — must run from the directory containing conf/cache-conf.toml
+cd ~/vta-resolver
+nohup affinidi-did-resolver-cache-server > resolver.log 2>&1 &
 ```
 
 The VTA's `config.toml` sets `resolver_url = "ws://127.0.0.1:4445/did/v1/ws"`
 which routes through socat inside the enclave → vsock:5600 → proxy →
 localhost:8080 (sidecar).
 
-**Start the sidecar before the enclave** — the VTA connects to it during
-boot for auth initialization.
+**Start the sidecar before the `enclave-proxy` and the enclave** — the
+proxy bridges vsock:5600 to localhost:8080, and the VTA connects through
+that bridge during boot for auth initialization. If the sidecar isn't up,
+the bridge still accepts connections but immediately fails them, and the
+VTA will crash during auth init.
 
 ### DID Resolution Security
 
@@ -1045,6 +1110,7 @@ nitro-cli console \
 | `KMS ... failed [ACCESS_DENIED]` in debug mode | Debug mode zeros all PCR values — KMS attestation conditions can't match | Use all-zeros PCR values in the KMS policy for testing, or launch without `--debug-mode` |
 | `failed to load IMDS session token` | IMDS hop limit too low or HTTP_PROXY interfering | Set IMDS hop limit to 2: `aws ec2 modify-instance-metadata-options --instance-id <id> --http-put-response-hop-limit 2` |
 | `KMS Decrypt failed [NETWORK]` | Can't reach KMS — parent proxy not running or allowlist wrong | Start the enclave-proxy on the parent and verify the KMS endpoint is allowlisted |
+| VTA hangs or crashes during auth init, no TEE errors in console | DID resolver sidecar (`affinidi-did-resolver-cache-server`) not running on the parent | Start it before the enclave: `nohup affinidi-did-resolver-cache-server > resolver.log 2>&1 &` — or re-run `deploy-vta.sh`, which handles this in Step 9 |
 | `KMS Decrypt failed [KEY_NOT_FOUND]` | Wrong KMS key ARN in config.toml | Verify `[tee.kms] key_arn` matches the key created by `setup-kms-policy.sh` |
 | `failed to open /dev/nsm` | Not running inside a Nitro Enclave | The VTA binary must run inside an enclave, not directly on the EC2 host |
 | `TEE mode is 'required' but no TEE hardware detected` | TEE mode set to required but `/dev/nsm` not found | Ensure you're running inside a Nitro Enclave, or set `tee.mode = "optional"` for testing |
@@ -1360,4 +1426,6 @@ jobs:
 | `enclave-entrypoint.sh` | Enclave | Set up lo, vsock proxies, start VTA |
 | `enclave-proxy/` | Parent EC2 | Rust proxy binary — bridges vsock ↔ TCP/TLS, HTTPS CONNECT proxy |
 | `parent-proxy.sh` | Parent EC2 | Shell script fallback (requires socat + vsock-proxy) |
+| `affinidi-did-resolver-cache-server` | Parent EC2 | DID resolver sidecar — `cargo install` from crates.io (upstream at `affinidi/affinidi-tdk-rs`), listens on `localhost:8080` with WebSocket endpoint `/did/v1/ws`, bridged over vsock:5600 |
+| `.deploy-nitro/resolver/conf/cache-conf.toml` | Parent EC2 (generated) | Minimal config for the sidecar — written by `deploy-vta.sh` Step 9 |
 | `config.toml` | Reference | Example config with KMS + DIDComm |
