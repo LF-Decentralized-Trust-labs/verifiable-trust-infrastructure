@@ -11,7 +11,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-vta-sdk = { path = "../vta-sdk", version = "0.4", features = ["client"] }
+vta-sdk = { path = "../vta-sdk", version = "0.4", features = ["client", "sealed-transfer"] }
 chrono = { workspace = true }
 ed25519-dalek = { workspace = true }
 ratatui = { workspace = true }
@@ -22,3 +22,4 @@ sha2 = { workspace = true }
 hkdf = "0.12"
 aes-gcm = "0.10"
 base64 = { workspace = true }
+rand = { workspace = true }

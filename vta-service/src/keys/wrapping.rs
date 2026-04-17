@@ -1,9 +1,16 @@
 //! Ephemeral X25519 wrapping key for REST key import.
 //!
 //! Each wrapping key is single-use with a 60-second TTL. The VTA generates
-//! an ephemeral X25519 keypair and returns the public key as a JWK. The
-//! PNM client performs ECDH-ES key agreement and wraps the imported private
-//! key with AES-256-GCM before sending it over REST.
+//! an ephemeral X25519 keypair and returns the public key as a JWK. Clients
+//! may then import a private key via one of two paths:
+//!
+//! - **Sealed transfer (preferred)** — client seals a
+//!   [`SealedPayloadV1::RawPrivateKey`] to the wrapping pubkey using HPKE
+//!   via `vta_sdk::sealed_transfer`, sends the armored bundle. Server opens
+//!   it with [`WrappingKeyCache::unwrap_sealed`].
+//! - **Legacy JWE** — historical compact ECDH-ES + AES-GCM format. Retained
+//!   only so in-flight clients keep working; new code should use the
+//!   sealed-transfer path.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -156,6 +163,79 @@ impl WrappingKeyCache {
         Ok(std::mem::take(&mut plaintext))
     }
 
+    /// Consume a wrapping key and open a sealed-transfer armored bundle,
+    /// returning the raw private key bytes and its declared `key_type` tag.
+    /// The caller must cross-check the tag against the outer request's
+    /// declared `key_type` to reject mismatches.
+    pub async fn unwrap_sealed(&self, armored: &str) -> Result<(String, Vec<u8>), AppError> {
+        use vta_sdk::sealed_transfer::{SealedPayloadV1, armor, open_bundle};
+
+        let bundles = armor::decode(armored)
+            .map_err(|e| AppError::Validation(format!("sealed bundle armor: {e}")))?;
+        if bundles.len() != 1 {
+            return Err(AppError::Validation(format!(
+                "expected exactly one sealed bundle, got {}",
+                bundles.len()
+            )));
+        }
+        let bundle = &bundles[0];
+
+        // Chunk 0's producer_assertion carries the wrapping-key kid via the
+        // producer_pubkey_b64 field by convention — the sealed envelope
+        // already constrains who could have produced this bundle because it
+        // had to be sealed to this cache's X25519 pubkey.
+        //
+        // Operationally we need to identify which cached wrapping secret to
+        // try. Sealed-transfer doesn't expose the recipient pubkey in the
+        // ciphertext (that would defeat sender-anonymity), so we attempt
+        // open against each unexpired, unused entry.
+        let mut entries = self.entries.lock().await;
+        let now = Instant::now();
+        entries.retain(|_, e| now.duration_since(e.created_at) < TTL && !e.used);
+
+        let mut last_err: Option<AppError> = None;
+        let mut matched_kid: Option<String> = None;
+        let mut matched_payload: Option<SealedPayloadV1> = None;
+
+        for (kid, entry) in entries.iter() {
+            let secret_bytes = entry.private_key.to_bytes();
+            match open_bundle(&secret_bytes, bundle, None) {
+                Ok(opened) => {
+                    matched_kid = Some(kid.clone());
+                    matched_payload = Some(opened.payload);
+                    break;
+                }
+                Err(e) => {
+                    last_err = Some(AppError::Authentication(format!(
+                        "sealed bundle open failed: {e}"
+                    )));
+                }
+            }
+        }
+
+        if let (Some(kid), Some(payload)) = (matched_kid, matched_payload) {
+            entries.remove(&kid);
+            return match payload {
+                SealedPayloadV1::RawPrivateKey(raw) => {
+                    let key_bytes = BASE64
+                        .decode(raw.key_bytes_b64.as_bytes())
+                        .map_err(|e| AppError::Validation(format!("key bytes base64: {e}")))?;
+                    Ok((raw.key_type, key_bytes))
+                }
+                other => Err(AppError::Validation(format!(
+                    "sealed payload is not RawPrivateKey (got {:?})",
+                    std::mem::discriminant(&other)
+                ))),
+            };
+        }
+
+        Err(last_err.unwrap_or_else(|| {
+            AppError::NotFound(
+                "no wrapping key could open this sealed bundle (expired or mismatched)".into(),
+            )
+        }))
+    }
+
     /// Remove expired entries. Call periodically.
     pub async fn reap_expired(&self) {
         let mut entries = self.entries.lock().await;
@@ -231,5 +311,40 @@ mod tests {
         // Second use should fail
         let jwe2 = wrap_for_test(&pub_bytes, &kid, b"secret2");
         assert!(cache.unwrap_jwe(&jwe2).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_unwrap_sealed_round_trip() {
+        use vta_sdk::sealed_transfer::{
+            AssertionProof, InMemoryNonceStore, ProducerAssertion, RawPrivateKey, SealedPayloadV1,
+            armor, generate_keypair, seal_payload,
+        };
+
+        let cache = WrappingKeyCache::new();
+        let (_kid, pub_b64) = cache.generate().await;
+        let pub_bytes: [u8; 32] = BASE64.decode(&pub_b64).unwrap().try_into().unwrap();
+
+        let secret_key = b"deadbeef-private-key-material-32";
+        let payload = SealedPayloadV1::RawPrivateKey(RawPrivateKey {
+            key_type: "ed25519".into(),
+            key_bytes_b64: BASE64.encode(secret_key),
+        });
+        let (_prod_sk, prod_pk) = generate_keypair();
+        let producer = ProducerAssertion {
+            producer_pubkey_b64: BASE64.encode(prod_pk),
+            proof: AssertionProof::PinnedOnly,
+        };
+        let store = InMemoryNonceStore::new();
+        let bundle = seal_payload(&pub_bytes, [7u8; 16], producer, &payload, &store)
+            .await
+            .unwrap();
+        let armored = armor::encode(&bundle);
+
+        let (key_type, bytes) = cache.unwrap_sealed(&armored).await.unwrap();
+        assert_eq!(key_type, "ed25519");
+        assert_eq!(bytes, secret_key);
+
+        // Second attempt must fail — the wrapping key is consumed.
+        assert!(cache.unwrap_sealed(&armored).await.is_err());
     }
 }

@@ -20,7 +20,7 @@ pub mod request;
 
 pub use bundle::{
     ArmoredChunk, AssertionProof, AttestationQuoteAssertion, DidSignedAssertion, LabeledKey,
-    ProducerAssertion, SealedBundle, SealedPayloadV1,
+    ProducerAssertion, RawPrivateKey, SealedBundle, SealedPayloadV1,
 };
 pub use chunk::{ChunkPlaintext, MAX_PAYLOAD_FRAGMENT, VERSION};
 pub use error::SealedTransferError;

@@ -196,6 +196,9 @@ pub async fn run_open(
                 println!("  - {}", k.label);
             }
         }
+        SealedPayloadV1::RawPrivateKey(k) => {
+            println!("Payload: RawPrivateKey ({})", k.key_type);
+        }
     }
 
     // Best-effort cleanup of the now-used secret. The bundle_id is single-use
@@ -352,6 +355,7 @@ fn variant_name(p: &SealedPayloadV1) -> &'static str {
         SealedPayloadV1::ContextProvision(_) => "ContextProvision",
         SealedPayloadV1::DidSecrets(_) => "DidSecrets",
         SealedPayloadV1::AdminKeySet(_) => "AdminKeySet",
+        SealedPayloadV1::RawPrivateKey(_) => "RawPrivateKey",
     }
 }
 

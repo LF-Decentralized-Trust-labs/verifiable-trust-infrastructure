@@ -29,6 +29,23 @@ pub enum SealedPayloadV1 {
     ContextProvision(ContextProvisionBundle),
     DidSecrets(DidSecretsBundle),
     AdminKeySet(Vec<LabeledKey>),
+    /// A single raw private key bound to its algorithm tag. Used by the
+    /// `POST /keys/import` flow: the client seals the key material to the
+    /// server's ephemeral wrapping pubkey via sealed-transfer; the server
+    /// opens it and imports.
+    RawPrivateKey(RawPrivateKey),
+}
+
+/// A single raw private key transferred inside a sealed bundle. The
+/// `key_type` tag travels with the bytes so the server can reject a mismatch
+/// between the outer request's declared key type and what was actually
+/// sealed — a defence against a compromised client mis-declaring its key.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RawPrivateKey {
+    /// One of: `ed25519`, `x25519`, `p256`.
+    pub key_type: String,
+    /// Raw private key bytes, base64url-no-pad.
+    pub key_bytes_b64: String,
 }
 
 /// A digital signature over the producer's pubkey + the bundle digest, by a

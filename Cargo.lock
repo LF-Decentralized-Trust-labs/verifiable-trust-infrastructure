@@ -7908,6 +7908,7 @@ dependencies = [
  "ed25519-dalek",
  "hkdf",
  "multibase",
+ "rand 0.10.1",
  "ratatui",
  "serde_json",
  "sha2 0.10.9",

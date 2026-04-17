@@ -86,23 +86,21 @@ pub async fn cmd_key_import(
         return Err("either --private-key or --private-key-file is required".into());
     };
 
-    // For REST transport, fetch wrapping key and create JWE
-    // For DIDComm, send multibase directly
-    let (jwe, multibase) = match client.get_wrapping_key().await {
+    // REST path: fetch the server's ephemeral wrapping pubkey and seal the
+    // private key via sealed-transfer. DIDComm path: send multibase directly.
+    let (sealed, multibase) = match client.get_wrapping_key().await {
         Ok(wrapping_key) => {
-            // REST path: wrap with ECDH-ES
-            let jwe = wrap_private_key(&wrapping_key.kid, &wrapping_key.x, &private_key_multibase)?;
-            (Some(jwe), None)
+            let sealed =
+                seal_private_key(&wrapping_key.x, &key_type, &private_key_multibase).await?;
+            (Some(sealed), None)
         }
-        Err(_) => {
-            // DIDComm path (or wrapping key not available): send multibase
-            (None, Some(private_key_multibase))
-        }
+        Err(_) => (None, Some(private_key_multibase)),
     };
 
     let req = ImportKeyRequest {
         key_type,
-        private_key_jwe: jwe,
+        private_key_sealed: sealed,
+        private_key_jwe: None,
         private_key_multibase: multibase,
         label,
         context_id,
@@ -127,60 +125,50 @@ pub async fn cmd_key_import(
     Ok(())
 }
 
-/// Wrap a multibase-encoded private key with ECDH-ES+AES-256-GCM for REST transport.
-fn wrap_private_key(
-    kid: &str,
+/// Seal a multibase-encoded private key to the VTA's wrapping pubkey using
+/// HPKE via `vta_sdk::sealed_transfer`. Returns an armored bundle suitable
+/// for the `private_key_sealed` field of `ImportKeyRequest`.
+async fn seal_private_key(
     vta_pub_b64: &str,
+    key_type: &KeyType,
     private_key_multibase: &str,
 ) -> Result<String, Box<dyn std::error::Error>> {
     use base64::Engine;
-    use base64::engine::general_purpose::URL_SAFE_NO_PAD as BASE64;
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64URL;
+    use vta_sdk::sealed_transfer::{
+        AssertionProof, InMemoryNonceStore, ProducerAssertion, RawPrivateKey, SealedPayloadV1,
+        armor, generate_keypair, seal_payload,
+    };
 
-    // Decode the VTA's wrapping public key
-    let vta_pub_bytes: [u8; 32] = BASE64
+    // JWK `x` is base64url-no-pad; the server encodes with URL_SAFE_NO_PAD
+    // in wrapping.rs.
+    let vta_pub_bytes: [u8; 32] = B64URL
         .decode(vta_pub_b64)?
         .try_into()
         .map_err(|_| "wrapping public key must be 32 bytes")?;
 
-    // Decode the private key from multibase
     let (_, key_bytes) = multibase::decode(private_key_multibase)?;
 
-    // Generate ephemeral X25519 keypair for client side
-    let client_secret = x25519_dalek::StaticSecret::random_from_rng(aes_gcm::aead::OsRng);
-    let client_pub = x25519_dalek::PublicKey::from(&client_secret);
+    let payload = SealedPayloadV1::RawPrivateKey(RawPrivateKey {
+        key_type: key_type.to_string(),
+        key_bytes_b64: B64URL.encode(&key_bytes),
+    });
 
-    // ECDH
-    let vta_pub = x25519_dalek::PublicKey::from(vta_pub_bytes);
-    let shared = client_secret.diffie_hellman(&vta_pub);
+    // Producer identity is irrelevant here — the server trusts the request
+    // because it's authenticated at the request layer, and the sealed bundle
+    // is protected by HPKE bound to the server's wrapping pubkey. The
+    // PinnedOnly assertion is just a placeholder for wire-format uniformity.
+    let (_sk, producer_pk) = generate_keypair();
+    let producer = ProducerAssertion {
+        producer_pubkey_b64: B64URL.encode(producer_pk),
+        proof: AssertionProof::PinnedOnly,
+    };
 
-    // HKDF to derive AES key
-    use sha2::Sha256;
-    let hkdf = hkdf::Hkdf::<Sha256>::new(None, shared.as_bytes());
-    let mut aes_key = [0u8; 32];
-    hkdf.expand(b"vta-key-import-wrapping", &mut aes_key)
-        .map_err(|e| format!("hkdf: {e}"))?;
+    let bundle_id: [u8; 16] = rand::random();
 
-    // AES-256-GCM encrypt
-    use aes_gcm::aead::Aead;
-    use aes_gcm::aead::rand_core::RngCore;
-    use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
-
-    let cipher = Aes256Gcm::new_from_slice(&aes_key)?;
-    let mut nonce_bytes = [0u8; 12];
-    aes_gcm::aead::OsRng.fill_bytes(&mut nonce_bytes);
-    let nonce = Nonce::from_slice(&nonce_bytes);
-    let ciphertext = cipher
-        .encrypt(nonce, key_bytes.as_ref())
-        .map_err(|e| format!("encrypt: {e}"))?;
-
-    // Format: kid.ephemeral_pub.nonce.ciphertext
-    Ok(format!(
-        "{}.{}.{}.{}",
-        kid,
-        BASE64.encode(client_pub.as_bytes()),
-        BASE64.encode(nonce_bytes),
-        BASE64.encode(ciphertext),
-    ))
+    let nonce_store = InMemoryNonceStore::new();
+    let bundle = seal_payload(&vta_pub_bytes, bundle_id, producer, &payload, &nonce_store).await?;
+    Ok(armor::encode(&bundle))
 }
 
 pub async fn cmd_key_get(

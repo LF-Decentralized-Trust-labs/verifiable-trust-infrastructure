@@ -137,7 +137,12 @@ impl CreateKeyRequest {
 #[derive(Debug, Serialize)]
 pub struct ImportKeyRequest {
     pub key_type: KeyType,
-    /// JWE compact serialization of the private key (REST transport).
+    /// Sealed-transfer armored bundle carrying a
+    /// `SealedPayloadV1::RawPrivateKey`. Preferred REST transport.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub private_key_sealed: Option<String>,
+    /// Legacy JWE compact serialization of the private key. Retained for
+    /// in-flight clients; new code should use `private_key_sealed`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub private_key_jwe: Option<String>,
     /// Multibase-encoded private key (DIDComm transport).

@@ -256,7 +256,9 @@ pub async fn get_wrapping_key(
 #[derive(Debug, Deserialize)]
 pub struct ImportKeyRestRequest {
     pub key_type: KeyType,
-    /// JWE compact serialization of the private key (REST transport).
+    /// Sealed-transfer armored bundle — preferred REST transport.
+    pub private_key_sealed: Option<String>,
+    /// Legacy JWE compact serialization. Retained for existing clients.
     pub private_key_jwe: Option<String>,
     /// Multibase-encoded private key (DIDComm transport — should not be used via REST).
     pub private_key_multibase: Option<String>,
@@ -270,8 +272,21 @@ pub async fn import_key(
     State(state): State<AppState>,
     Json(req): Json<ImportKeyRestRequest>,
 ) -> Result<(StatusCode, Json<CreateKeyResultBody>), AppError> {
-    // Unwrap the private key based on transport
-    let private_key_bytes = if let Some(jwe) = req.private_key_jwe {
+    // Unwrap the private key based on transport. Sealed-transfer is
+    // preferred; JWE is kept as a fallback for legacy clients.
+    let private_key_bytes = if let Some(sealed) = req.private_key_sealed.as_deref() {
+        let (sealed_type, bytes) = state.wrapping_cache.unwrap_sealed(sealed).await?;
+        if sealed_type != req.key_type.to_string() {
+            return Err(AppError::Validation(format!(
+                "sealed key_type `{sealed_type}` does not match request key_type `{}`",
+                req.key_type
+            )));
+        }
+        bytes
+    } else if let Some(jwe) = req.private_key_jwe {
+        tracing::warn!(
+            "key import via legacy JWE path — prefer private_key_sealed (sealed-transfer)"
+        );
         state.wrapping_cache.unwrap_jwe(&jwe).await?
     } else if let Some(ref mb) = req.private_key_multibase {
         let (_, bytes) = multibase::decode(mb)
@@ -279,7 +294,8 @@ pub async fn import_key(
         bytes
     } else {
         return Err(AppError::Validation(
-            "either private_key_jwe or private_key_multibase is required".into(),
+            "one of private_key_sealed, private_key_jwe, or private_key_multibase is required"
+                .into(),
         ));
     };
 
