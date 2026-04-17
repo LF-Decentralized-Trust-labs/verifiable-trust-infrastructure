@@ -50,6 +50,14 @@ pub struct ProvisionedDid {
 
 impl ContextProvisionBundle {
     /// Decode a base64url-no-pad encoded provision bundle.
+    ///
+    /// **Deprecated.** Transport via [`crate::sealed_transfer`]
+    /// (`SealedPayloadV1::ContextProvision`) — the plaintext envelope has no
+    /// integrity or confidentiality.
+    #[deprecated(
+        since = "0.4.2",
+        note = "use vta_sdk::sealed_transfer (SealedPayloadV1::ContextProvision)"
+    )]
     pub fn decode(encoded: &str) -> Result<Self, ContextProvisionBundleError> {
         let json_bytes = BASE64
             .decode(encoded)
@@ -59,6 +67,12 @@ impl ContextProvisionBundle {
     }
 
     /// Encode this bundle as a base64url-no-pad string.
+    ///
+    /// **Deprecated.** See [`Self::decode`].
+    #[deprecated(
+        since = "0.4.2",
+        note = "use vta_sdk::sealed_transfer (SealedPayloadV1::ContextProvision)"
+    )]
     pub fn encode(&self) -> Result<String, ContextProvisionBundleError> {
         let json = serde_json::to_vec(self)
             .map_err(|e| ContextProvisionBundleError::Json(e.to_string()))?;
@@ -85,6 +99,7 @@ impl std::fmt::Display for ContextProvisionBundleError {
 impl std::error::Error for ContextProvisionBundleError {}
 
 #[cfg(test)]
+#[allow(deprecated)] // tests exercise the legacy encode/decode path intentionally
 mod tests {
     use super::*;
 

@@ -38,6 +38,17 @@ impl CredentialBundle {
     }
 
     /// Decode a base64url-no-pad encoded credential bundle.
+    ///
+    /// **Deprecated.** The plaintext-JSON-in-base64 envelope has no integrity
+    /// or confidentiality guarantees — anything that can read the string can
+    /// read the private key. New code should transport credentials via
+    /// [`crate::sealed_transfer`] (`SealedPayloadV1::AdminCredential`), which
+    /// encrypts end-to-end to a recipient-chosen ephemeral X25519 key and
+    /// binds producer authenticity via an attestation or DID signature.
+    #[deprecated(
+        since = "0.4.2",
+        note = "use vta_sdk::sealed_transfer (SealedPayloadV1::AdminCredential) for integrity and confidentiality"
+    )]
     pub fn decode(encoded: &str) -> Result<Self, CredentialBundleError> {
         let json_bytes = BASE64
             .decode(encoded)
@@ -46,6 +57,12 @@ impl CredentialBundle {
     }
 
     /// Encode this bundle as a base64url-no-pad string.
+    ///
+    /// **Deprecated.** See [`Self::decode`].
+    #[deprecated(
+        since = "0.4.2",
+        note = "use vta_sdk::sealed_transfer (SealedPayloadV1::AdminCredential) for integrity and confidentiality"
+    )]
     pub fn encode(&self) -> Result<String, CredentialBundleError> {
         let json =
             serde_json::to_vec(self).map_err(|e| CredentialBundleError::Json(e.to_string()))?;
@@ -72,6 +89,7 @@ impl std::fmt::Display for CredentialBundleError {
 impl std::error::Error for CredentialBundleError {}
 
 #[cfg(test)]
+#[allow(deprecated)] // tests exercise the legacy encode/decode path intentionally
 mod tests {
     use super::*;
 

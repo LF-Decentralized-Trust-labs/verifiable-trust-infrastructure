@@ -77,6 +77,14 @@ impl From<crate::client::GetKeySecretResponse> for SecretEntry {
 
 impl DidSecretsBundle {
     /// Decode a base64url-no-pad encoded secrets bundle.
+    ///
+    /// **Deprecated.** Transport via [`crate::sealed_transfer`]
+    /// (`SealedPayloadV1::DidSecrets`) — the plaintext envelope has no
+    /// integrity or confidentiality.
+    #[deprecated(
+        since = "0.4.2",
+        note = "use vta_sdk::sealed_transfer (SealedPayloadV1::DidSecrets)"
+    )]
     pub fn decode(encoded: &str) -> Result<Self, DidSecretsBundleError> {
         let json_bytes = BASE64
             .decode(encoded)
@@ -85,6 +93,12 @@ impl DidSecretsBundle {
     }
 
     /// Encode this bundle as a base64url-no-pad string.
+    ///
+    /// **Deprecated.** See [`Self::decode`].
+    #[deprecated(
+        since = "0.4.2",
+        note = "use vta_sdk::sealed_transfer (SealedPayloadV1::DidSecrets)"
+    )]
     pub fn encode(&self) -> Result<String, DidSecretsBundleError> {
         let json =
             serde_json::to_vec(self).map_err(|e| DidSecretsBundleError::Json(e.to_string()))?;
@@ -111,6 +125,7 @@ impl std::fmt::Display for DidSecretsBundleError {
 impl std::error::Error for DidSecretsBundleError {}
 
 #[cfg(test)]
+#[allow(deprecated)] // tests exercise the legacy encode/decode path intentionally
 mod tests {
     use super::*;
 
