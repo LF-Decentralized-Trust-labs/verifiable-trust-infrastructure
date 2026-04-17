@@ -1,28 +1,38 @@
 //! Auto-bootstrap a super-admin credential on first TEE boot.
 //!
-//! When KMS bootstrap is configured, the VTA auto-creates a default admin
-//! context, generates a random `did:key` credential, stores an ACL entry
-//! granting super-admin access, and writes the encoded `CredentialBundle`
-//! to the unencrypted bootstrap keyspace so the parent instance (or
-//! operator) can retrieve it via `GET /attestation/admin-credential`.
+//! Two paths:
 //!
-//! On subsequent boots, the admin credential is already in the store
-//! and this function is a no-op.
+//! 1. **`admin_did` configured** — create the ACL entry for the operator's
+//!    known DID and close the first-boot carve-out. The operator keeps the
+//!    corresponding private key off-enclave.
+//! 2. **No `admin_did` configured** — leave the first-boot carve-out OPEN.
+//!    The operator completes the swap via the sealed-bootstrap flow
+//!    (`POST /bootstrap/request` with attestation, Phase 3). The first
+//!    successful swap closes the carve-out.
+//!
+//! Legacy behavior pre-Phase-3 was to auto-generate a random admin
+//! credential on first boot and store it under `tee:admin_credential` for
+//! retrieval via `GET /attestation/admin-credential`. That endpoint is
+//! gone; startup migrates any stored row out of the store.
 
 use tracing::info;
 
 use crate::acl::{AclEntry, Role, store_acl_entry};
-use crate::auth::credentials::generate_did_key;
 use crate::auth::session::now_epoch;
 use crate::config::AppConfig;
 use crate::contexts;
 use crate::error::AppError;
 use crate::store::{KeyspaceHandle, Store};
 
-use vta_sdk::credentials::CredentialBundle;
+/// Sentinel indicating the TEE first-boot carve-out has been closed. Written
+/// either by `maybe_bootstrap_admin` (when an operator DID is configured) or
+/// by `POST /bootstrap/request` after a successful Mode B swap. When present,
+/// any subsequent Mode B attempt is rejected.
+pub const BOOTSTRAP_CARVEOUT_CLOSED_KEY: &str = "tee:bootstrap-carveout-closed";
 
-/// Well-known store key for the bootstrapped admin credential.
-const ADMIN_CREDENTIAL_STORE_KEY: &str = "tee:admin_credential";
+/// Legacy store key for the pre-Phase-3 auto-generated admin credential.
+/// No longer written; cleaned up on first startup after the upgrade.
+pub const LEGACY_ADMIN_CREDENTIAL_KEY: &str = "tee:admin_credential";
 
 /// Bootstrap a super-admin credential on first boot.
 ///
@@ -55,9 +65,36 @@ pub async fn maybe_bootstrap_admin(
     let contexts_ks = apply_enc(store.keyspace("contexts")?);
     let acl_ks = apply_enc(store.keyspace("acl")?);
 
-    // Check if admin credential already exists (subsequent boot)
-    if keys_ks.get_raw(ADMIN_CREDENTIAL_STORE_KEY).await?.is_some() {
-        info!("admin credential already bootstrapped — skipping");
+    // One-time migration: if the legacy pre-Phase-3 credential row is still in
+    // the store, the old endpoint retrieving it is gone. Move any operator
+    // copies they already have, then retire the row so the carve-out reflects
+    // real state.
+    if keys_ks
+        .get_raw(LEGACY_ADMIN_CREDENTIAL_KEY)
+        .await?
+        .is_some()
+    {
+        info!("migrating legacy tee:admin_credential row — carve-out now closed");
+        keys_ks.remove(LEGACY_ADMIN_CREDENTIAL_KEY).await?;
+        // Old row might also be mirrored in the bootstrap keyspace.
+        if let Ok(bootstrap_ks) = store.keyspace("bootstrap") {
+            let _ = bootstrap_ks.remove(LEGACY_ADMIN_CREDENTIAL_KEY).await;
+        }
+        keys_ks
+            .insert_raw(BOOTSTRAP_CARVEOUT_CLOSED_KEY, b"legacy-migrated".to_vec())
+            .await?;
+        store.persist().await?;
+        return Ok(());
+    }
+
+    // Carve-out already closed by a prior boot (operator DID path) or a
+    // prior Mode B swap.
+    if keys_ks
+        .get_raw(BOOTSTRAP_CARVEOUT_CLOSED_KEY)
+        .await?
+        .is_some()
+    {
+        info!("tee first-boot carve-out already closed — skipping");
         return Ok(());
     }
 
@@ -73,8 +110,8 @@ pub async fn maybe_bootstrap_admin(
 
     // Use the operator-provided admin DID if configured, otherwise generate one
     if let Some(ref admin_did) = kms_config.admin_did {
-        // Operator-provided DID — just create the ACL entry.
-        // The private key stays with the operator (never touches TEE or parent).
+        // Operator-provided DID — just create the ACL entry. Carve-out is
+        // closed immediately because the admin identity is already known.
         info!(did = %admin_did, context_id, "bootstrapping super-admin from config admin_did");
 
         let entry = AclEntry {
@@ -88,9 +125,8 @@ pub async fn maybe_bootstrap_admin(
         };
         store_acl_entry(&acl_ks, &entry).await?;
 
-        // Persist sentinel so we don't re-run on next boot
         keys_ks
-            .insert_raw(ADMIN_CREDENTIAL_STORE_KEY, admin_did.as_bytes().to_vec())
+            .insert_raw(BOOTSTRAP_CARVEOUT_CLOSED_KEY, admin_did.as_bytes().to_vec())
             .await?;
 
         store.persist().await?;
@@ -101,54 +137,16 @@ pub async fn maybe_bootstrap_admin(
             "super-admin ACL created — connect using the private key for this DID"
         );
     } else {
-        // No admin_did configured — generate a random did:key and store the
-        // credential bundle for retrieval via REST.
+        // No admin_did configured — leave the first-boot carve-out OPEN.
+        // The operator completes the swap by running
+        // `pnm bootstrap connect --vta-url <URL>` against this VTA (no token),
+        // which triggers the Mode B attestation branch and closes the carve-out.
         info!(
             context_id,
-            "no admin_did configured — generating random admin credential"
+            "no admin_did configured — first-boot carve-out remains open for \
+             sealed-bootstrap Mode B"
         );
-
-        let (did, private_key_multibase) = generate_did_key();
-
-        let entry = AclEntry {
-            did: did.clone(),
-            role: Role::Admin,
-            label: Some("TEE bootstrap admin".to_string()),
-            allowed_contexts: vec![],
-            created_at: now_epoch(),
-            created_by: "tee:bootstrap".to_string(),
-            expires_at: None,
-        };
-        store_acl_entry(&acl_ks, &entry).await?;
-
-        let vta_did = config.vta_did.clone().unwrap_or_default();
-        let bundle = CredentialBundle {
-            did: did.clone(),
-            private_key_multibase,
-            vta_did,
-            vta_url: config.public_url.clone(),
-        };
-        let credential = bundle
-            .encode()
-            .map_err(|e| AppError::Internal(format!("failed to encode credential bundle: {e}")))?;
-
-        keys_ks
-            .insert_raw(ADMIN_CREDENTIAL_STORE_KEY, credential.as_bytes().to_vec())
-            .await?;
-
-        // Also persist in unencrypted bootstrap keyspace for REST retrieval
-        let bootstrap_ks = store.keyspace("bootstrap")?;
-        bootstrap_ks
-            .insert_raw(ADMIN_CREDENTIAL_STORE_KEY, credential.as_bytes().to_vec())
-            .await?;
-
         store.persist().await?;
-
-        info!(
-            did = %did,
-            context_id,
-            "super-admin credential generated — retrieve via GET /attestation/admin-credential"
-        );
     }
 
     Ok(())

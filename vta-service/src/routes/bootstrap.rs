@@ -1,14 +1,19 @@
 //! `POST /bootstrap/request` — unified sealed-transfer bootstrap endpoint.
 //!
-//! Phase 2 implements the **token-based (Mode A)** branch. A consumer presents
-//! their ephemeral X25519 pubkey, a nonce, and a one-time token issued
-//! out-of-band by the operator. The server hashes the token, looks up the
-//! stored [`PendingBootstrap`], atomically consumes it, mints a did:key
-//! credential bound to the stored role/contexts, and returns an
-//! HPKE-sealed armored bundle.
+//! Two authorization branches, selected by whether a `token` is present:
 //!
-//! Mode B (TEE first-boot attestation) lands in Phase 3 alongside the
-//! attestation quote integration.
+//! - **Mode A (token)** — Consumer presents a one-time token issued out-of-band
+//!   by the operator. Server hashes the token, looks up the stored
+//!   [`PendingBootstrap`], atomically consumes it, mints a did:key credential
+//!   bound to the stored role/contexts, and returns an HPKE-sealed armored
+//!   bundle with a `PinnedOnly` producer assertion.
+//! - **Mode B (TEE first-boot)** — No token. Only available on the first
+//!   successful request against a TEE VTA that has no admin configured. The
+//!   server generates an attestation quote committing to the client pubkey,
+//!   nonce, and its own ephemeral producer pubkey, mints an Admin credential,
+//!   and closes the carve-out permanently. The bundle's assertion is
+//!   `Attested(quote)` so the consumer can verify end-to-end without any
+//!   prior shared secret.
 
 use std::sync::Arc;
 
@@ -21,14 +26,16 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 use tracing::{info, warn};
 
+use sha2::{Digest, Sha256};
 use vta_sdk::credentials::CredentialBundle;
 use vta_sdk::sealed_transfer::{
-    AssertionProof, InMemoryNonceStore, ProducerAssertion, SealedPayloadV1, armor, bundle_digest,
-    generate_keypair, seal_payload,
+    AssertionProof, AttestationQuoteAssertion, InMemoryNonceStore, ProducerAssertion,
+    SealedPayloadV1, armor, bundle_digest, generate_keypair, seal_payload,
 };
 
 use crate::acl::{
     AclEntry, PendingBootstrap, Role, consume_pending_bootstrap, get_pending_bootstrap_by_token,
+    store_acl_entry,
 };
 use crate::audit::audit;
 use crate::auth::credentials::generate_did_key;
@@ -80,56 +87,63 @@ pub async fn request(
 
     let client_pubkey = decode_pubkey(&req.client_pubkey)?;
     let bundle_id = decode_nonce(&req.nonce)?;
-
-    let token = req.token.as_deref().ok_or_else(|| {
-        AppError::Forbidden(
-            "bootstrap request requires a token (TEE first-boot is not yet available)".into(),
-        )
-    })?;
-
-    let pending = get_pending_bootstrap_by_token(&state.acl_ks, token)
-        .await?
-        .ok_or_else(|| {
-            warn!("bootstrap request: token not found");
-            AppError::Forbidden("invalid or consumed bootstrap token".into())
-        })?;
-
     let now = now_epoch();
-    if pending.is_expired(now) {
-        return Err(AppError::Forbidden("bootstrap token expired".into()));
-    }
 
-    let bundle = mint_and_seal(
-        &state.acl_ks,
-        &state.config,
-        &pending,
-        &client_pubkey,
-        bundle_id,
-        now,
-    )
-    .await?;
+    let bundle = match req.token.as_deref() {
+        Some(token) => {
+            let pending = get_pending_bootstrap_by_token(&state.acl_ks, token)
+                .await?
+                .ok_or_else(|| {
+                    warn!("bootstrap request: token not found");
+                    AppError::Forbidden("invalid or consumed bootstrap token".into())
+                })?;
+            if pending.is_expired(now) {
+                return Err(AppError::Forbidden("bootstrap token expired".into()));
+            }
+            mint_mode_a(
+                &state.acl_ks,
+                &state.config,
+                &pending,
+                &client_pubkey,
+                bundle_id,
+                now,
+            )
+            .await?
+        }
+        None => {
+            #[cfg(feature = "tee")]
+            {
+                mint_mode_b(&state, &client_pubkey, bundle_id, now).await?
+            }
+            #[cfg(not(feature = "tee"))]
+            {
+                return Err(AppError::Forbidden(
+                    "bootstrap request requires a token (TEE first-boot is not available \
+                     on this VTA build)"
+                        .into(),
+                ));
+            }
+        }
+    };
 
     let digest = bundle_digest(&bundle);
     let armored = armor::encode(&bundle);
 
     info!(
-        token_hash = %pending.hash_hex(),
-        role = %pending.target_role,
         client_label = ?req.label,
         "bootstrap swap completed"
     );
     audit!(
         "bootstrap.swap",
-        actor = &pending.issued_by,
-        resource = &pending.hash_hex(),
+        actor = "bootstrap-endpoint",
+        resource = "bootstrap",
         outcome = "success"
     );
-    let hash_hex = pending.hash_hex();
     let _ = crate::audit::record(
         &state.audit_ks,
         "bootstrap.swap",
-        &pending.issued_by,
-        Some(&hash_hex),
+        "bootstrap-endpoint",
+        None,
         "success",
         Some("rest"),
         None,
@@ -142,7 +156,7 @@ pub async fn request(
     }))
 }
 
-async fn mint_and_seal(
+async fn mint_mode_a(
     acl_ks: &crate::store::KeyspaceHandle,
     config: &Arc<RwLock<AppConfig>>,
     pending: &PendingBootstrap,
@@ -212,6 +226,115 @@ async fn mint_and_seal(
     let payload = SealedPayloadV1::AdminCredential(credential);
     let bundle = seal_payload(client_pubkey, bundle_id, assertion, &payload, &nonce_store)
         .map_err(|e| AppError::Internal(format!("sealed-transfer seal failed: {e}")))?;
+    Ok(bundle)
+}
+
+/// Mode B: TEE first-boot sealed bootstrap. No token; the attestation quote
+/// is the sole authorization anchor. Gated on `feature = "tee"`.
+///
+/// On success, closes the first-boot carve-out permanently by writing the
+/// `BOOTSTRAP_CARVEOUT_CLOSED_KEY` sentinel. Any subsequent no-token request
+/// is rejected.
+#[cfg(feature = "tee")]
+async fn mint_mode_b(
+    state: &AppState,
+    client_pubkey: &[u8; 32],
+    bundle_id: [u8; 16],
+    now: u64,
+) -> Result<vta_sdk::sealed_transfer::SealedBundle, AppError> {
+    use crate::tee::admin_bootstrap::{BOOTSTRAP_CARVEOUT_CLOSED_KEY, LEGACY_ADMIN_CREDENTIAL_KEY};
+
+    let tee_state =
+        state.tee.as_ref().map(|tc| &tc.state).ok_or_else(|| {
+            AppError::Forbidden("TEE first-boot is not available on this VTA".into())
+        })?;
+
+    // Carve-out active ⇔ neither the closed-sentinel nor the legacy
+    // admin-credential row is present. (The latter is a transitional case —
+    // startup migration rewrites it into the closed-sentinel before this
+    // handler ever runs, but we check here too to keep the handler correct
+    // even without startup migration.)
+    if state
+        .keys_ks
+        .get_raw(BOOTSTRAP_CARVEOUT_CLOSED_KEY)
+        .await?
+        .is_some()
+        || state
+            .keys_ks
+            .get_raw(LEGACY_ADMIN_CREDENTIAL_KEY)
+            .await?
+            .is_some()
+    {
+        return Err(AppError::Forbidden(
+            "TEE first-boot carve-out has already been used".into(),
+        ));
+    }
+
+    let cfg = state.config.read().await;
+    let vta_did = cfg
+        .vta_did
+        .as_ref()
+        .ok_or_else(|| AppError::Internal("VTA DID not configured".into()))?
+        .clone();
+    let vta_url = cfg.public_url.clone();
+    drop(cfg);
+
+    // Per-request ephemeral producer pubkey. The attestation quote binds
+    // it into `user_data` alongside the client-provided pubkey and nonce,
+    // so the consumer can recompute and verify on open.
+    let (_producer_sk, producer_pk) = generate_keypair();
+
+    let mut hasher = Sha256::new();
+    hasher.update(client_pubkey);
+    hasher.update(&bundle_id);
+    hasher.update(&producer_pk);
+    let user_data = hasher.finalize();
+
+    // Attestation nonce: reuse the client nonce for freshness.
+    let report = tee_state
+        .provider
+        .attest(user_data.as_slice(), &bundle_id)
+        .map_err(|e| AppError::Internal(format!("tee attest failed: {e}")))?;
+
+    // Mint admin credential and insert ACL entry. Carve-out closes atomically
+    // with the sentinel write below.
+    let (did, private_key_multibase) = crate::auth::credentials::generate_did_key();
+    let entry = AclEntry {
+        did: did.clone(),
+        role: Role::Admin,
+        label: Some("TEE first-boot admin".to_string()),
+        allowed_contexts: vec![],
+        created_at: now,
+        created_by: "tee:mode-b".to_string(),
+        expires_at: None,
+    };
+    store_acl_entry(&state.acl_ks, &entry).await?;
+
+    state
+        .keys_ks
+        .insert_raw(BOOTSTRAP_CARVEOUT_CLOSED_KEY, did.as_bytes().to_vec())
+        .await?;
+
+    let credential = CredentialBundle {
+        did,
+        private_key_multibase,
+        vta_did,
+        vta_url,
+    };
+
+    let assertion = ProducerAssertion {
+        producer_pubkey_b64: B64URL.encode(producer_pk),
+        proof: AssertionProof::Attested(AttestationQuoteAssertion {
+            format: format!("{}", report.tee_type),
+            quote_b64: report.evidence,
+        }),
+    };
+
+    let nonce_store = InMemoryNonceStore::new();
+    let payload = SealedPayloadV1::AdminCredential(credential);
+    let bundle = seal_payload(client_pubkey, bundle_id, assertion, &payload, &nonce_store)
+        .map_err(|e| AppError::Internal(format!("sealed-transfer seal failed: {e}")))?;
+    info!("TEE first-boot carve-out consumed — closed for good");
     Ok(bundle)
 }
 

@@ -4,6 +4,64 @@ Deploy the Verifiable Trust Agent (VTA) inside an AWS Nitro Enclave with
 hardware-backed TEE attestation, KMS-based secret bootstrap, encrypted
 storage, and signed enclave images.
 
+## Build and deployment modes
+
+There are three scripts in `deploy/nitro/`, each with a different intended
+host and prerequisite set. Pick the one that matches your situation.
+
+### `build-vta.sh` — build host / CI
+
+Runs on a build machine (typically CI) with admin-level AWS credentials
+and the EIF signing key. Produces a deployable bundle containing
+`vta.eif`, the finalized `config.toml`, `pcr0.txt`, `pcr8.txt`, and
+`manifest.json`. Also creates/updates the KMS key policy with the
+current PCR0/PCR8 and instance role ARN.
+
+Required on this host: `docker`, `nitro-cli`, `openssl`, `aws`, `jq`,
+admin AWS creds, and access to the signing key.
+
+### `deploy-enclave.sh` — parent EC2 instance
+
+Runs on the parent EC2 instance that will host the running enclave.
+Consumes a bundle (from `build-vta.sh`), installs and starts the DID
+resolver sidecar, builds and starts the parent `enclave-proxy`, then
+launches the enclave via `nitro-cli run-enclave`.
+
+Required on this host: `nitro-cli` (with the `nitro_enclaves` kernel
+module loaded, `ne` group membership, allocator configured), `cargo`,
+and `jq`. **Not** required: docker, openssl, the signing key, admin
+AWS credentials. The instance's IAM role only needs `kms:Decrypt` and
+`kms:GenerateDataKey` on the KMS key.
+
+### `deploy-vta.sh` — single-host wrapper (dev/test only)
+
+Convenience wrapper that runs `build-vta.sh` and `deploy-enclave.sh`
+back-to-back on the same machine. **Not appropriate for production**:
+it puts the signing key on the same host that runs the enclave, which
+defeats the main security goal of PCR8 (attacker with parent access
+can re-sign their own EIF). Use it for local dev loops and CI smoke
+tests only.
+
+### Recommended production flow
+
+```
+┌─────────────────────────┐        ┌──────────────────────────┐
+│  CI / Build host        │        │  Parent EC2 instance     │
+│  (admin AWS creds,      │  EIF   │  (instance role: minimal │
+│   signing key)          │ bundle │   KMS permissions only)  │
+│                         │───────▶│                          │
+│  ./build-vta.sh         │        │  ./deploy-enclave.sh \   │
+│    → .deploy-nitro/     │        │      --bundle /path/...  │
+│      vta.eif            │        │                          │
+│      config.toml        │        │  Installs sidecar,       │
+│      pcr0.txt / pcr8.txt│        │  starts enclave-proxy,   │
+│      manifest.json      │        │  runs the enclave.       │
+└─────────────────────────┘        └──────────────────────────┘
+```
+
+The signing key never leaves CI. The parent EC2 instance never holds
+admin credentials and can't modify its own KMS policy.
+
 ## Security Model
 
 ```
@@ -274,27 +332,48 @@ sudo systemctl restart nitro-enclaves-allocator
 > enclave resources, or set the IMDS hop limit for you. Skipping these steps
 > will cause hard-to-diagnose failures during the build or enclave launch.
 
-For an interactive end-to-end deployment, use the deployment script:
+### Production (recommended)
+
+On the CI/build host:
 
 ```bash
-./deploy/nitro/deploy-vta.sh
+./deploy/nitro/build-vta.sh --non-interactive
+# → produces .deploy-nitro/{vta.eif,config.toml,pcr0.txt,pcr8.txt,manifest.json}
 ```
 
-This walks through all the steps below — build profile selection, signing key
-generation, IAM and KMS setup, Docker/EIF builds, DID resolver sidecar
-install/start, parent `enclave-proxy` build/start, and finally the enclave
-launch. Parent-side services are started **before** the enclave (the order
-matters — see [Step 6](#step-6-start-the-parent-side-services-before-the-enclave)).
+Copy the bundle to the parent EC2 instance, then:
 
-For CI/CD, use non-interactive mode with environment variables:
+```bash
+./deploy/nitro/deploy-enclave.sh --bundle ~/vta-bundle --non-interactive
+```
+
+The build script needs admin AWS credentials and the signing key. The
+deploy script needs neither — only `nitro-cli`, `cargo`, and the EC2
+instance role's minimal KMS permissions.
+
+For CI/CD, parameterize via environment variables (see each script's
+header for the full list):
 
 ```bash
 VTA_PROFILE=hardened \
 VTA_REGION=us-east-1 \
 VTA_ROLE_NAME=vta-enclave-role \
 VTA_MEDIATOR_DID="did:web:mediator.example.com" \
-./deploy/nitro/deploy-vta.sh --non-interactive
+VTA_KEY_ARN="arn:aws:kms:us-east-1:123456789012:key/..." \
+./deploy/nitro/build-vta.sh --non-interactive
 ```
+
+### Single-host dev/test
+
+For a quick local loop where you don't care that the signing key sits
+on the same box as the enclave:
+
+```bash
+./deploy/nitro/deploy-vta.sh
+```
+
+This wrapper runs `build-vta.sh` and `deploy-enclave.sh` in sequence on
+the current host and prints a warning banner.
 
 The rest of this guide documents each step in detail.
 
@@ -1419,7 +1498,10 @@ jobs:
 | File | Where | Purpose |
 |------|-------|---------|
 | `Dockerfile.nitro` | Build host | Multi-stage build → Docker image |
-| `deploy-vta.sh` | Build host / EC2 | End-to-end interactive deployment script |
+| `build-vta.sh` | Build host / CI | Builds + signs the EIF and emits a deployable bundle (EIF, config, PCR values, manifest) |
+| `deploy-enclave.sh` | Parent EC2 | Consumes a bundle, installs the resolver sidecar, starts the enclave-proxy, launches the enclave |
+| `deploy-vta.sh` | Build host *and* EC2 (dev only) | Thin wrapper around the two scripts above — single-host dev/test convenience |
+| `deploy-common.sh` | (sourced) | Shared helpers: logging, prompting, pid tracking, group checks |
 | `generate-signing-key.sh` | Build host / CI | Generate EC P-384 signing key + certificate |
 | `setup-kms-policy.sh` | Admin workstation | Create/update KMS key with PCR-pinned policy |
 | `iam-kms-admin-policy.json` | Admin workstation | IAM policy for the user running setup-kms-policy.sh |

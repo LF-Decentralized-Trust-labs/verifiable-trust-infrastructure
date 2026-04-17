@@ -117,12 +117,9 @@ pub fn router() -> Router<AppState> {
             get(attestation::mnemonic_status).post(attestation::mnemonic_export),
         )
         // Auto-generated DID log (unauthenticated — public data)
-        .route("/attestation/did-log", get(attestation::did_log))
-        // Bootstrapped admin credential (unauthenticated — one-time retrieval)
-        .route(
-            "/attestation/admin-credential",
-            get(attestation::admin_credential),
-        );
+        .route("/attestation/did-log", get(attestation::did_log));
+    // `GET /attestation/admin-credential` retired in Phase 3 —
+    // sealed-bootstrap Mode B replaces it via `POST /bootstrap/request`.
 
     // WebVH routes (feature-gated)
     #[cfg(feature = "webvh")]
