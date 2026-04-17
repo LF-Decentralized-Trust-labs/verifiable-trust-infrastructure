@@ -23,6 +23,7 @@ pub mod operations;
 #[cfg(feature = "rest")]
 pub mod routes;
 pub mod seal;
+pub mod sealed_nonce_store;
 pub mod server;
 pub mod status;
 pub mod store;

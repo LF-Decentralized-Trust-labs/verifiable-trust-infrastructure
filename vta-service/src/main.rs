@@ -566,7 +566,7 @@ async fn main() {
                     request,
                     payload,
                     out,
-                } => bootstrap_cli::run_seal(request, payload, out).await,
+                } => bootstrap_cli::run_seal(cli.config.clone(), request, payload, out).await,
                 BootstrapCommands::IssueToken {
                     role,
                     contexts,

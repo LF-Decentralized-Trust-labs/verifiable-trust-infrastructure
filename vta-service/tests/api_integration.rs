@@ -73,6 +73,7 @@ impl TestApp {
         let (restart_tx, _rx) = watch::channel(false);
 
         let imported_ks = store.keyspace("imported_secrets").unwrap();
+        let sealed_nonces_ks = store.keyspace("sealed_nonces").unwrap();
         let state = AppState {
             keys_ks: keys_ks.clone(),
             sessions_ks: sessions_ks.clone(),
@@ -81,6 +82,7 @@ impl TestApp {
             audit_ks: audit_ks.clone(),
             imported_ks,
             cache_ks,
+            sealed_nonces_ks,
             #[cfg(feature = "webvh")]
             webvh_ks,
             wrapping_cache: vta_service::keys::wrapping::WrappingKeyCache::new(),

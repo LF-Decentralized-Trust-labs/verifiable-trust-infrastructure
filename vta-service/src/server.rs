@@ -79,6 +79,9 @@ pub struct AppState {
     pub audit_ks: KeyspaceHandle,
     pub imported_ks: KeyspaceHandle,
     pub cache_ks: KeyspaceHandle,
+    /// Anti-replay log for sealed-bootstrap `bundle_id`s. One row per seal;
+    /// `PersistentNonceStore` refuses duplicates.
+    pub sealed_nonces_ks: KeyspaceHandle,
     #[cfg(feature = "webvh")]
     pub webvh_ks: KeyspaceHandle,
     pub wrapping_cache: crate::keys::wrapping::WrappingKeyCache,
@@ -135,6 +138,10 @@ pub async fn build_app_state(
     let audit_ks = apply_encryption(store.keyspace("audit")?);
     let imported_ks = apply_encryption(store.keyspace("imported_secrets")?);
     let cache_ks = store.keyspace("cache")?;
+    // Sealed-transfer anti-replay store. Bundle_ids are not secret and the
+    // row is a one-byte sentinel, so the keyspace is intentionally
+    // unencrypted — saves a decrypt hop on every request.
+    let sealed_nonces_ks = store.keyspace("sealed_nonces")?;
     #[cfg(feature = "webvh")]
     let webvh_ks = apply_encryption(store.keyspace("webvh")?);
 
@@ -149,6 +156,7 @@ pub async fn build_app_state(
         audit_ks,
         imported_ks,
         cache_ks,
+        sealed_nonces_ks,
         #[cfg(feature = "webvh")]
         webvh_ks,
         wrapping_cache: crate::keys::wrapping::WrappingKeyCache::new(),
@@ -222,6 +230,7 @@ pub async fn run(
         let audit_ks = apply_encryption(store.keyspace("audit")?);
         let imported_ks = apply_encryption(store.keyspace("imported_secrets")?);
         let cache_ks = store.keyspace("cache")?;
+        let sealed_nonces_ks = store.keyspace("sealed_nonces")?;
         #[cfg(feature = "webvh")]
         let webvh_ks = apply_encryption(store.keyspace("webvh")?);
 
@@ -311,6 +320,7 @@ pub async fn run(
                 audit_ks,
                 imported_ks,
                 cache_ks,
+                sealed_nonces_ks,
                 #[cfg(feature = "webvh")]
                 webvh_ks,
                 wrapping_cache,

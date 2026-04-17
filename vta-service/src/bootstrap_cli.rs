@@ -11,8 +11,8 @@ use std::path::PathBuf;
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64URL;
 use vta_sdk::sealed_transfer::{
-    AssertionProof, BootstrapRequest, InMemoryNonceStore, ProducerAssertion, SealedPayloadV1,
-    armor, bundle_digest, generate_keypair, seal_payload,
+    AssertionProof, BootstrapRequest, ProducerAssertion, SealedPayloadV1, armor, bundle_digest,
+    generate_keypair, seal_payload,
 };
 
 use crate::acl::{
@@ -20,10 +20,12 @@ use crate::acl::{
     store_pending_bootstrap,
 };
 use crate::config::AppConfig;
+use crate::sealed_nonce_store::PersistentNonceStore;
 use crate::store::Store;
 
 /// Seal a payload to a consumer's BootstrapRequest (Mode C, offline).
 pub async fn run_seal(
+    config_path: Option<PathBuf>,
     request_path: PathBuf,
     payload_path: PathBuf,
     out_path: PathBuf,
@@ -52,11 +54,15 @@ pub async fn run_seal(
         proof: AssertionProof::PinnedOnly,
     };
 
-    // Phase 1 offline seal uses an in-memory nonce store; the online path in
-    // Phase 2 gets a persistent store so restarts can't lose the anti-replay
-    // record.
-    let nonce_store = InMemoryNonceStore::new();
-    let bundle = seal_payload(&recipient_pk, bundle_id, producer, &payload, &nonce_store)?;
+    // Persistent nonce store — re-running `vta bootstrap seal` against the
+    // same BootstrapRequest (e.g. after a network glitch) is rejected and
+    // forces the consumer to regenerate their request.
+    let config_store = AppConfig::load(config_path)?;
+    let persistent_store = Store::open(&config_store.store)?;
+    let nonce_ks = persistent_store.keyspace("sealed_nonces")?;
+    let nonce_store = PersistentNonceStore::new(nonce_ks);
+    let bundle = seal_payload(&recipient_pk, bundle_id, producer, &payload, &nonce_store).await?;
+    persistent_store.persist().await?;
 
     let armored = armor::encode(&bundle);
     std::fs::write(&out_path, armored.as_bytes())

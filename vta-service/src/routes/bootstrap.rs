@@ -26,23 +26,29 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 use tracing::{info, warn};
 
+#[cfg(feature = "tee")]
 use sha2::{Digest, Sha256};
 use vta_sdk::credentials::CredentialBundle;
+#[cfg(feature = "tee")]
+use vta_sdk::sealed_transfer::AttestationQuoteAssertion;
 use vta_sdk::sealed_transfer::{
-    AssertionProof, AttestationQuoteAssertion, InMemoryNonceStore, ProducerAssertion,
-    SealedPayloadV1, armor, bundle_digest, generate_keypair, seal_payload,
+    AssertionProof, ProducerAssertion, SealedPayloadV1, armor, bundle_digest, generate_keypair,
+    seal_payload,
 };
 
+#[cfg(feature = "tee")]
+use crate::acl::store_acl_entry;
 use crate::acl::{
     AclEntry, PendingBootstrap, Role, consume_pending_bootstrap, get_pending_bootstrap_by_token,
-    store_acl_entry,
 };
 use crate::audit::audit;
 use crate::auth::credentials::generate_did_key;
 use crate::auth::session::now_epoch;
 use crate::config::AppConfig;
 use crate::error::AppError;
+use crate::sealed_nonce_store::PersistentNonceStore;
 use crate::server::AppState;
+use crate::store::KeyspaceHandle;
 
 /// Request body. `#[serde(deny_unknown_fields)]` so a client cannot smuggle
 /// in `requested_role` / `allowed_contexts` — minting parameters are frozen
@@ -102,6 +108,7 @@ pub async fn request(
             }
             mint_mode_a(
                 &state.acl_ks,
+                &state.sealed_nonces_ks,
                 &state.config,
                 &pending,
                 &client_pubkey,
@@ -157,7 +164,8 @@ pub async fn request(
 }
 
 async fn mint_mode_a(
-    acl_ks: &crate::store::KeyspaceHandle,
+    acl_ks: &KeyspaceHandle,
+    sealed_nonces_ks: &KeyspaceHandle,
     config: &Arc<RwLock<AppConfig>>,
     pending: &PendingBootstrap,
     client_pubkey: &[u8; 32],
@@ -217,14 +225,14 @@ async fn mint_mode_a(
         proof: AssertionProof::PinnedOnly,
     };
 
-    // Anti-replay: every sealed bundle gets a fresh bundle_id chosen by the
-    // client, but the request handler is ephemeral across restarts. Phase 2
-    // uses an in-memory nonce store — replay within a single process
-    // lifetime is rejected, and token consumption above prevents cross-
-    // restart replay at the policy layer.
-    let nonce_store = InMemoryNonceStore::new();
+    // Persistent bundle_id anti-replay log. Token consumption above already
+    // prevents cross-restart replay at the policy layer; this is
+    // belt-and-suspenders so a malformed caller that reuses a nonce against
+    // a freshly-minted token is still rejected.
+    let nonce_store = PersistentNonceStore::new(sealed_nonces_ks.clone());
     let payload = SealedPayloadV1::AdminCredential(credential);
     let bundle = seal_payload(client_pubkey, bundle_id, assertion, &payload, &nonce_store)
+        .await
         .map_err(|e| AppError::Internal(format!("sealed-transfer seal failed: {e}")))?;
     Ok(bundle)
 }
@@ -330,9 +338,10 @@ async fn mint_mode_b(
         }),
     };
 
-    let nonce_store = InMemoryNonceStore::new();
+    let nonce_store = PersistentNonceStore::new(state.sealed_nonces_ks.clone());
     let payload = SealedPayloadV1::AdminCredential(credential);
     let bundle = seal_payload(client_pubkey, bundle_id, assertion, &payload, &nonce_store)
+        .await
         .map_err(|e| AppError::Internal(format!("sealed-transfer seal failed: {e}")))?;
     info!("TEE first-boot carve-out consumed — closed for good");
     Ok(bundle)

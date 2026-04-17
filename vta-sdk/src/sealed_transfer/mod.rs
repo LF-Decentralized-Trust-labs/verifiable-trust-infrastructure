@@ -54,14 +54,14 @@ pub fn bundle_digest(bundle: &SealedBundle) -> String {
 /// `bundle_id` should be the consumer's request nonce. The producer's
 /// [`NonceStore`] is consulted to enforce single-use semantics: re-sealing the
 /// same `bundle_id` returns [`SealedTransferError::NonceReplay`].
-pub fn seal_payload(
+pub async fn seal_payload(
     recipient_pubkey: &[u8; 32],
     bundle_id: [u8; 16],
     producer: ProducerAssertion,
     payload: &SealedPayloadV1,
     nonce_store: &dyn NonceStore,
 ) -> Result<SealedBundle, SealedTransferError> {
-    nonce_store.check_and_record(&bundle_id)?;
+    nonce_store.check_and_record(&bundle_id).await?;
 
     let mut payload_bytes = Vec::new();
     ciborium::ser::into_writer(payload, &mut payload_bytes)
@@ -254,16 +254,17 @@ mod tests {
         }
     }
 
-    #[test]
-    fn round_trip_single_chunk() {
+    #[tokio::test]
+    async fn round_trip_single_chunk() {
         let (recip_sk, recip_pk) = generate_keypair();
         let (_prod_sk, prod_pk) = generate_keypair();
         let assertion = sample_assertion(base64_url_encode(&prod_pk));
         let store = InMemoryNonceStore::new();
         let bundle_id = [7u8; 16];
 
-        let bundle =
-            seal_payload(&recip_pk, bundle_id, assertion, &sample_payload(), &store).unwrap();
+        let bundle = seal_payload(&recip_pk, bundle_id, assertion, &sample_payload(), &store)
+            .await
+            .unwrap();
 
         assert_eq!(bundle.chunks.len(), 1);
 
@@ -275,8 +276,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn round_trip_multi_chunk() {
+    #[tokio::test]
+    async fn round_trip_multi_chunk() {
         let (recip_sk, recip_pk) = generate_keypair();
         let (_prod_sk, prod_pk) = generate_keypair();
         let assertion = sample_assertion(base64_url_encode(&prod_pk));
@@ -293,7 +294,9 @@ mod tests {
             .collect();
         let payload = SealedPayloadV1::AdminKeySet(big_keys);
 
-        let bundle = seal_payload(&recip_pk, bundle_id, assertion, &payload, &store).unwrap();
+        let bundle = seal_payload(&recip_pk, bundle_id, assertion, &payload, &store)
+            .await
+            .unwrap();
         assert!(bundle.chunks.len() > 1, "expected multi-chunk bundle");
 
         let opened = open_bundle(&recip_sk, &bundle, None).unwrap();
@@ -303,8 +306,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn replay_rejected_by_nonce_store() {
+    #[tokio::test]
+    async fn replay_rejected_by_nonce_store() {
         let (_recip_sk, recip_pk) = generate_keypair();
         let (_prod_sk, prod_pk) = generate_keypair();
         let assertion = sample_assertion(base64_url_encode(&prod_pk));
@@ -318,47 +321,52 @@ mod tests {
             &sample_payload(),
             &store,
         )
+        .await
         .unwrap();
-        let err =
-            seal_payload(&recip_pk, bundle_id, assertion, &sample_payload(), &store).unwrap_err();
+        let err = seal_payload(&recip_pk, bundle_id, assertion, &sample_payload(), &store)
+            .await
+            .unwrap_err();
         assert!(matches!(err, SealedTransferError::NonceReplay));
     }
 
-    #[test]
-    fn digest_mismatch_rejected() {
+    #[tokio::test]
+    async fn digest_mismatch_rejected() {
         let (recip_sk, recip_pk) = generate_keypair();
         let (_prod_sk, prod_pk) = generate_keypair();
         let assertion = sample_assertion(base64_url_encode(&prod_pk));
         let store = InMemoryNonceStore::new();
 
-        let bundle =
-            seal_payload(&recip_pk, [2u8; 16], assertion, &sample_payload(), &store).unwrap();
+        let bundle = seal_payload(&recip_pk, [2u8; 16], assertion, &sample_payload(), &store)
+            .await
+            .unwrap();
         let err = open_bundle(&recip_sk, &bundle, Some("deadbeef")).unwrap_err();
         assert!(matches!(err, SealedTransferError::DigestMismatch { .. }));
     }
 
-    #[test]
-    fn digest_match_accepted() {
+    #[tokio::test]
+    async fn digest_match_accepted() {
         let (recip_sk, recip_pk) = generate_keypair();
         let (_prod_sk, prod_pk) = generate_keypair();
         let assertion = sample_assertion(base64_url_encode(&prod_pk));
         let store = InMemoryNonceStore::new();
 
-        let bundle =
-            seal_payload(&recip_pk, [3u8; 16], assertion, &sample_payload(), &store).unwrap();
+        let bundle = seal_payload(&recip_pk, [3u8; 16], assertion, &sample_payload(), &store)
+            .await
+            .unwrap();
         let digest = bundle_digest(&bundle);
         open_bundle(&recip_sk, &bundle, Some(&digest)).unwrap();
     }
 
-    #[test]
-    fn armor_round_trip() {
+    #[tokio::test]
+    async fn armor_round_trip() {
         let (recip_sk, recip_pk) = generate_keypair();
         let (_prod_sk, prod_pk) = generate_keypair();
         let assertion = sample_assertion(base64_url_encode(&prod_pk));
         let store = InMemoryNonceStore::new();
 
-        let bundle =
-            seal_payload(&recip_pk, [4u8; 16], assertion, &sample_payload(), &store).unwrap();
+        let bundle = seal_payload(&recip_pk, [4u8; 16], assertion, &sample_payload(), &store)
+            .await
+            .unwrap();
         let armored = armor::encode(&bundle);
         assert!(armored.contains("BEGIN VTA SEALED BUNDLE"));
         let parsed = armor::decode(&armored).unwrap();
@@ -370,15 +378,16 @@ mod tests {
         }
     }
 
-    #[test]
-    fn armor_corruption_caught_by_crc24() {
+    #[tokio::test]
+    async fn armor_corruption_caught_by_crc24() {
         let (_recip_sk, recip_pk) = generate_keypair();
         let (_prod_sk, prod_pk) = generate_keypair();
         let assertion = sample_assertion(base64_url_encode(&prod_pk));
         let store = InMemoryNonceStore::new();
 
-        let bundle =
-            seal_payload(&recip_pk, [5u8; 16], assertion, &sample_payload(), &store).unwrap();
+        let bundle = seal_payload(&recip_pk, [5u8; 16], assertion, &sample_payload(), &store)
+            .await
+            .unwrap();
         let mut armored = armor::encode(&bundle);
         // Flip one base64 character somewhere in the middle of the body.
         let body_offset = armored.find("\n\n").unwrap() + 2;
@@ -395,15 +404,16 @@ mod tests {
         );
     }
 
-    #[test]
-    fn aad_tamper_caught_by_aead() {
+    #[tokio::test]
+    async fn aad_tamper_caught_by_aead() {
         let (recip_sk, recip_pk) = generate_keypair();
         let (_prod_sk, prod_pk) = generate_keypair();
         let assertion = sample_assertion(base64_url_encode(&prod_pk));
         let store = InMemoryNonceStore::new();
 
-        let bundle =
-            seal_payload(&recip_pk, [6u8; 16], assertion, &sample_payload(), &store).unwrap();
+        let bundle = seal_payload(&recip_pk, [6u8; 16], assertion, &sample_payload(), &store)
+            .await
+            .unwrap();
         // Tamper: rewrite the bundle.bundle_id without re-sealing. The inner
         // chunk's AAD will use the new bundle_id, which will not match the AAD
         // used at seal time.
@@ -413,8 +423,8 @@ mod tests {
         assert!(matches!(err, SealedTransferError::Hpke(_)));
     }
 
-    #[test]
-    fn missing_chunk_rejected() {
+    #[tokio::test]
+    async fn missing_chunk_rejected() {
         let (recip_sk, recip_pk) = generate_keypair();
         let (_prod_sk, prod_pk) = generate_keypair();
         let assertion = sample_assertion(base64_url_encode(&prod_pk));
@@ -427,7 +437,9 @@ mod tests {
             })
             .collect();
         let payload = SealedPayloadV1::AdminKeySet(big_keys);
-        let mut bundle = seal_payload(&recip_pk, [10u8; 16], assertion, &payload, &store).unwrap();
+        let mut bundle = seal_payload(&recip_pk, [10u8; 16], assertion, &payload, &store)
+            .await
+            .unwrap();
         assert!(bundle.chunks.len() > 1);
         // Drop the last chunk.
         bundle.chunks.pop();
