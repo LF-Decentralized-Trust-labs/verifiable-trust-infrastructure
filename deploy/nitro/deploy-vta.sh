@@ -127,6 +127,23 @@ check_cmd jq
 if command -v nitro-cli &>/dev/null; then
     ok "nitro-cli found"
     HAS_NITRO_CLI=true
+
+    # Verify the nitro_enclaves kernel module is loaded (requires enclave support
+    # to be enabled on the EC2 instance at launch or via modify-instance-attribute)
+    if [ -d /sys/module/nitro_enclaves ]; then
+        ok "nitro_enclaves kernel module is loaded"
+    else
+        err "nitro_enclaves kernel module is NOT loaded"
+        err "Enclave support is not enabled on this EC2 instance."
+        err ""
+        err "To fix, stop the instance (not reboot), enable enclave support, then start:"
+        err "  aws ec2 stop-instances --instance-ids \$(curl -s http://169.254.169.254/latest/meta-data/instance-id)"
+        err "  aws ec2 modify-instance-attribute --instance-id <instance-id> --enclave-options Enabled=true"
+        err "  aws ec2 start-instances --instance-id <instance-id>"
+        err ""
+        err "Or re-launch with: aws ec2 run-instances ... --enclave-options Enabled=true"
+        MISSING+=("nitro_enclaves kernel module")
+    fi
 else
     warn "nitro-cli not found — EIF build and enclave launch will be skipped"
     warn "This is expected if you're building on a developer machine"
@@ -150,11 +167,104 @@ else
     exit 1
 fi
 
-# Check Docker is running
+# Check group memberships for the current user.
+# This runs BEFORE the Docker daemon check because a missing 'docker' group
+# membership causes 'docker info' to fail with a permission error that looks
+# like the daemon isn't running.
+CURRENT_USER=$(id -un)
+USER_GROUPS=$(id -Gn)
+
+check_group() {
+    local group="$1" hint="$2"
+    if echo "$USER_GROUPS" | grep -qw "$group"; then
+        ok "User '$CURRENT_USER' is in the '$group' group"
+    else
+        err "User '$CURRENT_USER' is NOT in the '$group' group"
+        err "$hint"
+        err ""
+        err "IMPORTANT: After adding the group, you MUST log out and log back in"
+        err "(or start a new SSH session) for the change to take effect."
+        err "Alternatively, run 'newgrp $group' in your current shell."
+        err "Until you do this, commands like 'docker info' will fail with"
+        err "'permission denied' even though the group has been added."
+        MISSING+=("$group group membership")
+    fi
+}
+
+check_group "docker" "Run: sudo usermod -aG docker $CURRENT_USER"
+
+if [ "$HAS_NITRO_CLI" = true ]; then
+    check_group "ne" "Run: sudo usermod -aG ne $CURRENT_USER"
+fi
+
+# Rust toolchain is required on the parent EC2 instance (where HAS_NITRO_CLI=true)
+# to build the enclave-proxy from source and to install the DID resolver sidecar
+# via `cargo install`. Not needed on a build-only machine.
+if [ "$HAS_NITRO_CLI" = true ]; then
+    if command -v cargo &>/dev/null; then
+        ok "cargo found: $(command -v cargo) ($(cargo --version 2>/dev/null))"
+    else
+        err "cargo (Rust toolchain) not found"
+        err "Required on the parent EC2 instance to build the enclave-proxy"
+        err "and install the DID resolver sidecar. Install with:"
+        err "  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y"
+        err "  source \"\$HOME/.cargo/env\""
+        MISSING+=("cargo")
+    fi
+fi
+
+if [ ${#MISSING[@]} -gt 0 ]; then
+    err "Missing requirements: ${MISSING[*]}"
+    err "Fix the above issues, then log out and back in before re-running this script."
+    exit 1
+fi
+
+# Check Docker is running (after group check so permission errors are caught above)
 if docker info &>/dev/null; then
     ok "Docker daemon is running"
 else
-    err "Docker daemon is not running. Start it and re-run."
+    err "Docker daemon is not running. Start it with: sudo systemctl start docker"
+    exit 1
+fi
+
+# Check Nitro Enclave allocator resources
+ALLOCATOR_YAML="/etc/nitro_enclaves/allocator.yaml"
+if [ "$HAS_NITRO_CLI" = true ]; then
+    if [ -f "$ALLOCATOR_YAML" ]; then
+        ALLOC_CPU=$(grep -E '^\s*cpu_count\s*:' "$ALLOCATOR_YAML" | awk '{print $2}')
+        ALLOC_MEM=$(grep -E '^\s*memory_mib\s*:' "$ALLOCATOR_YAML" | awk '{print $2}')
+        ALLOC_CPU="${ALLOC_CPU:-0}"
+        ALLOC_MEM="${ALLOC_MEM:-0}"
+
+        REQUESTED_CPU="${VTA_ENCLAVE_CPU:-1}"
+        REQUESTED_MEM="${VTA_ENCLAVE_MEM:-512}"
+
+        if [ "$ALLOC_CPU" -ge "$REQUESTED_CPU" ] 2>/dev/null; then
+            ok "Enclave allocator: ${ALLOC_CPU} CPUs reserved (need ${REQUESTED_CPU})"
+        else
+            err "Enclave allocator has ${ALLOC_CPU} CPUs reserved but ${REQUESTED_CPU} required"
+            err "Edit $ALLOCATOR_YAML and set cpu_count: ${REQUESTED_CPU}"
+            err "Then run: sudo systemctl restart nitro-enclaves-allocator"
+            MISSING+=("enclave allocator CPU")
+        fi
+
+        if [ "$ALLOC_MEM" -ge "$REQUESTED_MEM" ] 2>/dev/null; then
+            ok "Enclave allocator: ${ALLOC_MEM} MiB reserved (need ${REQUESTED_MEM})"
+        else
+            err "Enclave allocator has ${ALLOC_MEM} MiB reserved but ${REQUESTED_MEM} MiB required"
+            err "Edit $ALLOCATOR_YAML and set memory_mib: ${REQUESTED_MEM}"
+            err "Then run: sudo systemctl restart nitro-enclaves-allocator"
+            MISSING+=("enclave allocator memory")
+        fi
+    else
+        warn "$ALLOCATOR_YAML not found — cannot verify enclave resource allocation"
+        warn "Ensure the nitro-enclaves-allocator is installed and configured"
+    fi
+fi
+
+if [ ${#MISSING[@]} -gt 0 ]; then
+    err "Missing requirements: ${MISSING[*]}"
+    err "Fix the above issues and re-run this script."
     exit 1
 fi
 

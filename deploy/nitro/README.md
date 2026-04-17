@@ -136,30 +136,6 @@ These values are set in `config.toml` before building the EIF:
 | B (Full API, REST + DIDComm) | Required | Required | Recommended |
 | C (REST only) | Required | Not needed | Recommended |
 
-## Quick Start
-
-For an interactive end-to-end deployment, use the deployment script:
-
-```bash
-./deploy/nitro/deploy-vta.sh
-```
-
-This walks through all the steps below — prerequisite checks, build profile
-selection, signing key generation, IAM and KMS setup, Docker/EIF builds,
-enclave launch, and parent proxy startup.
-
-For CI/CD, use non-interactive mode with environment variables:
-
-```bash
-VTA_PROFILE=hardened \
-VTA_REGION=us-east-1 \
-VTA_ROLE_NAME=vta-enclave-role \
-VTA_MEDIATOR_DID="did:web:mediator.example.com" \
-./deploy/nitro/deploy-vta.sh --non-interactive
-```
-
-The rest of this guide documents each step in detail.
-
 ## Prerequisites
 
 ### EC2 Instance
@@ -171,6 +147,45 @@ The rest of this guide documents each step in detail.
 | Enclave support | Enabled at launch: `--enclave-options Enabled=true` |
 | IMDS hop limit | Must be **2** (see below) |
 | IAM role | Minimal: `kms:Decrypt`, `kms:GenerateDataKey` only (see Step 3) |
+
+### Enclave Support
+
+Nitro Enclave support must be **enabled on the EC2 instance** — it cannot be
+turned on while the instance is running. If you forgot to enable it at launch
+time, you must stop the instance, enable it, then start it again:
+
+```bash
+# Check if enclave support is enabled
+aws ec2 describe-instances --instance-ids <your-instance-id> \
+    --query 'Reservations[].Instances[].EnclaveOptions'
+# → [{"Enabled": true}]
+```
+
+If `Enabled` is `false`:
+
+```bash
+# Stop the instance first (not reboot — enclave options require a full stop)
+aws ec2 stop-instances --instance-ids <your-instance-id>
+aws ec2 wait instance-stopped --instance-ids <your-instance-id>
+
+# Enable enclave support
+aws ec2 modify-instance-attribute --instance-id <your-instance-id> \
+    --enclave-options Enabled=true
+
+# Start the instance
+aws ec2 start-instances --instance-ids <your-instance-id>
+```
+
+Or enable it at launch time:
+
+```bash
+aws ec2 run-instances ... --enclave-options Enabled=true
+```
+
+Without enclave support enabled, the `nitro_enclaves` kernel module will not
+load and the `nitro-enclaves-allocator` service will fail with
+*"The CPU pool file is missing. Please make sure the Nitro Enclaves driver is
+inserted."*
 
 ### IMDS Hop Limit
 
@@ -208,11 +223,35 @@ sudo systemctl enable --now nitro-enclaves-allocator docker
 
 # Add your user to the docker and ne groups (required before building images)
 sudo usermod -aG docker,ne $USER
-
-# IMPORTANT: Log out and back in (or run `newgrp docker`) for group changes
-# to take effect. Docker commands will fail with "permission denied" until
-# your session picks up the new group membership.
 ```
+
+**Rust toolchain** (required on the parent EC2 instance):
+
+The `enclave-proxy` binary is built from source on the parent instance
+(see [Step 6](#step-6-start-the-parent-proxy-before-the-enclave)), and the
+DID resolver sidecar is installed via `cargo install`
+(see [DID Resolution](#did-resolution)). Both require a working Rust
+toolchain — the `enclave-proxy` crate's MSRV is **Rust 1.91.0**.
+
+```bash
+# Install rustup (official installer — picks up a current stable toolchain)
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+source "$HOME/.cargo/env"
+
+# Verify
+cargo --version   # cargo 1.91.0 or newer
+```
+
+Rust is **not** required on the build machine where the Docker image and
+EIF are built — only on the EC2 parent instance that runs the enclave.
+
+> **You MUST log out and log back in** (or start a new SSH session) after
+> adding groups. Until your session picks up the new membership, `docker`
+> commands will fail with "permission denied" and `nitro-cli` commands will
+> fail with "operation not permitted". The `deploy-vta.sh` script checks
+> for these group memberships and will refuse to continue if they are missing
+> from your current session. Running `newgrp docker && newgrp ne` in your
+> current shell is a quick alternative to a full logout.
 
 ### Configure Enclave Resources
 
@@ -226,6 +265,36 @@ cpu_count: 1
 ```bash
 sudo systemctl restart nitro-enclaves-allocator
 ```
+
+## Quick Start
+
+> **You MUST complete all of the prerequisites above before running the
+> deployment script.** The script checks for required tools, AWS credentials,
+> and group memberships at startup, but it cannot install packages, configure
+> enclave resources, or set the IMDS hop limit for you. Skipping these steps
+> will cause hard-to-diagnose failures during the build or enclave launch.
+
+For an interactive end-to-end deployment, use the deployment script:
+
+```bash
+./deploy/nitro/deploy-vta.sh
+```
+
+This walks through all the steps below — build profile selection, signing key
+generation, IAM and KMS setup, Docker/EIF builds, enclave launch, and parent
+proxy startup.
+
+For CI/CD, use non-interactive mode with environment variables:
+
+```bash
+VTA_PROFILE=hardened \
+VTA_REGION=us-east-1 \
+VTA_ROLE_NAME=vta-enclave-role \
+VTA_MEDIATOR_DID="did:web:mediator.example.com" \
+./deploy/nitro/deploy-vta.sh --non-interactive
+```
+
+The rest of this guide documents each step in detail.
 
 ## Step 1: Generate EIF Signing Key
 
