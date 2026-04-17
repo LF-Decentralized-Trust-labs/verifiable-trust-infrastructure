@@ -47,6 +47,10 @@ sealed-transfer = [
   "dep:x25519-dalek",
   "dep:ed25519-dalek",
 ]
+# Full AWS Nitro attestation verification (COSE_Sign1 + certificate chain
+# against the AWS Nitro root). Consumers of sealed-bootstrap Mode B enable
+# this to validate the `Attested` producer assertion end-to-end.
+attest-verify = ["dep:nitro_attest", "dep:time"]
 
 [dependencies]
 serde = { workspace = true }
@@ -75,6 +79,8 @@ ciborium = { version = "0.2", optional = true }
 # Used only by sealed-transfer to feed an OS-backed CSPRNG into hpke's
 # rand_core 0.9 trait surface (rand 0.10 + rand_core 0.10 are incompatible).
 getrandom = { version = "0.4", optional = true }
+nitro_attest = { version = "0.2", optional = true }
+time = { version = "0.3", optional = true, features = ["macros"] }
 
 [dev-dependencies]
 tokio = { workspace = true }

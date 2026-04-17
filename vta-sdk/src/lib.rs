@@ -1,5 +1,7 @@
 pub mod error;
 
+#[cfg(feature = "attest-verify")]
+pub mod attestation;
 #[cfg(feature = "client")]
 pub mod auth_light;
 #[cfg(feature = "client")]

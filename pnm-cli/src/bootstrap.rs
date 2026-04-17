@@ -21,13 +21,11 @@ use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
 use base64::Engine;
-use base64::engine::general_purpose::STANDARD as B64STD;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64URL;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
+use vta_sdk::attestation::verify_nitro_assertion;
 use vta_sdk::sealed_transfer::{
-    AssertionProof, BootstrapRequest, SealedPayloadV1, armor, bundle_digest, generate_keypair,
-    open_bundle,
+    BootstrapRequest, SealedPayloadV1, armor, bundle_digest, generate_keypair, open_bundle,
 };
 
 use crate::auth;
@@ -298,7 +296,15 @@ pub async fn run_connect(
     let opened = open_bundle(&secret, bundle, expect_digest.as_deref())?;
 
     if is_mode_b {
-        verify_mode_b_assertion(&public, &nonce, &opened.producer)?;
+        let attest = verify_nitro_assertion(&opened.producer, &public, &nonce)?;
+        println!("Mode B attestation verified.");
+        println!("  Enclave module: {}", attest.module_id);
+        if !attest.pcr0_hex.is_empty() {
+            println!("  PCR0:           {}", attest.pcr0_hex);
+        }
+        if !attest.pcr8_hex.is_empty() {
+            println!("  PCR8:           {}", attest.pcr8_hex);
+        }
     }
 
     let credential = match opened.payload {
@@ -337,65 +343,6 @@ pub async fn run_connect(
     println!("  Client DID: {}", credential.did);
     println!("  VTA DID:    {}", credential.vta_did);
     println!("  Digest:     {}", bundle_digest(bundle));
-    Ok(())
-}
-
-/// Partial verification of a Mode B (TEE first-boot) producer assertion.
-///
-/// Checks:
-/// - The assertion is `Attested(...)` (not `PinnedOnly` — a downgrade).
-/// - The quote's `user_data` matches `SHA256(client_pubkey || nonce ||
-///   producer_pubkey)`. A MITM that swapped producer pubkey would break this.
-///
-/// Does NOT yet verify the attestation quote's certificate chain / PCRs —
-/// that requires a full vendor-specific verifier (AWS Nitro COSE-Sign1 +
-/// root-cert chain validation) and will land as a follow-up. Users are
-/// warned accordingly.
-fn verify_mode_b_assertion(
-    client_pubkey: &[u8; 32],
-    nonce: &[u8; 16],
-    producer: &vta_sdk::sealed_transfer::ProducerAssertion,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let quote = match &producer.proof {
-        AssertionProof::Attested(q) => q,
-        AssertionProof::PinnedOnly => {
-            return Err(
-                "server returned a PinnedOnly proof for a no-token request — \
-                 refusing as a possible downgrade"
-                    .into(),
-            );
-        }
-        AssertionProof::DidSigned(_) => {
-            return Err("unexpected DidSigned proof for Mode B — expected Attested quote".into());
-        }
-    };
-
-    let producer_pk = B64URL.decode(&producer.producer_pubkey_b64)?;
-    if producer_pk.len() != 32 {
-        return Err("producer_pubkey is not 32 bytes".into());
-    }
-
-    let mut hasher = Sha256::new();
-    hasher.update(client_pubkey);
-    hasher.update(nonce);
-    hasher.update(&producer_pk);
-    let expected_user_data = hasher.finalize();
-
-    let quote_bytes = B64STD.decode(&quote.quote_b64)?;
-    if !quote_bytes
-        .windows(expected_user_data.len())
-        .any(|w| w == expected_user_data.as_slice())
-    {
-        return Err("attestation quote does not contain the expected user_data commitment".into());
-    }
-
-    eprintln!(
-        "WARNING: attestation quote signature/PCRs are not yet verified by pnm-cli.\n\
-         This build checks only that the quote binds the expected client_pubkey,\n\
-         nonce, and producer_pubkey via its user_data field. Full Nitro\n\
-         certificate-chain validation ships in a follow-up."
-    );
-
     Ok(())
 }
 

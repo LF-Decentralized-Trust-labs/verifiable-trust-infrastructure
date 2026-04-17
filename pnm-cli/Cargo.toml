@@ -21,7 +21,7 @@ config-session = ["vta-sdk/config-session"]
 azure-secrets = ["vta-sdk/azure-secrets"]
 
 [dependencies]
-vta-sdk = { path = "../vta-sdk", version = "0.4", features = ["session", "sealed-transfer"] }
+vta-sdk = { path = "../vta-sdk", version = "0.4", features = ["session", "sealed-transfer", "attest-verify"] }
 base64 = { workspace = true }
 reqwest = { workspace = true }
 sha2 = { workspace = true }
