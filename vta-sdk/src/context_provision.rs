@@ -2,6 +2,7 @@ use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD as BASE64;
 use serde::{Deserialize, Serialize};
 
+use crate::credentials::CredentialBundle;
 use crate::did_secrets::SecretEntry;
 
 /// A self-contained bundle for provisioning an application context.
@@ -24,8 +25,8 @@ pub struct ContextProvisionBundle {
     /// VTA service DID.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vta_did: Option<String>,
-    /// Base64url-encoded admin credential bundle (existing `CredentialBundle` format).
-    pub credential: String,
+    /// Admin credential bundle for the provisioned context.
+    pub credential: CredentialBundle,
     /// DID of the admin identity created for this context.
     pub admin_did: String,
     /// DID material, present when a DID was created during provisioning.
@@ -110,7 +111,7 @@ mod tests {
             context_name: "My Application".to_string(),
             vta_url: Some("https://vta.example.com".to_string()),
             vta_did: Some("did:webvh:abc:example.com".to_string()),
-            credential: "eyJ0ZXN0IjogdHJ1ZX0".to_string(),
+            credential: CredentialBundle::new("did:key:z6Mk123", "z1234567890", "did:key:z6MkVTA"),
             admin_did: "did:key:z6Mk123".to_string(),
             did: None,
         };
@@ -129,7 +130,7 @@ mod tests {
             context_name: "My Application".to_string(),
             vta_url: None,
             vta_did: None,
-            credential: "eyJ0ZXN0IjogdHJ1ZX0".to_string(),
+            credential: CredentialBundle::new("did:key:z6Mk123", "z1234567890", "did:key:z6MkVTA"),
             admin_did: "did:key:z6Mk123".to_string(),
             did: Some(ProvisionedDid {
                 id: "did:webvh:abc:example.com".to_string(),

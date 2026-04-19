@@ -293,6 +293,12 @@ pub async fn cmd_context_provision(
     }
     let cred_resp = client.generate_credentials(cred_req).await?;
 
+    // REST boundary: `/auth/credentials` still returns a base64 bundle. 5c6
+    // resolves whether that endpoint becomes typed JSON or goes away entirely.
+    #[allow(deprecated)]
+    let admin_credential = vta_sdk::credentials::CredentialBundle::decode(&cred_resp.credential)
+        .map_err(|e| format!("failed to decode admin credential: {e}"))?;
+
     // 3. Fetch VTA config for URL/DID
     let config = client.get_config().await?;
 
@@ -351,7 +357,7 @@ pub async fn cmd_context_provision(
         context_name: name.to_string(),
         vta_url: config.public_url,
         vta_did: config.community_vta_did,
-        credential: cred_resp.credential,
+        credential: admin_credential,
         admin_did: cred_resp.did,
         did: provisioned_did,
     };
@@ -385,7 +391,7 @@ async fn credential_from_key(
     key_id: &str,
     vta_did: &str,
     vta_url: Option<&str>,
-) -> Result<(String, String), Box<dyn std::error::Error>> {
+) -> Result<(CredentialBundle, String), Box<dyn std::error::Error>> {
     let secret = client.get_key_secret(key_id).await?;
     let seed = decode_private_key_multibase(&secret.private_key_multibase)
         .map_err(|e| format!("Cannot decode key secret: {e}"))?;
@@ -400,8 +406,7 @@ async fn credential_from_key(
         vta_did: vta_did.to_string(),
         vta_url: vta_url.map(String::from),
     };
-    let encoded = bundle.encode().map_err(|e| format!("{e}"))?;
-    Ok((encoded, did))
+    Ok((bundle, did))
 }
 
 pub async fn cmd_context_reprovision(
