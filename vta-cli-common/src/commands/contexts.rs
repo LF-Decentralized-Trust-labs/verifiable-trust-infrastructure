@@ -8,8 +8,10 @@ use ratatui::{
 use vta_sdk::client::{CreateDidWebvhRequest, UpdateContextRequest};
 use vta_sdk::context_provision::{ContextProvisionBundle, ProvisionedDid};
 use vta_sdk::prelude::*;
+use vta_sdk::sealed_transfer::SealedPayloadV1;
 
 use crate::render::print_widget;
+use crate::sealed_producer::{SealedRecipient, emit_sealed_output, seal_for_recipient};
 
 pub struct ProvisionDidOptions {
     pub server_id: Option<String>,
@@ -276,6 +278,7 @@ pub async fn cmd_context_provision(
     description: Option<String>,
     admin_label: Option<String>,
     did_opts: Option<ProvisionDidOptions>,
+    recipient: SealedRecipient,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // 1. Create the context
     eprintln!("Creating context '{id}'...");
@@ -362,26 +365,31 @@ pub async fn cmd_context_provision(
         did: provisioned_did,
     };
 
-    let encoded = bundle.encode().map_err(|e| format!("{e}"))?;
+    // 6. Seal and emit
+    let payload = SealedPayloadV1::ContextProvision(bundle);
+    let sealed = seal_for_recipient(&recipient, &payload).await?;
 
-    // 6. Output
     eprintln!();
     eprintln!("\x1b[1;33m╔══════════════════════════════════════════════════════════════╗");
-    eprintln!("║  Context provision bundle (contains secrets — save securely) ║");
+    eprintln!("║  Context provision bundle (sealed — hand off armored output) ║");
     eprintln!("╚══════════════════════════════════════════════════════════════╝\x1b[0m");
     eprintln!();
-    eprintln!("  Context:   {} ({})", id, name);
-    eprintln!("  Admin DID: {}", bundle.admin_did);
-    if let Some(ref did) = bundle.did {
-        eprintln!("  DID:       {}", did.id);
-        if did.log_entry.is_some() {
-            eprintln!("             (includes log entry for self-hosting)");
+    eprintln!("  Context:   {id} ({name})");
+    if let SealedPayloadV1::ContextProvision(ref p) = payload {
+        eprintln!("  Admin DID: {}", p.admin_did);
+        if let Some(ref did) = p.did {
+            eprintln!("  DID:       {}", did.id);
+            if did.log_entry.is_some() {
+                eprintln!("             (includes log entry for self-hosting)");
+            }
         }
     }
-    eprintln!();
-    println!("{encoded}");
+    if let Some(ref label) = recipient.label {
+        eprintln!("  Recipient: {label}");
+    }
     eprintln!();
 
+    emit_sealed_output(&sealed);
     Ok(())
 }
 
@@ -414,6 +422,7 @@ pub async fn cmd_context_reprovision(
     id: &str,
     key_id: Option<String>,
     admin_label: Option<String>,
+    recipient: SealedRecipient,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // 1. Fetch the existing context
     eprintln!("Fetching context '{id}'...");
@@ -555,22 +564,28 @@ pub async fn cmd_context_reprovision(
         did: provisioned_did,
     };
 
-    let encoded = bundle.encode().map_err(|e| format!("{e}"))?;
+    // 7. Seal and emit
+    let payload = SealedPayloadV1::ContextProvision(bundle);
+    let sealed = seal_for_recipient(&recipient, &payload).await?;
 
-    // 7. Output
     eprintln!();
     eprintln!("\x1b[1;33m╔══════════════════════════════════════════════════════════════╗");
-    eprintln!("║  Context provision bundle (contains secrets — save securely) ║");
+    eprintln!("║  Context provision bundle (sealed — hand off armored output) ║");
     eprintln!("╚══════════════════════════════════════════════════════════════╝\x1b[0m");
     eprintln!();
     eprintln!("  Context:   {} ({})", id, ctx.name);
-    eprintln!("  Admin DID: {}", bundle.admin_did);
-    if let Some(ref did) = bundle.did {
-        eprintln!("  DID:       {}", did.id);
+    if let SealedPayloadV1::ContextProvision(ref p) = payload {
+        eprintln!("  Admin DID: {}", p.admin_did);
+        if let Some(ref did) = p.did {
+            eprintln!("  DID:       {}", did.id);
+        }
+    }
+    if let Some(ref label) = recipient.label {
+        eprintln!("  Recipient: {label}");
     }
     eprintln!();
-    println!("{encoded}");
-    eprintln!();
+
+    emit_sealed_output(&sealed);
 
     Ok(())
 }

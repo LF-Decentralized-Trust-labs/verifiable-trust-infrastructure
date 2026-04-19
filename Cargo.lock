@@ -7912,6 +7912,7 @@ dependencies = [
  "ratatui",
  "serde_json",
  "sha2 0.10.9",
+ "tokio",
  "vta-sdk",
  "x25519-dalek",
 ]

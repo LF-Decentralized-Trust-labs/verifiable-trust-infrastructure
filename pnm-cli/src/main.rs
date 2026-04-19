@@ -401,9 +401,11 @@ enum ContextCommands {
     /// Provision a new application context with a portable config bundle
     ///
     /// Creates a context, generates admin credentials, and optionally creates a
-    /// WebVH DID. Outputs a single base64-encoded bundle that contains
-    /// everything an application needs to connect, authenticate, and
-    /// self-administer its context.
+    /// WebVH DID. Emits an armored sealed bundle (`-----BEGIN VTA SEALED BUNDLE-----`)
+    /// containing everything an application needs to connect, authenticate,
+    /// and self-administer its context. Pass `--recipient <file>` with a
+    /// `BootstrapRequest` JSON (produced by `pnm bootstrap request --out`) or
+    /// `--recipient-pubkey` + `--recipient-nonce` inline.
     Provision {
         /// Context slug (lowercase alphanumeric + hyphens)
         #[arg(long)]
@@ -432,12 +434,24 @@ enum ContextCommands {
         /// Number of pre-rotation keys to generate
         #[arg(long, default_value = "0")]
         pre_rotation: u32,
+        /// Path to a BootstrapRequest JSON file produced by `pnm bootstrap request`.
+        #[arg(long, conflicts_with_all = ["recipient_pubkey", "recipient_nonce"])]
+        recipient: Option<std::path::PathBuf>,
+        /// Recipient's base64url X25519 public key (32 bytes).
+        /// Requires --recipient-nonce. Mutually exclusive with --recipient.
+        #[arg(long, requires = "recipient_nonce", conflicts_with = "recipient")]
+        recipient_pubkey: Option<String>,
+        /// Recipient's 16-byte nonce in hex (32 chars).
+        /// Requires --recipient-pubkey. Mutually exclusive with --recipient.
+        #[arg(long, requires = "recipient_pubkey", conflicts_with = "recipient")]
+        recipient_nonce: Option<String>,
     },
     /// Regenerate a provision bundle for an existing context
     ///
     /// Builds a new provision bundle using a VTA-stored key as the admin
-    /// credential. Pass --key to specify a key ID directly, or omit it
-    /// to interactively select from existing keys or create a new one.
+    /// credential and seals it to the given recipient. Pass --key to specify a
+    /// key ID directly, or omit it to interactively select from existing keys
+    /// or create a new one.
     Reprovision {
         /// Context ID to reprovision
         #[arg(long)]
@@ -448,6 +462,15 @@ enum ContextCommands {
         /// Label for a newly created admin key (used when no --key is provided)
         #[arg(long)]
         admin_label: Option<String>,
+        /// Path to a BootstrapRequest JSON file produced by `pnm bootstrap request`.
+        #[arg(long, conflicts_with_all = ["recipient_pubkey", "recipient_nonce"])]
+        recipient: Option<std::path::PathBuf>,
+        /// Recipient's base64url X25519 public key.
+        #[arg(long, requires = "recipient_nonce", conflicts_with = "recipient")]
+        recipient_pubkey: Option<String>,
+        /// Recipient's 16-byte nonce in hex.
+        #[arg(long, requires = "recipient_pubkey", conflicts_with = "recipient")]
+        recipient_nonce: Option<String>,
     },
 }
 
@@ -682,6 +705,30 @@ fn print_banner() {
 }
 
 /// Returns true if this command requires authentication.
+/// Resolve CLI `--recipient` / `--recipient-pubkey` / `--recipient-nonce`
+/// arguments into a [`vta_cli_common::sealed_producer::SealedRecipient`].
+///
+/// Clap's `conflicts_with` + `requires` already guarantee at most one mode is
+/// populated; this function enforces that at least one is, and produces a
+/// consistent error message.
+fn resolve_recipient(
+    recipient: Option<&std::path::Path>,
+    recipient_pubkey: Option<&str>,
+    recipient_nonce: Option<&str>,
+) -> Result<vta_cli_common::sealed_producer::SealedRecipient, Box<dyn std::error::Error>> {
+    use vta_cli_common::sealed_producer::SealedRecipient;
+    if let Some(path) = recipient {
+        SealedRecipient::from_file(path)
+    } else if let (Some(pk), Some(nonce)) = (recipient_pubkey, recipient_nonce) {
+        SealedRecipient::from_inline(pk, nonce)
+    } else {
+        Err(
+            "a recipient is required: pass --recipient <file> or both --recipient-pubkey and --recipient-nonce"
+                .into(),
+        )
+    }
+}
+
 fn requires_auth(cmd: &Commands) -> bool {
     // VTA restart requires auth; other VTA subcommands don't
     if matches!(
@@ -991,36 +1038,63 @@ async fn main() {
                 portable,
                 mediator_service,
                 pre_rotation,
+                recipient,
+                recipient_pubkey,
+                recipient_nonce,
             } => {
                 if server.is_some() && did_url.is_some() {
                     Err("--server and --did-url are mutually exclusive".into())
                 } else {
-                    let did_opts = match (&server, &did_url) {
-                        (None, None) => None,
-                        _ => Some(contexts::ProvisionDidOptions {
-                            server_id: server,
-                            did_url,
-                            portable,
-                            add_mediator_service: mediator_service,
-                            pre_rotation_count: pre_rotation,
-                        }),
-                    };
-                    contexts::cmd_context_provision(
-                        &client,
-                        &id,
-                        &name,
-                        description,
-                        admin_label,
-                        did_opts,
-                    )
-                    .await
+                    let recipient_spec = resolve_recipient(
+                        recipient.as_deref(),
+                        recipient_pubkey.as_deref(),
+                        recipient_nonce.as_deref(),
+                    );
+                    match recipient_spec {
+                        Ok(recipient) => {
+                            let did_opts = match (&server, &did_url) {
+                                (None, None) => None,
+                                _ => Some(contexts::ProvisionDidOptions {
+                                    server_id: server,
+                                    did_url,
+                                    portable,
+                                    add_mediator_service: mediator_service,
+                                    pre_rotation_count: pre_rotation,
+                                }),
+                            };
+                            contexts::cmd_context_provision(
+                                &client,
+                                &id,
+                                &name,
+                                description,
+                                admin_label,
+                                did_opts,
+                                recipient,
+                            )
+                            .await
+                        }
+                        Err(e) => Err(e),
+                    }
                 }
             }
             ContextCommands::Reprovision {
                 id,
                 key,
                 admin_label,
-            } => contexts::cmd_context_reprovision(&client, &id, key, admin_label).await,
+                recipient,
+                recipient_pubkey,
+                recipient_nonce,
+            } => match resolve_recipient(
+                recipient.as_deref(),
+                recipient_pubkey.as_deref(),
+                recipient_nonce.as_deref(),
+            ) {
+                Ok(recipient) => {
+                    contexts::cmd_context_reprovision(&client, &id, key, admin_label, recipient)
+                        .await
+                }
+                Err(e) => Err(e),
+            },
         },
         Commands::Acl { command } => match command {
             AclCommands::List { context } => acl::cmd_acl_list(&client, context.as_deref()).await,

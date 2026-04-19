@@ -23,3 +23,6 @@ hkdf = "0.12"
 aes-gcm = "0.10"
 base64 = { workspace = true }
 rand = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt"] }
