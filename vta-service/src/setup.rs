@@ -11,6 +11,11 @@ use didwebvh_rs::url::WebVHURL;
 use rand::Rng;
 use serde_json::json;
 use url::Url;
+use vta_sdk::credentials::CredentialBundle;
+use vta_sdk::sealed_transfer::{
+    AssertionProof, BootstrapRequest, InMemoryNonceStore, ProducerAssertion, SealedPayloadV1,
+    armor, bundle_digest, generate_keypair, seal_payload,
+};
 
 use crate::acl::{AclEntry, Role, store_acl_entry};
 
@@ -644,7 +649,7 @@ pub async fn run_setup_wizard(
     }
 
     // 14. Bootstrap admin DID in ACL (optional)
-    let admin_did = if let Some((admin_did, _credential)) = create_admin_did(
+    let admin_did = if let Some(admin_did) = create_admin_did(
         &seed,
         &vta_did,
         &public_url,
@@ -978,8 +983,15 @@ async fn build_wizard_did(
 
 /// Guide the user through creating or entering an admin DID.
 ///
-/// Returns `Some((did, Option<credential_string>))` or `None` if skipped.
-/// The credential string is only produced for the `did:key` option.
+/// Returns `Some(did)` on success, or `None` when the operator chooses to
+/// skip the admin step entirely.
+///
+/// The `did:key` branch uses the sealed-transfer offline (Mode C) flow:
+/// the operator provides the admin's `BootstrapRequest` JSON (produced by
+/// `pnm bootstrap request --out`), the wizard mints the did:key locally,
+/// and writes an armored `SealedPayloadV1::AdminCredential` bundle to disk
+/// for the operator to hand off out-of-band. No plaintext credential is
+/// ever printed or written.
 #[allow(clippy::too_many_arguments)]
 async fn create_admin_did(
     seed: &[u8],
@@ -992,9 +1004,9 @@ async fn create_admin_did(
     webvh_ks: &KeyspaceHandle,
     seed_store: &dyn crate::keys::seed_store::SeedStore,
     config: &AppConfig,
-) -> Result<Option<(String, Option<String>)>, Box<dyn std::error::Error>> {
+) -> Result<Option<String>, Box<dyn std::error::Error>> {
     let admin_options = &[
-        "Generate a new did:key (Ed25519)",
+        "Generate a new did:key (Ed25519), sealed to the admin's bootstrap request",
         "Create a new did:webvh DID",
         "Enter an existing DID",
         "Skip (no admin credential for now)",
@@ -1007,44 +1019,86 @@ async fn create_admin_did(
 
     match choice {
         0 => {
+            eprintln!();
+            eprintln!("The admin runs `pnm bootstrap request --out request.json` on their");
+            eprintln!("machine to produce a BootstrapRequest file. Provide the path to that");
+            eprintln!("file below; the wizard seals the minted credential to their ephemeral");
+            eprintln!("X25519 pubkey.");
+            eprintln!();
+            let request_path: String = Input::new()
+                .with_prompt("Path to admin's BootstrapRequest JSON")
+                .interact_text()?;
+            let request_path = PathBuf::from(request_path.trim());
+            let request_json = std::fs::read_to_string(&request_path)
+                .map_err(|e| format!("read {}: {e}", request_path.display()))?;
+            let request: BootstrapRequest = serde_json::from_str(&request_json)
+                .map_err(|e| format!("parse BootstrapRequest: {e}"))?;
+            if request.version != 1 {
+                return Err(
+                    format!("unsupported BootstrapRequest version: {}", request.version).into(),
+                );
+            }
+            let recipient_pk = request.decode_client_pubkey()?;
+            let bundle_id = request.decode_nonce()?;
+
             let (did, private_key_multibase) =
                 derive_and_store_did_key(seed, vta_base_path, "vta", keys_ks, Some(0)).await?;
 
-            // Build credential bundle (same format as POST /auth/credentials)
-            let vta_did_str = vta_did.clone().unwrap_or_default();
-            let mut bundle = serde_json::json!({
-                "did": did,
-                "privateKeyMultibase": private_key_multibase,
-                "vtaDid": vta_did_str,
-            });
+            let mut credential = CredentialBundle::new(
+                did.clone(),
+                private_key_multibase,
+                vta_did.clone().unwrap_or_default(),
+            );
             if let Some(url) = public_url {
-                bundle["vtaUrl"] = serde_json::json!(url);
+                credential = credential.vta_url(url);
             }
-            let bundle_json = serde_json::to_string(&bundle)?;
-            let credential = BASE64.encode(bundle_json.as_bytes());
+
+            // Fresh ephemeral producer keypair per seal — the operator
+            // communicates this pubkey + the SHA-256 digest OOB to the
+            // admin, who pins them at `pnm auth login`.
+            let (_producer_sk, producer_pk) = generate_keypair();
+            let producer_pubkey_b64 = BASE64.encode(producer_pk);
+            let producer = ProducerAssertion {
+                producer_pubkey_b64: producer_pubkey_b64.clone(),
+                proof: AssertionProof::PinnedOnly,
+            };
+            let nonce_store = InMemoryNonceStore::new();
+            let sealed = seal_payload(
+                &recipient_pk,
+                bundle_id,
+                producer,
+                &SealedPayloadV1::AdminCredential(credential),
+                &nonce_store,
+            )
+            .await
+            .map_err(|e| format!("seal admin credential: {e}"))?;
+            let armored = armor::encode(&sealed);
+            let digest = bundle_digest(&sealed);
+
+            let default_out = "admin-credential.armor".to_string();
+            let out_path: String = Input::new()
+                .with_prompt("Write sealed admin credential to file")
+                .default(default_out)
+                .interact_text()?;
+            std::fs::write(&out_path, armored.as_bytes())
+                .map_err(|e| format!("write {out_path}: {e}"))?;
 
             eprintln!();
             eprintln!("\x1b[1;32mGenerated admin DID:\x1b[0m {did}");
             eprintln!();
             eprintln!("\x1b[1;33m╔══════════════════════════════════════════════════════════╗");
-            eprintln!("║  IMPORTANT: Save the credential string below.            ║");
-            eprintln!("║  It contains your private key and is the ONLY way to     ║");
-            eprintln!("║  authenticate as admin.                                  ║");
+            eprintln!("║  Sealed admin credential written. Hand the file plus     ║");
+            eprintln!("║  the SHA-256 digest (out-of-band) to the admin, who      ║");
+            eprintln!("║  runs `pnm auth login --credential-bundle <file>         ║");
+            eprintln!("║            --expect-digest <hex>` to install it.         ║");
             eprintln!("╚══════════════════════════════════════════════════════════╝\x1b[0m");
             eprintln!();
-            eprintln!("  \x1b[1m{credential}\x1b[0m");
+            eprintln!("  Output file:      {out_path}");
+            eprintln!("  Producer pubkey:  {producer_pubkey_b64}");
+            eprintln!("  SHA-256 digest:   {digest}");
             eprintln!();
 
-            let confirmed = Confirm::new()
-                .with_prompt("I have saved the admin credential")
-                .default(false)
-                .interact()?;
-            if !confirmed {
-                eprintln!("Setup cancelled — please save your admin credential before proceeding.");
-                return Err("Admin credential not saved".into());
-            }
-
-            Ok(Some((did, Some(credential))))
+            Ok(Some(did))
         }
         1 => {
             let did = build_wizard_did(
@@ -1060,12 +1114,12 @@ async fn create_admin_did(
                 config,
             )
             .await?;
-            Ok(Some((did, None)))
+            Ok(Some(did))
         }
         2 => {
             // Enter existing DID — just record it, no local key derivation
             let did: String = Input::new().with_prompt("Admin DID").interact_text()?;
-            Ok(Some((did, None)))
+            Ok(Some(did))
         }
         _ => Ok(None),
     }
