@@ -1256,11 +1256,25 @@ async fn configure_messaging(
         }
         // Create new did:webvh — needs a mediator context
         1 => {
+            // The mediator DID lives inside a trust context so its keys slot
+            // into the normal context-scoped key hierarchy. Default id is
+            // "mediator" but operators running more than one mediator on the
+            // same VTA can differentiate (e.g. "mediator-eu", "mediator-us").
+            let mediator_context: String = Input::new()
+                .with_prompt("Trust context for the mediator DID")
+                .default("mediator".to_string())
+                .interact_text()?;
+            let mediator_context = mediator_context.trim().to_string();
+            if mediator_context.is_empty() {
+                return Err("mediator context id cannot be empty".into());
+            }
+
             let mediator_url: String = Input::new().with_prompt("Mediator URL").interact_text()?;
 
             // Create mediator context
             let _med_ctx =
-                create_seed_context(contexts_ks, "mediator", "DIDComm Messaging Mediator").await?;
+                create_seed_context(contexts_ks, &mediator_context, "DIDComm Messaging Mediator")
+                    .await?;
 
             // Build mediator-specific services (DIDComm + Auth endpoints)
             let wss_url = mediator_url
@@ -1283,8 +1297,8 @@ async fn configure_messaging(
             ];
 
             let mediator_did = build_wizard_did(
-                "mediator",
-                "mediator",
+                &mediator_context,
+                &mediator_context,
                 Some(mediator_services),
                 false,
                 keys_ks,
