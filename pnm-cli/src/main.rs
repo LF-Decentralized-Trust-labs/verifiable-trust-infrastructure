@@ -37,9 +37,15 @@ struct Cli {
 enum Commands {
     /// Configure VTA URL and credentials
     Setup {
-        /// Base64-encoded credential string (prompted interactively if omitted)
+        /// Path to an armored sealed bundle file (prompted interactively if omitted).
         #[arg(long)]
-        credential: Option<String>,
+        credential_bundle: Option<std::path::PathBuf>,
+        /// Expected SHA-256 digest of the sealed bundle.
+        #[arg(long)]
+        expect_digest: Option<String>,
+        /// Skip out-of-band digest verification (testing only — prints a warning).
+        #[arg(long)]
+        no_verify_digest: bool,
     },
 
     /// Check service health
@@ -840,8 +846,20 @@ async fn main() {
 
     // Handle commands that don't need VTA resolution
     match &cli.command {
-        Commands::Setup { credential } => {
-            let result = setup::run_setup(credential.as_deref(), &mut pnm_config).await;
+        Commands::Setup {
+            credential_bundle,
+            expect_digest,
+            no_verify_digest,
+        } => {
+            let result = setup::run_setup(
+                setup::SetupOptions {
+                    credential_bundle: credential_bundle.clone(),
+                    expect_digest: expect_digest.clone(),
+                    no_verify_digest: *no_verify_digest,
+                },
+                &mut pnm_config,
+            )
+            .await;
             if let Err(e) = result {
                 eprintln!("Error: {e}");
                 std::process::exit(1);
@@ -1720,7 +1738,11 @@ mod tests {
 
     #[test]
     fn test_requires_auth_setup_false() {
-        let cmd = Commands::Setup { credential: None };
+        let cmd = Commands::Setup {
+            credential_bundle: None,
+            expect_digest: None,
+            no_verify_digest: false,
+        };
         assert!(!requires_auth(&cmd));
     }
 

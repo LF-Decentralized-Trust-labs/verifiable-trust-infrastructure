@@ -1,29 +1,47 @@
 use std::io::{self, BufRead, Write};
+use std::path::{Path, PathBuf};
 
 use dialoguer::{Input, Select};
 use ed25519_dalek::SigningKey;
 use rand::Rng;
+use vta_sdk::credentials::CredentialBundle;
 use vta_sdk::prelude::*;
 
 use crate::auth;
 use crate::config::{PnmConfig, VtaConfig, save_config, slugify, vta_keyring_key};
 
+/// Options for interactive setup from the CLI.
+pub struct SetupOptions {
+    /// Path to an armored sealed bundle (skip the interactive menu).
+    pub credential_bundle: Option<PathBuf>,
+    /// Expected SHA-256 digest of the sealed bundle.
+    pub expect_digest: Option<String>,
+    /// Skip out-of-band digest verification.
+    pub no_verify_digest: bool,
+}
+
 /// Interactive setup for PNM.
 ///
 /// Presents the user with a choice between connecting to an existing VTA
-/// (with an admin credential bundle) or preparing a new TEE deployment
+/// (with a sealed admin credential bundle) or preparing a new TEE deployment
 /// (generating a did:key for the config).
 pub async fn run_setup(
-    credential: Option<&str>,
+    opts: SetupOptions,
     config: &mut PnmConfig,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    // If a credential was passed on the CLI, skip the menu
-    if let Some(cred) = credential {
-        return setup_with_credential(cred, config).await;
+    // If a bundle was passed on the CLI, skip the menu
+    if let Some(path) = opts.credential_bundle {
+        return setup_with_bundle(
+            &path,
+            opts.expect_digest.as_deref(),
+            opts.no_verify_digest,
+            config,
+        )
+        .await;
     }
 
     let choices = &[
-        "Connect to an existing VTA  — I have an admin credential bundle",
+        "Connect to an existing VTA  — I have an armored sealed bundle from the admin",
         "Set up a new VTA in a TEE   — generate admin identity for enclave deployment",
     ];
 
@@ -36,33 +54,63 @@ pub async fn run_setup(
     match selection {
         0 => {
             eprintln!();
-            eprintln!("Paste the base64-encoded admin credential you received from");
-            eprintln!("your VTA administrator or from the VTA's bootstrap output.");
+            eprintln!("Before continuing, generate a bootstrap request for the admin:");
+            eprintln!("  pnm bootstrap request --out request.json");
+            eprintln!("Hand that file to the admin, then return here with the armored");
+            eprintln!("sealed bundle they produce (and its SHA-256 digest for verification).");
             eprintln!();
-            eprint!("Admin credential: ");
-            io::stderr().flush()?;
-            let mut line = String::new();
-            io::stdin().lock().read_line(&mut line)?;
-            let trimmed = line.trim().to_string();
-            if trimmed.is_empty() {
-                return Err("No credential provided.".into());
-            }
-            setup_with_credential(&trimmed, config).await
+            let path: String = Input::new()
+                .with_prompt("Path to the armored sealed bundle")
+                .interact_text()?;
+            let digest: String = Input::new()
+                .with_prompt("Expected SHA-256 digest (empty = skip verification)")
+                .allow_empty(true)
+                .interact_text()?;
+            let (expect_digest, no_verify) = if digest.trim().is_empty() {
+                (None, true)
+            } else {
+                (Some(digest.trim().to_string()), false)
+            };
+            setup_with_bundle(
+                Path::new(path.trim()),
+                expect_digest.as_deref(),
+                no_verify,
+                config,
+            )
+            .await
         }
         1 => setup_tee(config).await,
         _ => unreachable!(),
     }
 }
 
-/// Connect to an existing VTA using an admin credential bundle.
-async fn setup_with_credential(
-    credential: &str,
+/// Connect to an existing VTA using an armored sealed credential bundle.
+async fn setup_with_bundle(
+    path: &Path,
+    expect_digest: Option<&str>,
+    no_verify_digest: bool,
     config: &mut PnmConfig,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    // Trust boundary: user-pasted base64. Sub-phase 5c replaces this with an
-    // armored sealed bundle.
-    #[allow(deprecated)]
-    let bundle = CredentialBundle::decode(credential)?;
+    let config_dir = crate::config::config_dir()?;
+    if no_verify_digest {
+        eprintln!(
+            "WARNING: --no-verify-digest disables out-of-band integrity verification.\n\
+             You are trusting the producer pubkey embedded in the bundle without\n\
+             any external anchor. Use only for testing."
+        );
+    }
+    let opened = vta_cli_common::sealed_consumer::open_armored_bundle(
+        path,
+        &config_dir,
+        expect_digest,
+        no_verify_digest,
+    )?;
+    eprintln!(
+        "Sealed bundle opened ({} — digest {}).",
+        opened.bundle_id_hex, opened.digest
+    );
+    let bundle: CredentialBundle =
+        vta_cli_common::sealed_consumer::extract_admin_credential(opened.payload)?;
 
     // Prompt for a name/slug
     let default_name = if bundle.vta_did.is_empty() {

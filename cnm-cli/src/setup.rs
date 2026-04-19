@@ -1,11 +1,72 @@
+use std::path::Path;
+
 use dialoguer::{Input, Select};
+use vta_sdk::credentials::CredentialBundle;
 
 use crate::auth;
 use crate::config::{
-    CommunityConfig, PERSONAL_KEYRING_KEY, PersonalVtaConfig, community_keyring_key, load_config,
-    save_config,
+    CommunityConfig, PERSONAL_KEYRING_KEY, PersonalVtaConfig, community_keyring_key, config_dir,
+    load_config, save_config,
 };
 use vta_sdk::prelude::*;
+
+/// Interactively prompt for an armored sealed bundle path + expected digest,
+/// then open it via the shared consumer helper and extract the admin
+/// credential. Used by every "gimme a credential" seam in the wizard.
+async fn prompt_for_sealed_credential(
+    label: &str,
+) -> Result<CredentialBundle, Box<dyn std::error::Error>> {
+    eprintln!();
+    eprintln!("Before continuing, generate a bootstrap request for the {label} admin:");
+    eprintln!("  cnm bootstrap request --out request.json");
+    eprintln!("Hand that file to the admin, then return here with the armored sealed");
+    eprintln!("bundle they produce (and its SHA-256 digest for verification).");
+    eprintln!();
+    let path: String = Input::new()
+        .with_prompt(format!("Path to the {label} armored sealed bundle"))
+        .interact_text()?;
+    let digest: String = Input::new()
+        .with_prompt(format!(
+            "Expected SHA-256 digest for {label} bundle (empty = skip verification)"
+        ))
+        .allow_empty(true)
+        .interact_text()?;
+    let (expect_digest, no_verify) = if digest.trim().is_empty() {
+        (None, true)
+    } else {
+        (Some(digest.trim().to_string()), false)
+    };
+    open_sealed_credential(Path::new(path.trim()), expect_digest.as_deref(), no_verify)
+}
+
+/// Open a sealed bundle file from `bundle_path` and extract a
+/// [`CredentialBundle`]. Shared by the CLI-flag path and the interactive
+/// path.
+fn open_sealed_credential(
+    bundle_path: &Path,
+    expect_digest: Option<&str>,
+    no_verify_digest: bool,
+) -> Result<CredentialBundle, Box<dyn std::error::Error>> {
+    let config_dir = config_dir()?;
+    if no_verify_digest {
+        eprintln!(
+            "WARNING: --no-verify-digest disables out-of-band integrity verification.\n\
+             You are trusting the producer pubkey embedded in the bundle without\n\
+             any external anchor. Use only for testing."
+        );
+    }
+    let opened = vta_cli_common::sealed_consumer::open_armored_bundle(
+        bundle_path,
+        &config_dir,
+        expect_digest,
+        no_verify_digest,
+    )?;
+    eprintln!(
+        "Sealed bundle opened ({} — digest {}).",
+        opened.bundle_id_hex, opened.digest
+    );
+    vta_cli_common::sealed_consumer::extract_admin_credential(opened.payload)
+}
 
 /// Derive a URL-safe slug from a community name.
 ///
@@ -81,15 +142,7 @@ pub async fn run_setup_wizard() -> Result<(), Box<dyn std::error::Error>> {
     // ── Personal VTA ────────────────────────────────────────────────
     let (_personal_did, personal_url) = prompt_vta_url("Personal").await?;
 
-    let personal_credential: String = Input::new()
-        .with_prompt("Personal VTA credential (base64)")
-        .interact_text()?;
-
-    // Trust boundary: user-pasted base64. Sub-phase 5c replaces this with an
-    // armored sealed bundle.
-    #[allow(deprecated)]
-    let personal_bundle = vta_sdk::credentials::CredentialBundle::decode(&personal_credential)
-        .map_err(|e| format!("invalid personal credential: {e}"))?;
+    let personal_bundle = prompt_for_sealed_credential("personal VTA").await?;
 
     // Authenticate against personal VTA
     eprintln!();
@@ -122,14 +175,7 @@ pub async fn run_setup_wizard() -> Result<(), Box<dyn std::error::Error>> {
     let context_id = match join_choice {
         // Import existing credential
         0 => {
-            let credential: String = Input::new()
-                .with_prompt("Community admin credential (base64)")
-                .interact_text()?;
-
-            // Trust boundary: user-pasted base64.
-            #[allow(deprecated)]
-            let bundle = vta_sdk::credentials::CredentialBundle::decode(&credential)
-                .map_err(|e| format!("invalid community credential: {e}"))?;
+            let bundle = prompt_for_sealed_credential("community VTA").await?;
 
             let keyring_key = community_keyring_key(&community_slug);
             eprintln!();
@@ -264,14 +310,7 @@ pub async fn add_community() -> Result<(), Box<dyn std::error::Error>> {
 
     let (_community_did, community_url) = prompt_vta_url("Community").await?;
 
-    let credential: String = Input::new()
-        .with_prompt("Community admin credential (base64)")
-        .interact_text()?;
-
-    // Trust boundary: user-pasted base64.
-    #[allow(deprecated)]
-    let bundle = vta_sdk::credentials::CredentialBundle::decode(&credential)
-        .map_err(|e| format!("invalid community credential: {e}"))?;
+    let bundle = prompt_for_sealed_credential("community VTA").await?;
 
     let keyring_key = community_keyring_key(&community_slug);
     eprintln!();
