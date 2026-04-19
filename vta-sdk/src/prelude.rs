@@ -24,10 +24,9 @@ pub use crate::did_secrets::{DidSecretsBundle, SecretEntry};
 pub use crate::client::{
     AclEntryResponse, AclListResponse, ConfigResponse, ContextListResponse, ContextResponse,
     CreateAclRequest, CreateContextRequest, CreateKeyRequest, CreateKeyResponse,
-    GenerateCredentialsRequest, GenerateCredentialsResponse, GetKeySecretResponse, HealthResponse,
-    ImportKeyRequest, ImportKeyResponse, InvalidateKeyResponse, ListKeysResponse,
-    RenameKeyResponse, SignResponse, UpdateAclRequest, UpdateConfigRequest,
-    UpdateContextDidRequest, VtaClient, WrappingKeyResponse,
+    GetKeySecretResponse, HealthResponse, ImportKeyRequest, ImportKeyResponse,
+    InvalidateKeyResponse, ListKeysResponse, RenameKeyResponse, SignResponse, UpdateAclRequest,
+    UpdateConfigRequest, UpdateContextDidRequest, VtaClient, WrappingKeyResponse,
 };
 
 // DID key utilities

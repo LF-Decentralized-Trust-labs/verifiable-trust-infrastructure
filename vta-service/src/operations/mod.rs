@@ -6,7 +6,6 @@ pub mod backup;
 pub mod cache;
 pub mod config;
 pub mod contexts;
-pub mod credentials;
 #[cfg(feature = "webvh")]
 pub mod did_webvh;
 pub mod keys;

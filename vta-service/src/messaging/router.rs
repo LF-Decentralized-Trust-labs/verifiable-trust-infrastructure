@@ -27,8 +27,8 @@ use vta_sdk::protocols::attestation_management;
 #[cfg(feature = "webvh")]
 use vta_sdk::protocols::did_management;
 use vta_sdk::protocols::{
-    self, acl_management, audit_management, context_management, credential_management,
-    key_management, seed_management, vta_management,
+    self, acl_management, audit_management, context_management, key_management, seed_management,
+    vta_management,
 };
 
 /// Shared state injected into all DIDComm handlers via `Extension<Arc<VtaState>>`.
@@ -221,11 +221,6 @@ pub fn build_handler(
         .route(
             vta_management::UPDATE_CONFIG,
             handler_fn(handlers::handle_update_config),
-        )?
-        // Credential management
-        .route(
-            credential_management::GENERATE_CREDENTIALS,
-            handler_fn(handlers::handle_generate_credentials),
         )?
         // Problem reports
         .route(

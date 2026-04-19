@@ -232,7 +232,11 @@ enum ContextCommands {
         #[arg(long, short)]
         force: bool,
     },
-    /// Create a context and generate credentials for its first admin
+    /// Create a context and mint a sealed admin credential for its first admin.
+    ///
+    /// The admin did:key is generated locally and registered via `POST /acl`;
+    /// the VTA never sees the private key. The minted credential is sealed to
+    /// the `--recipient` and printed as an armored bundle.
     Bootstrap {
         /// Context slug (lowercase alphanumeric + hyphens)
         #[arg(long)]
@@ -246,6 +250,15 @@ enum ContextCommands {
         /// Admin label
         #[arg(long)]
         admin_label: Option<String>,
+        /// Path to a BootstrapRequest JSON file produced by `cnm bootstrap request`.
+        #[arg(long, conflicts_with_all = ["recipient_pubkey", "recipient_nonce"])]
+        recipient: Option<std::path::PathBuf>,
+        /// Recipient's base64url X25519 public key.
+        #[arg(long, requires = "recipient_nonce", conflicts_with = "recipient")]
+        recipient_pubkey: Option<String>,
+        /// Recipient's 16-byte nonce in hex.
+        #[arg(long, requires = "recipient_pubkey", conflicts_with = "recipient")]
+        recipient_nonce: Option<String>,
     },
 }
 
@@ -300,7 +313,8 @@ enum AclCommands {
 
 #[derive(Subcommand)]
 enum AuthCredentialCommands {
-    /// Generate a new auth credential (did:key + ACL entry) for a service or application
+    /// Generate a new auth credential (did:key minted locally + ACL entry)
+    /// and seal it to the given recipient.
     Create {
         /// Role: admin, initiator, application, or reader
         #[arg(long)]
@@ -311,6 +325,15 @@ enum AuthCredentialCommands {
         /// Comma-separated context IDs (empty = unrestricted)
         #[arg(long, value_delimiter = ',')]
         contexts: Vec<String>,
+        /// Path to a BootstrapRequest JSON file produced by `cnm bootstrap request`.
+        #[arg(long, conflicts_with_all = ["recipient_pubkey", "recipient_nonce"])]
+        recipient: Option<std::path::PathBuf>,
+        /// Recipient's base64url X25519 public key.
+        #[arg(long, requires = "recipient_nonce", conflicts_with = "recipient")]
+        recipient_pubkey: Option<String>,
+        /// Recipient's 16-byte nonce in hex.
+        #[arg(long, requires = "recipient_pubkey", conflicts_with = "recipient")]
+        recipient_nonce: Option<String>,
     },
 }
 
@@ -441,6 +464,26 @@ async fn auth_login_sealed(
     );
     let bundle = vta_cli_common::sealed_consumer::extract_admin_credential(opened.payload)?;
     auth::login(&bundle, client.base_url(), keyring_key).await
+}
+
+/// Resolve CLI `--recipient` / `--recipient-pubkey` / `--recipient-nonce`
+/// arguments into a [`vta_cli_common::sealed_producer::SealedRecipient`].
+fn resolve_recipient(
+    recipient: Option<&std::path::Path>,
+    recipient_pubkey: Option<&str>,
+    recipient_nonce: Option<&str>,
+) -> Result<vta_cli_common::sealed_producer::SealedRecipient, Box<dyn std::error::Error>> {
+    use vta_cli_common::sealed_producer::SealedRecipient;
+    if let Some(path) = recipient {
+        SealedRecipient::from_file(path)
+    } else if let (Some(pk), Some(nonce)) = (recipient_pubkey, recipient_nonce) {
+        SealedRecipient::from_inline(pk, nonce)
+    } else {
+        Err(
+            "a recipient is required: pass --recipient <file> or both --recipient-pubkey and --recipient-nonce"
+                .into(),
+        )
+    }
 }
 
 /// Returns true if this command requires authentication.
@@ -729,9 +772,27 @@ async fn main() {
                 name,
                 description,
                 admin_label,
-            } => {
-                contexts::cmd_context_bootstrap(&client, &id, &name, description, admin_label).await
-            }
+                recipient,
+                recipient_pubkey,
+                recipient_nonce,
+            } => match resolve_recipient(
+                recipient.as_deref(),
+                recipient_pubkey.as_deref(),
+                recipient_nonce.as_deref(),
+            ) {
+                Ok(recipient) => {
+                    contexts::cmd_context_bootstrap(
+                        &client,
+                        &id,
+                        &name,
+                        description,
+                        admin_label,
+                        recipient,
+                    )
+                    .await
+                }
+                Err(e) => Err(e),
+            },
         },
         Commands::Acl { command } => match command {
             AclCommands::List { context } => acl::cmd_acl_list(&client, context.as_deref()).await,
@@ -755,7 +816,22 @@ async fn main() {
                 role,
                 label,
                 contexts,
-            } => credentials::cmd_auth_credential_create(&client, role, label, contexts).await,
+                recipient,
+                recipient_pubkey,
+                recipient_nonce,
+            } => match resolve_recipient(
+                recipient.as_deref(),
+                recipient_pubkey.as_deref(),
+                recipient_nonce.as_deref(),
+            ) {
+                Ok(recipient) => {
+                    credentials::cmd_auth_credential_create(
+                        &client, role, label, contexts, recipient,
+                    )
+                    .await
+                }
+                Err(e) => Err(e),
+            },
         },
         Commands::Bootstrap { command } => match command {
             BootstrapCommands::Request { out, label } => bootstrap_request(out, label),

@@ -15,7 +15,6 @@ pub fn router() -> Router<AppState> {
         .route("/auth/challenge", post(auth::challenge))
         .route("/auth/", post(auth::authenticate))
         .route("/auth/refresh", post(auth::refresh))
-        .route("/auth/credentials", post(auth::generate_credentials))
         .route(
             "/auth/sessions",
             get(auth::session_list).delete(auth::revoke_sessions_by_did),

@@ -420,41 +420,6 @@ pub struct GetDidLogResponse {
     pub log: Option<String>,
 }
 
-// ── Credential types ────────────────────────────────────────────────
-
-#[derive(Debug, Serialize)]
-pub struct GenerateCredentialsRequest {
-    pub role: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub label: Option<String>,
-    pub allowed_contexts: Vec<String>,
-}
-
-impl GenerateCredentialsRequest {
-    pub fn new(role: impl Into<String>) -> Self {
-        Self {
-            role: role.into(),
-            label: None,
-            allowed_contexts: Vec::new(),
-        }
-    }
-    pub fn label(mut self, label: impl Into<String>) -> Self {
-        self.label = Some(label.into());
-        self
-    }
-    pub fn contexts(mut self, contexts: Vec<String>) -> Self {
-        self.allowed_contexts = contexts;
-        self
-    }
-}
-
-#[derive(Debug, Deserialize)]
-pub struct GenerateCredentialsResponse {
-    pub did: String,
-    pub credential: String,
-    pub role: String,
-}
-
 /// Percent-encode characters that are not safe in URL path segments.
 ///
 /// DID verification method IDs contain `#` (fragment delimiter) and potentially
@@ -514,8 +479,8 @@ impl VtaClient {
 
 #[cfg(feature = "client")]
 use crate::protocols::{
-    acl_management, context_management, credential_management, did_management, key_management,
-    seed_management, vta_management,
+    acl_management, context_management, did_management, key_management, seed_management,
+    vta_management,
 };
 
 impl VtaClient {
@@ -1196,22 +1161,6 @@ impl VtaClient {
         .await
     }
 
-    // ── Credential methods ──────────────────────────────────────────
-
-    pub async fn generate_credentials(
-        &self,
-        req: GenerateCredentialsRequest,
-    ) -> Result<GenerateCredentialsResponse, VtaError> {
-        self.rpc(
-            credential_management::GENERATE_CREDENTIALS,
-            serde_json::to_value(&req)?,
-            credential_management::GENERATE_CREDENTIALS_RESULT,
-            30,
-            |c, url| c.post(format!("{url}/auth/credentials")).json(&req),
-        )
-        .await
-    }
-
     // ── Context methods ──────────────────────────────────────────────
 
     pub async fn list_contexts(&self) -> Result<ContextListResponse, VtaError> {
@@ -1828,15 +1777,6 @@ mod tests {
         let resp: ListKeysResponse = serde_json::from_str(json).unwrap();
         assert!(resp.keys.is_empty());
         assert_eq!(resp.total, 0);
-    }
-
-    #[test]
-    fn test_generate_credentials_response_deserialization() {
-        let json = r#"{"did":"did:key:z6Mk123","credential":"abc123","role":"admin"}"#;
-        let resp: GenerateCredentialsResponse = serde_json::from_str(json).unwrap();
-        assert_eq!(resp.did, "did:key:z6Mk123");
-        assert_eq!(resp.credential, "abc123");
-        assert_eq!(resp.role, "admin");
     }
 
     #[test]

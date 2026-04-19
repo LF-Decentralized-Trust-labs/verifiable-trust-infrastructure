@@ -8,7 +8,6 @@ use uuid::Uuid;
 use vta_sdk::protocols::auth::{
     AuthenticateData, AuthenticateResponse, ChallengeData, ChallengeRequest, ChallengeResponse,
 };
-use vta_sdk::protocols::credential_management::generate::GenerateCredentialsResultBody;
 
 use crate::acl::{Role, check_acl, check_acl_full};
 use crate::audit::audit;
@@ -20,7 +19,6 @@ use crate::auth::{AdminAuth, AuthClaims, ManageAuth};
 use crate::error::AppError;
 #[cfg(feature = "tee")]
 use crate::error::tee_attestation_error;
-use crate::operations;
 use crate::server::AppState;
 #[cfg(feature = "tee")]
 use tracing::error;
@@ -417,40 +415,6 @@ pub async fn refresh(
 }
 
 // ---------- POST /auth/credentials ----------
-
-#[derive(Debug, Deserialize)]
-pub struct GenerateCredentialsRequest {
-    pub role: Role,
-    pub label: Option<String>,
-    #[serde(default)]
-    pub allowed_contexts: Vec<String>,
-}
-
-/// POST /auth/credentials — generate a new DID+keypair and register an ACL entry. Auth: Admin or Initiator.
-pub async fn generate_credentials(
-    auth: ManageAuth,
-    State(state): State<AppState>,
-    Json(req): Json<GenerateCredentialsRequest>,
-) -> Result<(StatusCode, Json<GenerateCredentialsResultBody>), AppError> {
-    let role_str = req.role.to_string();
-    let result = operations::credentials::generate_credentials(
-        &state.acl_ks,
-        &state.config,
-        &auth.0,
-        req.role,
-        req.label,
-        req.allowed_contexts,
-        "rest",
-    )
-    .await?;
-    audit!(
-        "credentials.generate",
-        actor = &auth.0.did,
-        resource = &role_str,
-        outcome = "success"
-    );
-    Ok((StatusCode::CREATED, Json(result)))
-}
 
 // ---------- GET /auth/sessions ----------
 

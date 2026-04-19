@@ -401,7 +401,11 @@ enum ContextCommands {
         #[arg(long, short)]
         force: bool,
     },
-    /// Create a context and generate credentials for its first admin
+    /// Create a context and mint a sealed admin credential for its first admin.
+    ///
+    /// The admin did:key is generated locally by the CLI and registered via
+    /// `POST /acl`; the VTA never sees the private key. The minted credential
+    /// is sealed to the `--recipient` and printed as an armored bundle.
     Bootstrap {
         /// Context slug (lowercase alphanumeric + hyphens)
         #[arg(long)]
@@ -415,6 +419,15 @@ enum ContextCommands {
         /// Admin label
         #[arg(long)]
         admin_label: Option<String>,
+        /// Path to a BootstrapRequest JSON file produced by `pnm bootstrap request`.
+        #[arg(long, conflicts_with_all = ["recipient_pubkey", "recipient_nonce"])]
+        recipient: Option<std::path::PathBuf>,
+        /// Recipient's base64url X25519 public key.
+        #[arg(long, requires = "recipient_nonce", conflicts_with = "recipient")]
+        recipient_pubkey: Option<String>,
+        /// Recipient's 16-byte nonce in hex.
+        #[arg(long, requires = "recipient_pubkey", conflicts_with = "recipient")]
+        recipient_nonce: Option<String>,
     },
     /// Provision a new application context with a portable config bundle
     ///
@@ -543,7 +556,8 @@ enum AclCommands {
 
 #[derive(Subcommand)]
 enum AuthCredentialCommands {
-    /// Generate a new auth credential (did:key + ACL entry) for a service or application
+    /// Generate a new auth credential (did:key minted locally + ACL entry)
+    /// and seal it to the given recipient.
     Create {
         /// Role: admin, initiator, application, or reader
         #[arg(long)]
@@ -554,6 +568,15 @@ enum AuthCredentialCommands {
         /// Comma-separated context IDs (empty = unrestricted)
         #[arg(long, value_delimiter = ',')]
         contexts: Vec<String>,
+        /// Path to a BootstrapRequest JSON file produced by `pnm bootstrap request`.
+        #[arg(long, conflicts_with_all = ["recipient_pubkey", "recipient_nonce"])]
+        recipient: Option<std::path::PathBuf>,
+        /// Recipient's base64url X25519 public key.
+        #[arg(long, requires = "recipient_nonce", conflicts_with = "recipient")]
+        recipient_pubkey: Option<String>,
+        /// Recipient's 16-byte nonce in hex.
+        #[arg(long, requires = "recipient_pubkey", conflicts_with = "recipient")]
+        recipient_nonce: Option<String>,
     },
 }
 
@@ -1104,9 +1127,27 @@ async fn main() {
                 name,
                 description,
                 admin_label,
-            } => {
-                contexts::cmd_context_bootstrap(&client, &id, &name, description, admin_label).await
-            }
+                recipient,
+                recipient_pubkey,
+                recipient_nonce,
+            } => match resolve_recipient(
+                recipient.as_deref(),
+                recipient_pubkey.as_deref(),
+                recipient_nonce.as_deref(),
+            ) {
+                Ok(recipient) => {
+                    contexts::cmd_context_bootstrap(
+                        &client,
+                        &id,
+                        &name,
+                        description,
+                        admin_label,
+                        recipient,
+                    )
+                    .await
+                }
+                Err(e) => Err(e),
+            },
             ContextCommands::Provision {
                 id,
                 name,
@@ -1197,7 +1238,22 @@ async fn main() {
                 role,
                 label,
                 contexts,
-            } => credentials::cmd_auth_credential_create(&client, role, label, contexts).await,
+                recipient,
+                recipient_pubkey,
+                recipient_nonce,
+            } => match resolve_recipient(
+                recipient.as_deref(),
+                recipient_pubkey.as_deref(),
+                recipient_nonce.as_deref(),
+            ) {
+                Ok(recipient) => {
+                    credentials::cmd_auth_credential_create(
+                        &client, role, label, contexts, recipient,
+                    )
+                    .await
+                }
+                Err(e) => Err(e),
+            },
         },
         Commands::Webvh { command } => match command {
             WebvhCommands::AddServer { id, did, label } => {

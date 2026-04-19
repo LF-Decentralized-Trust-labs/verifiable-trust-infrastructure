@@ -24,8 +24,8 @@ use crate::operations;
 use super::router::VtaState;
 
 use vta_sdk::protocols::{
-    acl_management, audit_management, context_management, credential_management, key_management,
-    seed_management, vta_management,
+    acl_management, audit_management, context_management, key_management, seed_management,
+    vta_management,
 };
 
 type HandlerResult = Result<Option<DIDCommResponse>, DIDCommServiceError>;
@@ -644,36 +644,6 @@ pub async fn handle_update_config(
     .await
     .map_err(handler_err)?;
     response(vta_management::UPDATE_CONFIG_RESULT, &result)
-}
-
-// ---------------------------------------------------------------------------
-// Credential management
-// ---------------------------------------------------------------------------
-
-pub async fn handle_generate_credentials(
-    _ctx: HandlerContext,
-    message: Message,
-    Extension(state): Extension<Arc<VtaState>>,
-) -> HandlerResult {
-    let auth = auth_from_message(&message, &state.acl_ks)
-        .await
-        .map_err(handler_err)?;
-    auth.require_manage().map_err(handler_err)?;
-    let body: vta_sdk::protocols::credential_management::generate::GenerateCredentialsBody =
-        serde_json::from_value(message.body).map_err(handler_err)?;
-    let role = Role::parse(&body.role).map_err(handler_err)?;
-    let result = operations::credentials::generate_credentials(
-        &state.acl_ks,
-        &state.config,
-        &auth,
-        role,
-        body.label,
-        body.allowed_contexts,
-        "didcomm",
-    )
-    .await
-    .map_err(handler_err)?;
-    response(credential_management::GENERATE_CREDENTIALS_RESULT, &result)
 }
 
 // ---------------------------------------------------------------------------

@@ -209,19 +209,11 @@ pub async fn run_setup_wizard() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
 
-            // Generate credential in personal VTA
-            eprintln!("Generating community admin credential...");
-            let cred_req = GenerateCredentialsRequest::new("admin")
-                .label(format!("CNM community admin — {community_slug}"))
-                .contexts(vec![context_slug.clone()]);
-            let resp = personal_client.generate_credentials(cred_req).await?;
-
-            // Trust boundary: REST endpoint returns plaintext base64. Sub-phase
-            // 5c deletes the endpoint; `pnm bootstrap request` replaces it.
-            #[allow(deprecated)]
-            let bundle = vta_sdk::credentials::CredentialBundle::decode(&resp.credential)
-                .map_err(|e| format!("failed to decode credential: {e:?}"))?;
-            let private_key = &bundle.private_key_multibase;
+            // Mint admin did:key locally and register it on the personal VTA
+            // via POST /acl. The private key stays on this machine and is
+            // immediately stored in the community session — no round-trip
+            // through `/auth/credentials` (removed in 5c6).
+            eprintln!("Minting community admin credential locally...");
 
             // Ensure we have the community VTA DID (prompt if not provided earlier)
             let community_vta_did = match &community_did {
@@ -235,25 +227,31 @@ pub async fn run_setup_wizard() -> Result<(), Box<dyn std::error::Error>> {
                 }
             };
 
+            let (bundle, admin_did) = vta_cli_common::local_keygen::generate_admin_did_key(
+                community_vta_did.clone(),
+                Some(community_url.clone()),
+            );
+            let acl_req = vta_sdk::client::CreateAclRequest::new(&admin_did, "admin")
+                .label(format!("CNM community admin — {community_slug}"))
+                .contexts(vec![context_slug.clone()]);
+            personal_client.create_acl(acl_req).await?;
+
             // Store community session so cnm can authenticate automatically
             let keyring_key = community_keyring_key(&community_slug);
             auth::store_session_direct(
                 &keyring_key,
-                &resp.did,
-                private_key,
+                &admin_did,
+                &bundle.private_key_multibase,
                 &community_vta_did,
                 &community_url,
             )?;
 
             eprintln!();
-            eprintln!(
-                "\x1b[1;32mGenerated community admin DID:\x1b[0m {}",
-                resp.did
-            );
+            eprintln!("\x1b[1;32mGenerated community admin DID:\x1b[0m {admin_did}");
             eprintln!();
             eprintln!("Share this DID with the community administrator.");
             eprintln!("They will run:");
-            eprintln!("  vta import-did --did {}", resp.did);
+            eprintln!("  vta import-did --did {admin_did}");
             eprintln!();
             eprintln!("Once access is granted, cnm will authenticate automatically.");
             eprintln!();
@@ -364,40 +362,33 @@ pub async fn bootstrap_community_session(
     let personal_client = VtaClient::new(personal_url);
     personal_client.set_token(token);
 
-    // Generate a new credential on the personal VTA
+    // Mint a new admin credential locally and register it on the personal
+    // VTA via POST /acl. No key material crosses the wire.
     eprintln!("Bootstrapping community session from personal VTA...");
-    let cred_req = GenerateCredentialsRequest {
-        role: "admin".into(),
-        label: Some(format!("CNM community admin — {slug} (bootstrapped)")),
-        allowed_contexts: vec![context_id.to_string()],
-    };
-    let resp = personal_client.generate_credentials(cred_req).await?;
-
-    // Trust boundary: REST endpoint returns plaintext base64. Sub-phase 5c
-    // deletes the endpoint; `pnm bootstrap request` replaces it.
-    #[allow(deprecated)]
-    let bundle = vta_sdk::credentials::CredentialBundle::decode(&resp.credential)
-        .map_err(|e| format!("failed to decode credential: {e:?}"))?;
-    let private_key = &bundle.private_key_multibase;
+    let (bundle, admin_did) = vta_cli_common::local_keygen::generate_admin_did_key(
+        community_vta_did.to_string(),
+        Some(community.url.clone()),
+    );
+    let acl_req = vta_sdk::client::CreateAclRequest::new(&admin_did, "admin")
+        .label(format!("CNM community admin — {slug} (bootstrapped)"))
+        .contexts(vec![context_id.to_string()]);
+    personal_client.create_acl(acl_req).await?;
 
     // Store community session
     let keyring_key = community_keyring_key(slug);
     auth::store_session_direct(
         &keyring_key,
-        &resp.did,
-        private_key,
+        &admin_did,
+        &bundle.private_key_multibase,
         community_vta_did,
         &community.url,
     )?;
 
     eprintln!();
-    eprintln!(
-        "\x1b[1;32mBootstrapped community session with new DID:\x1b[0m {}",
-        resp.did
-    );
+    eprintln!("\x1b[1;32mBootstrapped community session with new DID:\x1b[0m {admin_did}");
     eprintln!();
     eprintln!("This is a NEW DID. You must grant it access on the community VTA:");
-    eprintln!("  vta import-did --did {}", resp.did);
+    eprintln!("  vta import-did --did {admin_did}");
     eprintln!();
 
     Ok(())

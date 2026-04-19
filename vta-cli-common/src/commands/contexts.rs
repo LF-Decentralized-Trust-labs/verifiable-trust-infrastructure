@@ -27,6 +27,7 @@ pub async fn cmd_context_bootstrap(
     name: &str,
     description: Option<String>,
     admin_label: Option<String>,
+    recipient: SealedRecipient,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut ctx_req = CreateContextRequest::new(id, name);
     if let Some(desc) = description {
@@ -38,19 +39,36 @@ pub async fn cmd_context_bootstrap(
     println!("  Name:      {}", ctx.name);
     println!("  Base Path: {}", ctx.base_path);
 
-    let mut cred_req = GenerateCredentialsRequest::new("admin").contexts(vec![id.to_string()]);
+    // Fetch VTA config so the minted CredentialBundle carries VTA DID/URL.
+    let config = client.get_config().await?;
+    let vta_did = config
+        .community_vta_did
+        .clone()
+        .ok_or("VTA DID not configured — cannot mint admin credential")?;
+    let vta_url = config.public_url.clone();
+
+    // Mint admin did:key locally + register ACL. The VTA never sees the
+    // private half; the full bundle reaches the recipient via sealed transfer.
+    let (admin_bundle, admin_did) = crate::local_keygen::generate_admin_did_key(vta_did, vta_url);
+    let mut acl_req =
+        vta_sdk::client::CreateAclRequest::new(&admin_did, "admin").contexts(vec![id.to_string()]);
     if let Some(l) = admin_label {
-        cred_req = cred_req.label(l);
+        acl_req = acl_req.label(l);
     }
-    let resp = client.generate_credentials(cred_req).await?;
+    client.create_acl(acl_req).await?;
+
+    let sealed =
+        seal_for_recipient(&recipient, &SealedPayloadV1::AdminCredential(admin_bundle)).await?;
     println!();
     println!("Admin credential created:");
-    println!("  DID:  {}", resp.did);
+    println!("  DID:  {admin_did}");
     println!("  Role: admin");
+    if let Some(ref label) = recipient.label {
+        println!("  Recipient: {label}");
+    }
     println!();
-    println!("Credential (one-time secret — save this now):");
-    println!("{}", resp.credential);
 
+    crate::sealed_producer::emit_sealed_output(&sealed);
     Ok(())
 }
 
@@ -288,22 +306,27 @@ pub async fn cmd_context_provision(
     }
     client.create_context(ctx_req).await?;
 
-    // 2. Generate admin credentials scoped to this context
-    eprintln!("Generating admin credentials...");
-    let mut cred_req = GenerateCredentialsRequest::new("admin").contexts(vec![id.to_string()]);
-    if let Some(l) = admin_label {
-        cred_req = cred_req.label(l);
-    }
-    let cred_resp = client.generate_credentials(cred_req).await?;
-
-    // REST boundary: `/auth/credentials` still returns a base64 bundle. 5c6
-    // resolves whether that endpoint becomes typed JSON or goes away entirely.
-    #[allow(deprecated)]
-    let admin_credential = vta_sdk::credentials::CredentialBundle::decode(&cred_resp.credential)
-        .map_err(|e| format!("failed to decode admin credential: {e}"))?;
-
-    // 3. Fetch VTA config for URL/DID
+    // 2. Fetch VTA config for URL/DID (needed to build the admin credential).
     let config = client.get_config().await?;
+    let vta_did = config
+        .community_vta_did
+        .clone()
+        .ok_or("VTA DID not configured — cannot mint admin credential")?;
+    let vta_url = config.public_url.clone();
+
+    // 3. Generate admin did:key locally (private key never crosses the wire)
+    //    and register it with the VTA via POST /acl. This replaces the
+    //    pre-5c6 `POST /auth/credentials` round-trip that returned a base64
+    //    CredentialBundle in a plaintext JSON body.
+    eprintln!("Minting local admin credential and registering ACL...");
+    let (admin_credential, admin_did) =
+        crate::local_keygen::generate_admin_did_key(vta_did, vta_url);
+    let mut acl_req =
+        vta_sdk::client::CreateAclRequest::new(&admin_did, "admin").contexts(vec![id.to_string()]);
+    if let Some(l) = admin_label {
+        acl_req = acl_req.label(l);
+    }
+    client.create_acl(acl_req).await?;
 
     // 4. Optionally create a DID and collect its secrets
     let provisioned_did = if let Some(opts) = did_opts {
@@ -361,7 +384,7 @@ pub async fn cmd_context_provision(
         vta_url: config.public_url,
         vta_did: config.community_vta_did,
         credential: admin_credential,
-        admin_did: cred_resp.did,
+        admin_did,
         did: provisioned_did,
     };
 
