@@ -304,10 +304,22 @@ enum WebvhCommands {
 
 #[derive(Subcommand)]
 enum AuthCommands {
-    /// Import a credential and authenticate
+    /// Import a credential from an armored sealed bundle and authenticate.
+    ///
+    /// Expects an armored `VTA SEALED BUNDLE` produced by the operator (e.g.
+    /// via `vta context provision --recipient <request>`). The local secret
+    /// must already exist under `~/.config/pnm/bootstrap-secrets/` — produce
+    /// one with `pnm bootstrap request --out <request>.json` beforehand.
     Login {
-        /// Base64-encoded credential string from VTA administrator
-        credential: String,
+        /// Path to the armored sealed bundle file.
+        #[arg(long)]
+        credential_bundle: std::path::PathBuf,
+        /// Expected SHA-256 digest, communicated out-of-band by the producer.
+        #[arg(long)]
+        expect_digest: Option<String>,
+        /// Skip out-of-band digest verification (testing only — prints a warning).
+        #[arg(long)]
+        no_verify_digest: bool,
     },
     /// Clear stored credentials and tokens
     Logout,
@@ -715,6 +727,41 @@ fn print_banner() {
 }
 
 /// Returns true if this command requires authentication.
+/// Implementation of `pnm auth login --credential-bundle <file>`.
+///
+/// Opens an armored sealed bundle (matching a secret persisted earlier by
+/// `pnm bootstrap request`), extracts the admin credential from the payload,
+/// and installs it via `auth::login`.
+async fn auth_login_sealed(
+    client: &VtaClient,
+    keyring_key: &str,
+    credential_bundle: &std::path::Path,
+    expect_digest: Option<&str>,
+    no_verify_digest: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let config_dir =
+        config::config_dir().map_err(|e| format!("could not resolve config dir: {e}"))?;
+    if no_verify_digest {
+        eprintln!(
+            "WARNING: --no-verify-digest disables out-of-band integrity verification.\n\
+             You are trusting the producer pubkey embedded in the bundle without\n\
+             any external anchor. Use only for testing."
+        );
+    }
+    let opened = vta_cli_common::sealed_consumer::open_armored_bundle(
+        credential_bundle,
+        &config_dir,
+        expect_digest,
+        no_verify_digest,
+    )?;
+    eprintln!(
+        "Sealed bundle opened ({} — digest {}).",
+        opened.bundle_id_hex, opened.digest
+    );
+    let bundle = vta_cli_common::sealed_consumer::extract_admin_credential(opened.payload)?;
+    auth::login(&bundle, client.base_url(), keyring_key).await
+}
+
 /// Resolve CLI `--recipient` / `--recipient-pubkey` / `--recipient-nonce`
 /// arguments into a [`vta_cli_common::sealed_producer::SealedRecipient`].
 ///
@@ -974,15 +1021,19 @@ async fn main() {
         Commands::Vta { .. } => unreachable!(),
         Commands::Health => cmd_health(&client, &keyring_key).await,
         Commands::Auth { command } => match command {
-            AuthCommands::Login { credential } => {
-                // Trust boundary: user-pasted base64. Sub-phase 5c replaces
-                // this with `--credential-bundle <file>` reading armored input.
-                #[allow(deprecated)]
-                let decoded = vta_sdk::credentials::CredentialBundle::decode(&credential);
-                match decoded {
-                    Ok(bundle) => auth::login(&bundle, client.base_url(), &keyring_key).await,
-                    Err(e) => Err(format!("invalid credential: {e}").into()),
-                }
+            AuthCommands::Login {
+                credential_bundle,
+                expect_digest,
+                no_verify_digest,
+            } => {
+                auth_login_sealed(
+                    &client,
+                    &keyring_key,
+                    &credential_bundle,
+                    expect_digest.as_deref(),
+                    no_verify_digest,
+                )
+                .await
             }
             AuthCommands::Logout => {
                 auth::logout(&keyring_key);
@@ -1659,7 +1710,9 @@ mod tests {
     fn test_requires_auth_auth_login_false() {
         let cmd = Commands::Auth {
             command: AuthCommands::Login {
-                credential: "test".into(),
+                credential_bundle: std::path::PathBuf::from("/tmp/fake.armor"),
+                expect_digest: None,
+                no_verify_digest: false,
             },
         };
         assert!(!requires_auth(&cmd));

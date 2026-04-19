@@ -77,6 +77,45 @@ enum Commands {
         #[command(subcommand)]
         command: AuthCredentialCommands,
     },
+
+    /// Sealed-transfer bootstrap (consumer side).
+    Bootstrap {
+        #[command(subcommand)]
+        command: BootstrapCommands,
+    },
+}
+
+#[derive(Subcommand)]
+enum BootstrapCommands {
+    /// Generate an ephemeral keypair and emit a BootstrapRequest for the producer.
+    ///
+    /// The X25519 secret is stored on disk under
+    /// `~/.config/cnm/bootstrap-secrets/<bundle_id>.key` (mode 0600 on Unix).
+    /// The emitted JSON file contains only the public key, a fresh nonce, and
+    /// an optional label — no secrets cross the boundary.
+    Request {
+        /// Output path for the BootstrapRequest JSON.
+        #[arg(long)]
+        out: std::path::PathBuf,
+        /// Optional human-readable label visible to the operator.
+        #[arg(long)]
+        label: Option<String>,
+    },
+    /// Open an armored sealed bundle returned by the producer.
+    ///
+    /// `--expect-digest <hex>` is required by default. Use `--no-verify-digest`
+    /// to opt out (with a warning) — there is no silent TOFU.
+    Open {
+        /// Path to the armored bundle file.
+        #[arg(long)]
+        bundle: std::path::PathBuf,
+        /// Expected SHA-256 digest, communicated out-of-band by the producer.
+        #[arg(long)]
+        expect_digest: Option<String>,
+        /// Skip out-of-band digest verification (testing only — prints a warning).
+        #[arg(long)]
+        no_verify_digest: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -103,10 +142,21 @@ enum CommunityCommands {
 
 #[derive(Subcommand)]
 enum AuthCommands {
-    /// Import a credential and authenticate
+    /// Import a credential from an armored sealed bundle and authenticate.
+    ///
+    /// Expects an armored `VTA SEALED BUNDLE` produced by the operator. The
+    /// local secret must already exist under `~/.config/cnm/bootstrap-secrets/`
+    /// — produce one with `cnm bootstrap request --out <request>.json`.
     Login {
-        /// Base64-encoded credential string from VTA administrator
-        credential: String,
+        /// Path to the armored sealed bundle file.
+        #[arg(long)]
+        credential_bundle: std::path::PathBuf,
+        /// Expected SHA-256 digest, communicated out-of-band by the producer.
+        #[arg(long)]
+        expect_digest: Option<String>,
+        /// Skip out-of-band digest verification (testing only — prints a warning).
+        #[arg(long)]
+        no_verify_digest: bool,
     },
     /// Clear stored credentials and tokens
     Logout,
@@ -358,12 +408,139 @@ fn print_banner() {
     );
 }
 
+/// Implementation of `cnm auth login --credential-bundle <file>`.
+///
+/// Opens an armored sealed bundle (matching a secret persisted earlier by
+/// `cnm bootstrap request`), extracts the admin credential from the payload,
+/// and installs it via `auth::login`.
+async fn auth_login_sealed(
+    client: &VtaClient,
+    keyring_key: &str,
+    credential_bundle: &std::path::Path,
+    expect_digest: Option<&str>,
+    no_verify_digest: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let config_dir =
+        config::config_dir().map_err(|e| format!("could not resolve config dir: {e}"))?;
+    if no_verify_digest {
+        eprintln!(
+            "WARNING: --no-verify-digest disables out-of-band integrity verification.\n\
+             You are trusting the producer pubkey embedded in the bundle without\n\
+             any external anchor. Use only for testing."
+        );
+    }
+    let opened = vta_cli_common::sealed_consumer::open_armored_bundle(
+        credential_bundle,
+        &config_dir,
+        expect_digest,
+        no_verify_digest,
+    )?;
+    eprintln!(
+        "Sealed bundle opened ({} — digest {}).",
+        opened.bundle_id_hex, opened.digest
+    );
+    let bundle = vta_cli_common::sealed_consumer::extract_admin_credential(opened.payload)?;
+    auth::login(&bundle, client.base_url(), keyring_key).await
+}
+
 /// Returns true if this command requires authentication.
 fn requires_auth(cmd: &Commands) -> bool {
     !matches!(
         cmd,
-        Commands::Health | Commands::Auth { .. } | Commands::Setup | Commands::Community { .. }
+        Commands::Health
+            | Commands::Auth { .. }
+            | Commands::Setup
+            | Commands::Community { .. }
+            | Commands::Bootstrap { .. }
     )
+}
+
+/// `cnm bootstrap request --out <PATH> [--label <NAME>]`
+fn bootstrap_request(
+    out: std::path::PathBuf,
+    label: Option<String>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let config_dir =
+        config::config_dir().map_err(|e| format!("could not resolve config dir: {e}"))?;
+    let created = vta_cli_common::sealed_consumer::create_bootstrap_request(&config_dir, label)?;
+    let json = serde_json::to_string_pretty(&created.request)?;
+    std::fs::write(&out, json.as_bytes())?;
+
+    let public_b64 = created.request.client_pubkey.clone();
+    println!("Bootstrap request written to {}", out.display());
+    println!();
+    println!("  Bundle-Id:     {}", created.bundle_id_hex);
+    println!("  Client pubkey: {public_b64}");
+    println!("  Secret stored: {}", created.secret_path.display());
+    println!();
+    println!("Hand the request to the operator. They return an armored sealed bundle.");
+    println!("Verify the SHA-256 digest they print to you out-of-band, then run:");
+    println!("  cnm auth login --credential-bundle <file> --expect-digest <hex>");
+    Ok(())
+}
+
+/// `cnm bootstrap open --bundle <PATH> [--expect-digest <HEX>] [--no-verify-digest]`
+fn bootstrap_open(
+    bundle_path: &std::path::Path,
+    expect_digest: Option<&str>,
+    no_verify_digest: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if no_verify_digest {
+        eprintln!(
+            "WARNING: --no-verify-digest disables out-of-band integrity verification.\n\
+             You are trusting the producer pubkey embedded in the bundle without\n\
+             any external anchor. Use only for testing."
+        );
+    }
+    let config_dir =
+        config::config_dir().map_err(|e| format!("could not resolve config dir: {e}"))?;
+    let opened = vta_cli_common::sealed_consumer::open_armored_bundle(
+        bundle_path,
+        &config_dir,
+        expect_digest,
+        no_verify_digest,
+    )?;
+    println!("Sealed bundle opened.");
+    println!();
+    println!("  Bundle-Id:        {}", opened.bundle_id_hex);
+    println!("  Digest (sha256):  {}", opened.digest);
+    println!(
+        "  Producer pubkey:  {}",
+        opened.producer.producer_pubkey_b64
+    );
+    println!("  Producer proof:   {:?}", opened.producer.proof);
+    println!();
+    use vta_sdk::sealed_transfer::SealedPayloadV1;
+    match &opened.payload {
+        SealedPayloadV1::AdminCredential(c) => {
+            println!("Payload: AdminCredential");
+            println!("  DID:     {}", c.did);
+            println!("  VTA DID: {}", c.vta_did);
+            if let Some(ref u) = c.vta_url {
+                println!("  VTA URL: {u}");
+            }
+            println!();
+            println!("To install this credential, run:");
+            println!(
+                "  cnm auth login --credential-bundle <bundle> --expect-digest {}",
+                opened.digest
+            );
+        }
+        SealedPayloadV1::ContextProvision(p) => {
+            println!("Payload: ContextProvision");
+            println!("  Context:   {} ({})", p.context_id, p.context_name);
+            println!("  Admin DID: {}", p.admin_did);
+        }
+        SealedPayloadV1::DidSecrets(s) => {
+            println!("Payload: DidSecrets");
+            println!("  DID:     {}", s.did);
+            println!("  Secrets: {}", s.secrets.len());
+        }
+        other => {
+            println!("Payload: {other:?}");
+        }
+    }
+    Ok(())
 }
 
 #[tokio::main]
@@ -487,15 +664,19 @@ async fn main() {
         Commands::Community { command } => cmd_community(command, &cnm_config).await,
         Commands::Health => cmd_health(&client, &keyring_key, &cnm_config).await,
         Commands::Auth { command } => match command {
-            AuthCommands::Login { credential } => {
-                // Trust boundary: user-pasted base64. Sub-phase 5c replaces
-                // this with `--credential-bundle <file>` reading armored input.
-                #[allow(deprecated)]
-                let decoded = vta_sdk::credentials::CredentialBundle::decode(&credential);
-                match decoded {
-                    Ok(bundle) => auth::login(&bundle, client.base_url(), &keyring_key).await,
-                    Err(e) => Err(format!("invalid credential: {e}").into()),
-                }
+            AuthCommands::Login {
+                credential_bundle,
+                expect_digest,
+                no_verify_digest,
+            } => {
+                auth_login_sealed(
+                    &client,
+                    &keyring_key,
+                    &credential_bundle,
+                    expect_digest.as_deref(),
+                    no_verify_digest,
+                )
+                .await
             }
             AuthCommands::Logout => {
                 auth::logout(&keyring_key);
@@ -575,6 +756,14 @@ async fn main() {
                 label,
                 contexts,
             } => credentials::cmd_auth_credential_create(&client, role, label, contexts).await,
+        },
+        Commands::Bootstrap { command } => match command {
+            BootstrapCommands::Request { out, label } => bootstrap_request(out, label),
+            BootstrapCommands::Open {
+                bundle,
+                expect_digest,
+                no_verify_digest,
+            } => bootstrap_open(&bundle, expect_digest.as_deref(), no_verify_digest),
         },
         Commands::Keys { command } => match command {
             KeyCommands::Create {
@@ -1023,7 +1212,9 @@ mod tests {
     fn test_requires_auth_auth_login_false() {
         let cmd = Commands::Auth {
             command: AuthCommands::Login {
-                credential: "test".into(),
+                credential_bundle: std::path::PathBuf::from("/tmp/fake.armor"),
+                expect_digest: None,
+                no_verify_digest: false,
             },
         };
         assert!(!requires_auth(&cmd));

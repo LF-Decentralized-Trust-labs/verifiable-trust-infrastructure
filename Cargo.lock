@@ -1679,6 +1679,7 @@ dependencies = [
  "dialoguer",
  "dirs",
  "serde",
+ "serde_json",
  "tokio",
  "toml",
  "tracing",
