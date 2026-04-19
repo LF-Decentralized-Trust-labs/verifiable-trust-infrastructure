@@ -59,6 +59,9 @@ async fn setup_with_credential(
     credential: &str,
     config: &mut PnmConfig,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    // Trust boundary: user-pasted base64. Sub-phase 5c replaces this with an
+    // armored sealed bundle.
+    #[allow(deprecated)]
     let bundle = CredentialBundle::decode(credential)?;
 
     // Prompt for a name/slug
@@ -113,7 +116,7 @@ async fn setup_with_credential(
     save_config(config)?;
 
     // Authenticate
-    auth::login(credential, &url, &keyring_key).await?;
+    auth::login(&bundle, &url, &keyring_key).await?;
 
     let path = crate::config::config_path()?;
     eprintln!();
@@ -184,9 +187,8 @@ async fn setup_tee(config: &mut PnmConfig) -> Result<(), Box<dyn std::error::Err
     // 6. Prompt for mediator DID
     let mediator_did: String = Input::new().with_prompt("Mediator DID").interact_text()?;
 
-    // 7. Build credential bundle and store in keyring
-    let bundle = CredentialBundle::new(did.clone(), private_key_multibase.clone(), vta_did.clone());
-    let _credential_b64 = bundle.encode()?;
+    // 7. Store identity directly in the keyring. Bundle construction happens
+    //    later, inside the TEE-first-boot flow, when the VTA is reachable.
     let keyring_key = vta_keyring_key(&slug);
 
     // Store session directly — the VTA may not be reachable for auth yet

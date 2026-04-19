@@ -145,25 +145,28 @@ pub async fn refresh_token_light(
     })
 }
 
-/// Decode a credential bundle and authenticate, returning an `AuthResult`.
+/// Authenticate using an already-decoded credential bundle, returning an
+/// `AuthResult`.
+///
+/// The second tuple element is a clone of the input bundle, echoed back for
+/// callers that want a single expression yielding auth state + identity.
 pub async fn authenticate_with_credential(
-    credential_b64: &str,
+    credential: &CredentialBundle,
     url_override: Option<&str>,
 ) -> Result<(AuthResult, CredentialBundle, Client), crate::error::VtaError> {
-    let cred = CredentialBundle::decode(credential_b64)?;
     let url = url_override
-        .or(cred.vta_url.as_deref())
+        .or(credential.vta_url.as_deref())
         .ok_or("no VTA URL in credential and no override provided")?;
 
     let http = Client::new();
     let result = challenge_response_light(
         &http,
         url,
-        &cred.did,
-        &cred.private_key_multibase,
-        &cred.vta_did,
+        &credential.did,
+        &credential.private_key_multibase,
+        &credential.vta_did,
     )
     .await?;
 
-    Ok((result, cred, http))
+    Ok((result, credential.clone(), http))
 }

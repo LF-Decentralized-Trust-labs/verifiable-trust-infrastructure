@@ -174,11 +174,8 @@ pub async fn run_open(
                 println!("  VTA URL: {u}");
             }
             println!();
-            println!("To install this credential, run:");
-            println!("  pnm auth login <base64-credential>");
-            println!();
-            println!("Encoded credential:");
-            println!("  {}", c.encode()?);
+            println!("To install this credential, use the online bootstrap flow:");
+            println!("  pnm bootstrap connect --vta-url <url> [--token <token>]");
         }
         SealedPayloadV1::ContextProvision(p) => {
             println!("Payload: ContextProvision");
@@ -321,8 +318,6 @@ pub async fn run_connect(
         }
     };
 
-    let encoded = credential.encode()?;
-
     let slug = vta_slug.unwrap_or_else(|| default_slug(&credential.vta_did));
     pnm_config.vtas.insert(
         slug.clone(),
@@ -338,7 +333,7 @@ pub async fn run_connect(
     crate::config::save_config(pnm_config)?;
 
     let keyring_key = crate::config::vta_keyring_key(&slug);
-    auth::login(&encoded, &vta_url, &keyring_key).await?;
+    auth::login(&credential, &vta_url, &keyring_key).await?;
 
     println!();
     println!("Bootstrap complete.");

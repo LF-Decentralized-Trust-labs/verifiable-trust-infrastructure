@@ -536,16 +536,16 @@ impl VtaClient {
         }
     }
 
-    /// Create a client from a base64-encoded credential bundle.
+    /// Create a client from a credential bundle.
     ///
     /// Performs lightweight challenge-response auth (no ATM/TDK initialization)
     /// and stores the credential for automatic token refresh.
     pub async fn from_credential(
-        credential_b64: &str,
+        credential: &crate::credentials::CredentialBundle,
         url_override: Option<&str>,
     ) -> Result<Self, VtaError> {
         let (result, cred, http) =
-            crate::auth_light::authenticate_with_credential(credential_b64, url_override).await?;
+            crate::auth_light::authenticate_with_credential(credential, url_override).await?;
         let base_url = url_override
             .or(cred.vta_url.as_deref())
             .ok_or("no VTA URL")?

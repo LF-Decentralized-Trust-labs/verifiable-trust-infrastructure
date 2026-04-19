@@ -18,9 +18,10 @@
 //! impl SecretCache for MyCache { /* ... */ }
 //!
 //! let config = VtaServiceConfig {
-//!     credential: loaded_credential_string,
+//!     credential: loaded_credential_bundle,
 //!     context: "my-service".into(),
 //!     url_override: None,
+//!     timeout: None,
 //! };
 //! let cache = MyCache::new();
 //!
@@ -45,13 +46,14 @@ const DEFAULT_STARTUP_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Configuration for connecting a service to its VTA context.
 ///
-/// The `credential` field should contain the already-loaded base64url credential
-/// string. How the credential is loaded (from a config file, AWS Secrets Manager,
-/// OS keyring, etc.) is left to the calling service.
+/// The `credential` field holds the already-decoded [`CredentialBundle`]. How
+/// the credential is obtained (opened from a sealed bundle, read from a
+/// keyring, loaded from AWS Secrets Manager, etc.) is left to the calling
+/// service.
 #[derive(Clone, Debug)]
 pub struct VtaServiceConfig {
-    /// Base64url-encoded VTA credential bundle.
-    pub credential: String,
+    /// VTA credential bundle (identity + signing key + VTA DID/URL).
+    pub credential: crate::credentials::CredentialBundle,
     /// VTA context ID that holds this service's DID and keys.
     pub context: String,
     /// Optional REST URL override. When set, bypasses the URL embedded in the

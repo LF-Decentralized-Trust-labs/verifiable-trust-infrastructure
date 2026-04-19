@@ -1,5 +1,4 @@
 use crate::client::VtaClient;
-use crate::credentials::CredentialBundle;
 use crate::error::VtaError;
 
 use super::VtaServiceConfig;
@@ -28,7 +27,7 @@ pub async fn authenticate(config: &VtaServiceConfig) -> Result<VtaClient, VtaErr
         Err(e) => {
             tracing::debug!("Lightweight VTA auth failed ({e}), trying session auth");
 
-            let credential = CredentialBundle::decode(&config.credential)?;
+            let credential = &config.credential;
 
             let vta_url = url_override
                 .or(credential.vta_url.as_deref())

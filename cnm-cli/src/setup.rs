@@ -85,9 +85,15 @@ pub async fn run_setup_wizard() -> Result<(), Box<dyn std::error::Error>> {
         .with_prompt("Personal VTA credential (base64)")
         .interact_text()?;
 
+    // Trust boundary: user-pasted base64. Sub-phase 5c replaces this with an
+    // armored sealed bundle.
+    #[allow(deprecated)]
+    let personal_bundle = vta_sdk::credentials::CredentialBundle::decode(&personal_credential)
+        .map_err(|e| format!("invalid personal credential: {e}"))?;
+
     // Authenticate against personal VTA
     eprintln!();
-    auth::login(&personal_credential, &personal_url, PERSONAL_KEYRING_KEY).await?;
+    auth::login(&personal_bundle, &personal_url, PERSONAL_KEYRING_KEY).await?;
 
     config.personal_vta = Some(PersonalVtaConfig {
         url: personal_url.clone(),
@@ -120,9 +126,14 @@ pub async fn run_setup_wizard() -> Result<(), Box<dyn std::error::Error>> {
                 .with_prompt("Community admin credential (base64)")
                 .interact_text()?;
 
+            // Trust boundary: user-pasted base64.
+            #[allow(deprecated)]
+            let bundle = vta_sdk::credentials::CredentialBundle::decode(&credential)
+                .map_err(|e| format!("invalid community credential: {e}"))?;
+
             let keyring_key = community_keyring_key(&community_slug);
             eprintln!();
-            auth::login(&credential, &community_url, &keyring_key).await?;
+            auth::login(&bundle, &community_url, &keyring_key).await?;
 
             None
         }
@@ -159,7 +170,9 @@ pub async fn run_setup_wizard() -> Result<(), Box<dyn std::error::Error>> {
                 .contexts(vec![context_slug.clone()]);
             let resp = personal_client.generate_credentials(cred_req).await?;
 
-            // Decode credential to extract the private key
+            // Trust boundary: REST endpoint returns plaintext base64. Sub-phase
+            // 5c deletes the endpoint; `pnm bootstrap request` replaces it.
+            #[allow(deprecated)]
             let bundle = vta_sdk::credentials::CredentialBundle::decode(&resp.credential)
                 .map_err(|e| format!("failed to decode credential: {e:?}"))?;
             let private_key = &bundle.private_key_multibase;
@@ -255,9 +268,14 @@ pub async fn add_community() -> Result<(), Box<dyn std::error::Error>> {
         .with_prompt("Community admin credential (base64)")
         .interact_text()?;
 
+    // Trust boundary: user-pasted base64.
+    #[allow(deprecated)]
+    let bundle = vta_sdk::credentials::CredentialBundle::decode(&credential)
+        .map_err(|e| format!("invalid community credential: {e}"))?;
+
     let keyring_key = community_keyring_key(&community_slug);
     eprintln!();
-    auth::login(&credential, &community_url, &keyring_key).await?;
+    auth::login(&bundle, &community_url, &keyring_key).await?;
 
     config.communities.insert(
         community_slug.clone(),
@@ -316,7 +334,9 @@ pub async fn bootstrap_community_session(
     };
     let resp = personal_client.generate_credentials(cred_req).await?;
 
-    // Decode credential to extract the private key
+    // Trust boundary: REST endpoint returns plaintext base64. Sub-phase 5c
+    // deletes the endpoint; `pnm bootstrap request` replaces it.
+    #[allow(deprecated)]
     let bundle = vta_sdk::credentials::CredentialBundle::decode(&resp.credential)
         .map_err(|e| format!("failed to decode credential: {e:?}"))?;
     let private_key = &bundle.private_key_multibase;

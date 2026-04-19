@@ -1,3 +1,4 @@
+use vta_sdk::credentials::CredentialBundle;
 use vta_sdk::session::{SessionStore, TokenStatus};
 
 pub use vta_sdk::session::SessionInfo;
@@ -11,9 +12,9 @@ fn store() -> SessionStore {
     )
 }
 
-/// Import a base64-encoded credential and authenticate.
+/// Store a credential bundle and authenticate.
 pub async fn login(
-    credential_b64: &str,
+    credential: &CredentialBundle,
     base_url: &str,
     keyring_key: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -23,7 +24,7 @@ pub async fn login(
          Do not use config-session in production."
     );
 
-    let result = store().login(credential_b64, base_url, keyring_key).await?;
+    let result = store().login(credential, base_url, keyring_key).await?;
 
     println!("Credential imported:");
     println!("  Client DID: {}", result.client_did);

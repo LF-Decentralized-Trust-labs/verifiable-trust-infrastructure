@@ -405,24 +405,20 @@ impl SessionStore {
         self.load_session(key).is_some()
     }
 
-    /// Import a base64-encoded credential and authenticate.
+    /// Store a credential bundle and authenticate.
     ///
     /// Returns `LoginResult` on success (no printing).
     pub async fn login(
         &self,
-        credential_b64: &str,
+        bundle: &CredentialBundle,
         base_url: &str,
         key: &str,
     ) -> Result<LoginResult, Box<dyn std::error::Error>> {
-        debug!("decoding credential bundle");
-        let bundle = CredentialBundle::decode(credential_b64)
-            .map_err(|e| format!("invalid credential: {e}"))?;
-
         debug!(
             client_did = %bundle.did,
             vta_did = %bundle.vta_did,
             vta_url = ?bundle.vta_url,
-            "credential decoded"
+            "login with credential bundle"
         );
 
         let mut session = Session {
@@ -450,9 +446,9 @@ impl SessionStore {
         self.save_session(key, &session)?;
 
         Ok(LoginResult {
-            client_did: bundle.did,
-            vta_did: bundle.vta_did,
-            vta_url: bundle.vta_url,
+            client_did: bundle.did.clone(),
+            vta_did: bundle.vta_did.clone(),
+            vta_url: bundle.vta_url.clone(),
         })
     }
 

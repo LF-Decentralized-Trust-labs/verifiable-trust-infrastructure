@@ -488,7 +488,14 @@ async fn main() {
         Commands::Health => cmd_health(&client, &keyring_key, &cnm_config).await,
         Commands::Auth { command } => match command {
             AuthCommands::Login { credential } => {
-                auth::login(&credential, client.base_url(), &keyring_key).await
+                // Trust boundary: user-pasted base64. Sub-phase 5c replaces
+                // this with `--credential-bundle <file>` reading armored input.
+                #[allow(deprecated)]
+                let decoded = vta_sdk::credentials::CredentialBundle::decode(&credential);
+                match decoded {
+                    Ok(bundle) => auth::login(&bundle, client.base_url(), &keyring_key).await,
+                    Err(e) => Err(format!("invalid credential: {e}").into()),
+                }
             }
             AuthCommands::Logout => {
                 auth::logout(&keyring_key);
