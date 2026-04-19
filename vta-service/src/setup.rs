@@ -1019,14 +1019,16 @@ async fn build_wizard_did(
             did: final_did.clone(),
             secrets,
         };
-        let encoded = bundle.encode().map_err(|e| format!("{e}"))?;
+        // Local operator export to stdout: JSON, not base64. See the matching
+        // comment in `did_webvh.rs` for the rationale.
+        let json = serde_json::to_string_pretty(&bundle).map_err(|e| format!("{e}"))?;
         eprintln!();
         eprintln!("\x1b[1;33m╔══════════════════════════════════════════════════════════╗");
         eprintln!("║  WARNING: The secrets bundle contains private keys.      ║");
-        eprintln!("║  Store it securely and do not share it publicly.         ║");
+        eprintln!("║  Redirect to a file with restrictive permissions.        ║");
         eprintln!("╚══════════════════════════════════════════════════════════╝\x1b[0m");
         eprintln!();
-        println!("{encoded}");
+        println!("{json}");
         eprintln!();
     }
 

@@ -913,14 +913,16 @@ async fn create_webvh_did(
                 },
             ],
         };
-        let encoded = bundle.encode().map_err(|e| format!("{e}"))?;
+        // Local operator export to stdout: pretty-printed JSON, not base64.
+        // OS filesystem (for redirected output) is the protection here.
+        let json = serde_json::to_string_pretty(&bundle).map_err(|e| format!("{e}"))?;
         eprintln!();
         eprintln!("\x1b[1;33m╔══════════════════════════════════════════════════════════╗");
         eprintln!("║  WARNING: The secrets bundle contains private keys.      ║");
-        eprintln!("║  Store it securely and do not share it publicly.         ║");
+        eprintln!("║  Redirect to a file with restrictive permissions.        ║");
         eprintln!("╚══════════════════════════════════════════════════════════╝\x1b[0m");
         eprintln!();
-        println!("{encoded}");
+        println!("{json}");
         eprintln!();
     }
 

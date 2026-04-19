@@ -234,19 +234,22 @@ pub async fn run_create_did_webvh(
                 },
             ],
         };
-        let encoded = bundle.encode().map_err(|e| format!("{e}"))?;
+        // Local operator export: pretty-printed JSON on disk. OS filesystem
+        // permissions are the protection here — the base64 wrapper offered
+        // no integrity or confidentiality.
+        let json = serde_json::to_string_pretty(&bundle).map_err(|e| format!("{e}"))?;
         eprintln!();
         eprintln!("\x1b[1;33m╔══════════════════════════════════════════════════════════╗");
         eprintln!("║  WARNING: The secrets bundle contains private keys.      ║");
-        eprintln!("║  Store it securely and do not share it publicly.         ║");
+        eprintln!("║  Set file permissions to 0600 after writing.             ║");
         eprintln!("╚══════════════════════════════════════════════════════════╝\x1b[0m");
         eprintln!();
-        let default_secrets_file = format!("{label}-secrets.bundle");
+        let default_secrets_file = format!("{label}-secrets.json");
         let secrets_file: String = Input::new()
             .with_prompt("Save secrets bundle to file")
             .default(default_secrets_file)
             .interact_text()?;
-        std::fs::write(&secrets_file, &encoded)
+        std::fs::write(&secrets_file, &json)
             .map_err(|e| format!("Failed to write secrets bundle: {e}"))?;
         eprintln!("  Secrets bundle saved to: {secrets_file}");
         eprintln!();
