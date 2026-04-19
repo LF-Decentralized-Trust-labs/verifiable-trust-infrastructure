@@ -13,16 +13,15 @@ use serde_json::json;
 use url::Url;
 
 use crate::acl::{AclEntry, Role, store_acl_entry};
-use vta_sdk::did_secrets::{DidSecretsBundle, SecretEntry};
 
 use crate::config::{
     AppConfig, AuthConfig, LogConfig, LogFormat, MessagingConfig, SecretsConfig, ServerConfig,
     ServicesConfig, StoreConfig,
 };
 use crate::contexts::{self, ContextRecord, store_context};
+use crate::keys;
 use crate::keys::seed_store::create_seed_store;
 use crate::keys::seeds::{SeedRecord, save_seed_record, set_active_seed_id};
-use crate::keys::{self, KeyType as SdkKeyType};
 use crate::operations;
 use crate::operations::did_webvh::CreateDidWebvhParams;
 use crate::store::{KeyspaceHandle, Store};
@@ -800,7 +799,9 @@ pub async fn run_setup_wizard(
 /// Interactive did:webvh creation using the operations layer.
 ///
 /// Prompts for URL, offers simple/advanced mode, builds params, calls
-/// `operations::create_did_webvh()`, saves did.jsonl, optionally exports secrets.
+/// `operations::create_did_webvh()`, and saves did.jsonl. Private keys stay
+/// in the VTA's key store; consumers fetch them at runtime via
+/// `GET /keys/{id}/secret`, not from a setup-time export.
 ///
 /// `additional_services` lets callers inject custom services (e.g. mediator endpoints).
 #[allow(clippy::too_many_arguments)]
@@ -964,74 +965,10 @@ async fn build_wizard_did(
         eprintln!("  {url_str}\x1b[0m");
     }
 
-    // Optionally export secrets bundle
-    if !result.signing_key_id.is_empty()
-        && Confirm::new()
-            .with_prompt("Export DID secrets bundle?")
-            .default(false)
-            .interact()?
-    {
-        // Use a temporary config to create a seed store for secret fetching
-        let temp_seed_store: Arc<dyn crate::keys::seed_store::SeedStore> = Arc::from(
-            crate::keys::seed_store::create_seed_store(config).map_err(|e| format!("{e}"))?,
-        );
-        let audit_ks = keys_ks; // Reuse keys_ks as dummy audit (no audit during setup)
-
-        let signing_secret = operations::keys::get_key_secret(
-            keys_ks,
-            imported_ks,
-            &temp_seed_store,
-            audit_ks,
-            &auth,
-            &result.signing_key_id,
-            "setup",
-        )
-        .await
-        .map_err(|e| format!("failed to fetch signing key: {e}"))?;
-
-        let mut secrets = vec![SecretEntry {
-            key_id: result.signing_key_id.clone(),
-            key_type: SdkKeyType::Ed25519,
-            private_key_multibase: signing_secret.private_key_multibase,
-        }];
-
-        if !result.ka_key_id.is_empty() {
-            let ka_secret = operations::keys::get_key_secret(
-                keys_ks,
-                imported_ks,
-                &temp_seed_store,
-                audit_ks,
-                &auth,
-                &result.ka_key_id,
-                "setup",
-            )
-            .await
-            .map_err(|e| format!("failed to fetch KA key: {e}"))?;
-
-            secrets.push(SecretEntry {
-                key_id: result.ka_key_id.clone(),
-                key_type: SdkKeyType::X25519,
-                private_key_multibase: ka_secret.private_key_multibase,
-            });
-        }
-
-        let bundle = DidSecretsBundle {
-            did: final_did.clone(),
-            secrets,
-        };
-        // Local operator export to stdout: JSON, not base64. See the matching
-        // comment in `did_webvh.rs` for the rationale.
-        let json = serde_json::to_string_pretty(&bundle).map_err(|e| format!("{e}"))?;
-        eprintln!();
-        eprintln!("\x1b[1;33m╔══════════════════════════════════════════════════════════╗");
-        eprintln!("║  WARNING: The secrets bundle contains private keys.      ║");
-        eprintln!("║  Redirect to a file with restrictive permissions.        ║");
-        eprintln!("╚══════════════════════════════════════════════════════════╝\x1b[0m");
-        eprintln!();
-        println!("{json}");
-        eprintln!();
-    }
-
+    // DID secrets live in the VTA's key store and are fetched by consumers
+    // (applications, mediators, the VTA itself) via `GET /keys/{id}/secret`
+    // or the DIDComm equivalent at runtime. No setup-time export — the
+    // setup wizard's output is the DID itself, not its secrets.
     Ok(final_did)
 }
 
