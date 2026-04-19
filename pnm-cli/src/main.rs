@@ -668,10 +668,20 @@ enum KeyCommands {
         #[arg(long)]
         context: Option<String>,
     },
-    /// Export a portable DID secrets bundle for a context
+    /// Export a portable DID secrets bundle for a context as an armored
+    /// sealed bundle. The recipient runs `pnm bootstrap open` to decrypt.
     Bundle {
         /// Application context ID whose DID and keys to bundle
         context: String,
+        /// Path to a BootstrapRequest JSON file produced by `pnm bootstrap request`.
+        #[arg(long, conflicts_with_all = ["recipient_pubkey", "recipient_nonce"])]
+        recipient: Option<std::path::PathBuf>,
+        /// Recipient's base64url X25519 public key.
+        #[arg(long, requires = "recipient_nonce", conflicts_with = "recipient")]
+        recipient_pubkey: Option<String>,
+        /// Recipient's 16-byte nonce in hex.
+        #[arg(long, requires = "recipient_pubkey", conflicts_with = "recipient")]
+        recipient_nonce: Option<String>,
     },
     /// List seed generations
     Seeds,
@@ -1266,7 +1276,19 @@ async fn main() {
             KeyCommands::Secrets { key_ids, context } => {
                 keys::cmd_key_secrets(&client, key_ids, context).await
             }
-            KeyCommands::Bundle { context } => keys::cmd_key_bundle(&client, &context).await,
+            KeyCommands::Bundle {
+                context,
+                recipient,
+                recipient_pubkey,
+                recipient_nonce,
+            } => match resolve_recipient(
+                recipient.as_deref(),
+                recipient_pubkey.as_deref(),
+                recipient_nonce.as_deref(),
+            ) {
+                Ok(recipient) => keys::cmd_key_bundle(&client, &context, recipient).await,
+                Err(e) => Err(e),
+            },
             KeyCommands::Seeds => keys::cmd_seeds_list(&client).await,
             KeyCommands::RotateSeed { mnemonic } => keys::cmd_seeds_rotate(&client, mnemonic).await,
         },

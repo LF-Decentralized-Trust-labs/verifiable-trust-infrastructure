@@ -343,21 +343,32 @@ pub async fn cmd_seeds_rotate(
 pub async fn cmd_key_bundle(
     client: &VtaClient,
     context: &str,
+    recipient: crate::sealed_producer::SealedRecipient,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    use vta_sdk::sealed_transfer::SealedPayloadV1;
+
     // Fetch all secrets for this context as a portable bundle
     let bundle = client.fetch_did_secrets_bundle(context).await?;
-    let encoded = bundle.encode().map_err(|e| format!("{e}"))?;
 
-    // 5. Print with security warning
+    let payload = SealedPayloadV1::DidSecrets(bundle);
+    let sealed = crate::sealed_producer::seal_for_recipient(&recipient, &payload).await?;
+
     eprintln!();
     eprintln!("\x1b[1;33m╔══════════════════════════════════════════════════════════╗");
-    eprintln!("║  WARNING: The secrets bundle contains private keys.      ║");
-    eprintln!("║  Store it securely and do not share it publicly.         ║");
+    eprintln!("║  DID secrets bundle (sealed — armored to the recipient)  ║");
     eprintln!("╚══════════════════════════════════════════════════════════╝\x1b[0m");
     eprintln!();
-    println!("{encoded}");
+    if let SealedPayloadV1::DidSecrets(ref b) = payload {
+        eprintln!("  Context: {context}");
+        eprintln!("  DID:     {}", b.did);
+        eprintln!("  Secrets: {}", b.secrets.len());
+    }
+    if let Some(ref label) = recipient.label {
+        eprintln!("  Recipient: {label}");
+    }
     eprintln!();
 
+    crate::sealed_producer::emit_sealed_output(&sealed);
     Ok(())
 }
 

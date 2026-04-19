@@ -174,7 +174,7 @@ fn hex_lower(bytes: &[u8]) -> String {
 }
 
 fn decode_hex(s: &str) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
-    if s.len() % 2 != 0 {
+    if !s.len().is_multiple_of(2) {
         return Err(format!("hex string must have even length (got {})", s.len()).into());
     }
     let mut out = Vec::with_capacity(s.len() / 2);
