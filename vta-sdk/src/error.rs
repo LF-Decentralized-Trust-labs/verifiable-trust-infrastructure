@@ -99,12 +99,6 @@ impl From<Box<dyn std::error::Error>> for VtaError {
     }
 }
 
-impl From<crate::credentials::CredentialBundleError> for VtaError {
-    fn from(e: crate::credentials::CredentialBundleError) -> Self {
-        Self::Validation(e.to_string())
-    }
-}
-
 impl From<crate::did_key::DidKeyError> for VtaError {
     fn from(e: crate::did_key::DidKeyError) -> Self {
         Self::Other(e.to_string())

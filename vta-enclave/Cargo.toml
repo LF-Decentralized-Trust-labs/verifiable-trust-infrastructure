@@ -2,7 +2,7 @@
 name = "vta-enclave"
 description = "VTA binary for AWS Nitro Enclaves (TEE mode)"
 readme = "README.md"
-version = "0.4.0"
+version = "0.5.0"
 edition.workspace = true
 publish.workspace = true
 authors.workspace = true
@@ -23,7 +23,7 @@ vsock-store = ["vta-service/vsock-store"]
 vsock-log = ["dep:tokio-vsock"]
 
 [dependencies]
-vta-service = { path = "../vta-service", version = "0.4", default-features = false, features = ["tee"] }
+vta-service = { path = "../vta-service", version = "0.5", default-features = false, features = ["tee"] }
 vti-common = { path = "../vti-common", version = "0.3", features = ["encryption"] }
 tokio = { workspace = true }
 tracing = { workspace = true }
