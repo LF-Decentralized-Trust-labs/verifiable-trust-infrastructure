@@ -1,0 +1,48 @@
+# cargo-deny configuration.
+#
+# Run with:
+#   cargo install cargo-deny
+#   cargo deny check
+#
+# Primary purpose today: advisory suppression with documented justification.
+# The ignored GHSAs below are all (a) transitive-only, (b) low severity, and
+# (c) unpatched in the upstream major version we currently depend on. Each
+# entry states the attack surface, why it does not apply to our workloads,
+# and the upstream condition that would let us drop the ignore.
+
+[advisories]
+version = 2
+ignore = [
+  { id = "GHSA-cq8v-f236-94qc", reason = """
+  rand 0.8 soundness issue: `rand::rng()` is unsound when wrapped by a
+  custom logger that attempts to source entropy from `ThreadRng` during
+  signal handling. We use `rand::random()` and `rand::rng().fill_bytes()`
+  directly, with no custom logger wrapper — the unsafe interaction does
+  not occur in our code.
+
+  Pulled transitively by jsonwebtoken 10.3.0 (latest), rsa 0.9.10, and
+  ssi-crypto 0.2.1. Drop this ignore when any of those release a version
+  that depends on rand 0.9.3+.
+  """ },
+
+  { id = "GHSA-xgp8-3hg3-c2mh", reason = """
+  rustls-webpki 0.101.x accepts name constraints for certificates
+  asserting a wildcard name. Exploitable only during TLS cert
+  verification against a CA that issues such a cert; our only 0.101.x
+  path is through AWS SDK's aws-smithy-http-client → rustls 0.21 used
+  for calls to AWS API endpoints (KMS, Secrets Manager, STS, etc.) —
+  AWS's own CAs do not issue wildcard-name-constrained intermediates.
+
+  Drop when AWS SDK retires the rustls 0.21 code path (several crates
+  already have rustls 0.23 support).
+  """ },
+
+  { id = "GHSA-965h-392x-2mh5", reason = """
+  rustls-webpki 0.101.x incorrectly accepts name constraints on URI
+  names. Same transitive path as GHSA-xgp8-3hg3-c2mh (AWS SDK rustls
+  0.21) with the same narrow attack surface: AWS API endpoints are
+  certificated by AWS CAs that do not issue URI-constraint certs.
+
+  Drop when AWS SDK retires the rustls 0.21 code path.
+  """ },
+]
