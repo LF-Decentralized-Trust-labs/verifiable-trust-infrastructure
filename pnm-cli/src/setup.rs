@@ -52,36 +52,116 @@ pub async fn run_setup(
         .interact()?;
 
     match selection {
-        0 => {
-            eprintln!();
-            eprintln!("Before continuing, generate a bootstrap request for the admin:");
-            eprintln!("  pnm bootstrap request --out request.json");
-            eprintln!("Hand that file to the admin, then return here with the armored");
-            eprintln!("sealed bundle they produce (and its SHA-256 digest for verification).");
-            eprintln!();
-            let path: String = Input::new()
-                .with_prompt("Path to the armored sealed bundle")
-                .interact_text()?;
-            let digest: String = Input::new()
-                .with_prompt("Expected SHA-256 digest (empty = skip verification)")
-                .allow_empty(true)
-                .interact_text()?;
-            let (expect_digest, no_verify) = if digest.trim().is_empty() {
-                (None, true)
-            } else {
-                (Some(digest.trim().to_string()), false)
-            };
-            setup_with_bundle(
-                Path::new(path.trim()),
-                expect_digest.as_deref(),
-                no_verify,
-                config,
-            )
-            .await
-        }
+        0 => connect_to_existing_vta(config).await,
         1 => setup_tee(config).await,
         _ => unreachable!(),
     }
+}
+
+/// Walk the operator through the full bootstrap dance without leaving the
+/// wizard:
+///
+/// 1. Either generate a `BootstrapRequest` inline (writes the secret to
+///    `~/.config/pnm/bootstrap-secrets/` and the JSON to a file you pick),
+///    or accept that the user already has a sealed bundle from the admin.
+/// 2. In the generate case, show the request JSON + the hand-off
+///    instructions so the operator can ship it to the admin without
+///    jumping to another CLI.
+/// 3. Prompt for the armored sealed bundle path + optional digest once the
+///    admin has returned it.
+/// 4. Open and install.
+async fn connect_to_existing_vta(config: &mut PnmConfig) -> Result<(), Box<dyn std::error::Error>> {
+    let have_bundle_options = &[
+        "Generate a bootstrap request now (I need one from my admin)",
+        "I already have an armored sealed bundle from my admin",
+    ];
+    let have_bundle = Select::new()
+        .with_prompt("Bootstrap request")
+        .items(have_bundle_options)
+        .default(0)
+        .interact()?;
+
+    if have_bundle == 0 {
+        generate_and_show_bootstrap_request()?;
+    }
+
+    eprintln!();
+    let path: String = Input::new()
+        .with_prompt("Path to the armored sealed bundle (leave empty to exit and resume later)")
+        .allow_empty(true)
+        .interact_text()?;
+    if path.trim().is_empty() {
+        eprintln!();
+        eprintln!("Exiting. When you receive the armored bundle, re-run:");
+        eprintln!(
+            "  pnm auth login --credential-bundle <file> --expect-digest <hex>    # to install",
+        );
+        eprintln!("or re-run `pnm setup` and choose \"I already have an armored sealed bundle\".");
+        return Ok(());
+    }
+    let digest: String = Input::new()
+        .with_prompt("Expected SHA-256 digest (empty = skip verification)")
+        .allow_empty(true)
+        .interact_text()?;
+    let (expect_digest, no_verify) = if digest.trim().is_empty() {
+        (None, true)
+    } else {
+        (Some(digest.trim().to_string()), false)
+    };
+    setup_with_bundle(
+        Path::new(path.trim()),
+        expect_digest.as_deref(),
+        no_verify,
+        config,
+    )
+    .await
+}
+
+/// Generate a [`BootstrapRequest`] in-wizard, persist its secret, write the
+/// request JSON to a file the user picks, and print the contents + hand-off
+/// instructions. Mirrors `pnm bootstrap request --out` but inline so the
+/// user does not have to exit the wizard.
+fn generate_and_show_bootstrap_request() -> Result<(), Box<dyn std::error::Error>> {
+    let config_dir = crate::config::config_dir()?;
+
+    let label: String = Input::new()
+        .with_prompt("Label for this bootstrap request (shown to the admin)")
+        .default("pnm-setup".to_string())
+        .interact_text()?;
+    let label = label.trim().to_string();
+    let label_opt = if label.is_empty() { None } else { Some(label) };
+
+    let out_path: String = Input::new()
+        .with_prompt("Write BootstrapRequest JSON to file")
+        .default("request.json".to_string())
+        .interact_text()?;
+    let out_path = out_path.trim().to_string();
+
+    let created =
+        vta_cli_common::sealed_consumer::create_bootstrap_request(&config_dir, label_opt.clone())?;
+    let json = serde_json::to_string_pretty(&created.request)?;
+    std::fs::write(&out_path, json.as_bytes()).map_err(|e| format!("write {out_path}: {e}"))?;
+
+    eprintln!();
+    eprintln!("\x1b[1;32mBootstrap request generated.\x1b[0m");
+    eprintln!();
+    eprintln!("  Bundle-Id:     {}", created.bundle_id_hex);
+    eprintln!("  Client pubkey: {}", created.request.client_pubkey);
+    eprintln!("  Nonce (b64):   {}", created.request.nonce);
+    if let Some(ref l) = label_opt {
+        eprintln!("  Label:         {l}");
+    }
+    eprintln!("  Secret stored: {}", created.secret_path.display());
+    eprintln!("  Request file:  {out_path}");
+    eprintln!();
+    eprintln!("── Request JSON ──");
+    eprintln!("{json}");
+    eprintln!("──");
+    eprintln!();
+    eprintln!("Send the request file to your admin. They will produce an armored sealed");
+    eprintln!("bundle (and print a SHA-256 digest for out-of-band verification).");
+    eprintln!();
+    Ok(())
 }
 
 /// Connect to an existing VTA using an armored sealed credential bundle.
