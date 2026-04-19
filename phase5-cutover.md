@@ -43,9 +43,13 @@ Grouped by job (A/B/C) so the sub-phases can work one job at a time.
 
 ### Job B: at-rest keyring storage
 
-- pnm-cli stores the login result as a base64-encoded `CredentialBundle` under `vta:<slug>` (see `pnm-cli/src/config.rs::vta_keyring_key` and `pnm-cli/src/auth.rs`). The keyring already gives us OS-level confidentiality; the base64 is a historical artifact.
-- cnm-cli has a mirror of the same pattern.
-- No persistent disk storage of `ContextProvisionBundle` or `DidSecretsBundle` at rest — they flow through stdout/file and get dismantled by the consumer.
+**Verified during 5a implementation — this is a no-op.** The keyring does not store a base64-encoded `CredentialBundle`; it stores a JSON-serialized `Session` struct (see `vta-sdk/src/session.rs::Session` + `save_session`/`load_session`). The fields needed for auth (client DID, private key multibase, VTA DID, VTA URL, cached tokens) are already extracted and flattened at login time. No plaintext base64 exists at rest anywhere in pnm-cli or cnm-cli.
+
+Confirmed by `rg 'base64|\.encode\(\)|\.decode\('` across both CLI crates after 5a: the only remaining hits are the `#[allow(deprecated)]` CLI-boundary decode sites explicitly marked for removal in 5c.
+
+No migration, no `StoredCredential::V1` wrapper, no code change. 5b is satisfied by 5a.
+
+No persistent disk storage of `ContextProvisionBundle` or `DidSecretsBundle` at rest either — they flow through stdout/file and get dismantled by the consumer.
 
 ### Job C: transport across a trust boundary (the real target)
 
@@ -108,30 +112,9 @@ pub struct ContextProvisionBundle {
 
 ### At-rest keyring envelope (Job B)
 
-```rust
-// pnm-cli / cnm-cli shared module (new)
-#[derive(Serialize, Deserialize)]
-#[serde(tag = "v", rename_all = "snake_case")]
-enum StoredCredential {
-    V1(CredentialBundle),
-}
+No change. The keyring backend (`vta-sdk/src/session.rs`) already stores the `Session` struct as JSON — `serde_json::to_string` on write, `serde_json::from_str` on read. The fields needed at runtime (client DID, private key, VTA DID/URL, cached tokens) are extracted from the `CredentialBundle` at login time and flattened into the `Session`, which is the canonical at-rest form. Base64 is never involved.
 
-fn keyring_store(key: &str, bundle: &CredentialBundle) -> Result<()> {
-    let json = serde_json::to_string(&StoredCredential::V1(bundle.clone()))?;
-    keyring::Entry::new(SERVICE, key)?.set_password(&json)
-}
-
-fn keyring_load(key: &str) -> Result<CredentialBundle> {
-    let raw = keyring::Entry::new(SERVICE, key)?.get_password()?;
-    match serde_json::from_str::<StoredCredential>(&raw)? {
-        StoredCredential::V1(b) => Ok(b),
-    }
-}
-```
-
-Rationale for JSON over anything fancier: the OS keyring already provides confidentiality; what we need here is **readability during incident response** (an operator with authorized keyring access can inspect entries with `jq`). The `v` tag is for forward compatibility — if `CredentialBundle` shape changes, add `V2` without touching V1 rows.
-
-**Migration for existing keyring entries**: the current format is base64url(JSON). On first load, try `StoredCredential` parse; if that fails, fall back to the legacy base64 decode, re-serialize as `StoredCredential::V1`, and overwrite. One-shot, no operator action. Delete the fallback in the release after.
+Originally this section proposed a `StoredCredential::V1` wrapper for readability-under-incident and future-compat. Both properties are already satisfied: the JSON is already `jq`-friendly, and `Session` fields carry `#[serde(default)]` for additive evolution. Adding an explicit version tag would be future-proofing beyond what Phase 5 requires (see "Don't add things the task doesn't require"). If a future migration becomes necessary, introduce it then.
 
 ### CLI surfaces (Job C)
 
@@ -185,11 +168,9 @@ After 5a: internal code paths pass structs. The `.encode()/.decode()` deprecatio
 
 ### 5b — Keyring storage (Job B)
 
-1. Introduce `StoredCredential::V1` in a new `pnm-cli/src/keyring_store.rs` and mirror in `cnm-cli`.
-2. Update all keyring reads to try `StoredCredential` first, fall back to legacy base64 on parse failure, re-save.
-3. Update all keyring writes to use the new format.
+**No action required.** Verified during 5a that the keyring already stores JSON `Session` structs; no base64 at rest anywhere to migrate. See the updated "Job B" note above.
 
-After 5b: no deprecated calls inside pnm-cli/cnm-cli. The last `.encode()/.decode()` users are the user-facing CLI paste paths and the REST endpoints.
+After 5a: no deprecated calls inside pnm-cli/cnm-cli outside of the scoped `#[allow(deprecated)]` CLI-boundary sites. The last `.encode()/.decode()` users are the user-facing CLI paste paths and the REST endpoints, all addressed in 5c.
 
 ### 5c — Trust-boundary transport (Job C)
 
